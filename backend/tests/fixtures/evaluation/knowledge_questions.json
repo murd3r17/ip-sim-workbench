@@ -1,0 +1,318 @@
+[
+  {
+    "id": "K-01",
+    "question": "OSPF 的 LSA 有哪几种类型？分别谁产生？",
+    "facts": [
+      "Type1 Router LSA",
+      "Type2 Network LSA",
+      "Type3 Summary LSA",
+      "Type5 External LSA",
+      "Type7 仅 NSSA"
+    ],
+    "reference": {
+      "docs": [
+        "doc-024.md"
+      ],
+      "keywords": [
+        "Router LSA",
+        "Network LSA",
+        "ASBR",
+        "NSSA"
+      ]
+    }
+  },
+  {
+    "id": "K-02",
+    "question": "OSPF 邻居从建立到 Full 要经过哪些状态？",
+    "facts": [
+      "Down→Init→2-Way",
+      "ExStart→Exchange→Loading→Full"
+    ],
+    "reference": {
+      "docs": [
+        "doc-024.md"
+      ],
+      "keywords": [
+        "Down",
+        "Init",
+        "2-Way",
+        "ExStart",
+        "Exchange",
+        "Loading",
+        "Full"
+      ]
+    }
+  },
+  {
+    "id": "K-03",
+    "question": "Stub 区域和 NSSA 区域有什么区别？",
+    "facts": [
+      "Stub 不允许 Type5",
+      "NSSA 允许 Type7 外部路由",
+      "Stub 由 ABR 下发缺省路由"
+    ],
+    "reference": {
+      "docs": [
+        "doc-034.md"
+      ],
+      "keywords": [
+        "Stub",
+        "NSSA",
+        "Type5",
+        "Type7",
+        "缺省路由"
+      ]
+    }
+  },
+  {
+    "id": "K-04",
+    "question": "BGP 选路时 Local_Preference 和 AS_PATH 谁先比较？",
+    "facts": [
+      "Weight 先于 Local_Preference",
+      "Local_Preference 先于 AS_PATH 长度"
+    ],
+    "reference": {
+      "docs": [
+        "doc-037.md"
+      ],
+      "keywords": [
+        "Weight",
+        "Local_Preference",
+        "AS_PATH",
+        "MED"
+      ]
+    }
+  },
+  {
+    "id": "K-05",
+    "question": "路由反射器为什么需要？它怎么防止环路？",
+    "facts": [
+      "RR 反射 iBGP 路由，减少全互联",
+      "用 Cluster ID/Originator ID 防环"
+    ],
+    "reference": {
+      "docs": [
+        "doc-069.md"
+      ],
+      "keywords": [
+        "Route Reflector",
+        "Client",
+        "Cluster ID",
+        "Originator ID"
+      ]
+    }
+  },
+  {
+    "id": "K-06",
+    "question": "QinQ 的双层 VLAN 标签分别是谁加的？",
+    "facts": [
+      "外层由运营商网络添加",
+      "内层是用户私网 VLAN"
+    ],
+    "reference": {
+      "docs": [
+        "doc-049.md"
+      ],
+      "keywords": [
+        "QinQ",
+        "外层",
+        "内层",
+        "SP",
+        "Customer"
+      ]
+    }
+  },
+  {
+    "id": "K-07",
+    "question": "RSTP 和 MSTP 的主要区别是什么？",
+    "facts": [
+      "RSTP 单生成树快速收敛",
+      "MSTP 支持多实例与 VLAN 映射"
+    ],
+    "reference": {
+      "docs": [
+        "doc-075.md"
+      ],
+      "keywords": [
+        "RSTP",
+        "MSTP",
+        "实例",
+        "VLAN 映射"
+      ]
+    }
+  },
+  {
+    "id": "K-08",
+    "question": "VRRP 的 Master 和 Backup 是怎么切换的？",
+    "facts": [
+      "Master 失效后 Backup 升主",
+      "虚拟 IP/MAC 保持网关不变",
+      "抢占可配延迟"
+    ],
+    "reference": {
+      "docs": [
+        "doc-115.md"
+      ],
+      "keywords": [
+        "VRRP",
+        "Master",
+        "Backup",
+        "抢占",
+        "虚拟 IP"
+      ]
+    }
+  },
+  {
+    "id": "K-09",
+    "question": "DHCP 客户端获取地址的四个报文是什么？",
+    "facts": [
+      "Discover→Offer→Request→ACK"
+    ],
+    "reference": {
+      "docs": [
+        "doc-118.md"
+      ],
+      "keywords": [
+        "Discover",
+        "Offer",
+        "Request",
+        "ACK"
+      ]
+    }
+  },
+  {
+    "id": "K-10",
+    "question": "源 NAT、目的 NAT 和双向 NAT 的区别？",
+    "facts": [
+      "源 NAT 改源地址",
+      "目的 NAT 改目的地址",
+      "双向 NAT 同时改源和目的"
+    ],
+    "reference": {
+      "docs": [
+        "doc-029.md"
+      ],
+      "keywords": [
+        "源 NAT",
+        "目的 NAT",
+        "双向 NAT"
+      ]
+    }
+  },
+  {
+    "id": "K-11",
+    "question": "IPsec VPN 的 IKE 两个阶段分别做什么？",
+    "facts": [
+      "阶段1 建 IKE SA/身份认证",
+      "阶段2 建 IPsec SA"
+    ],
+    "reference": {
+      "docs": [
+        "doc-059.md"
+      ],
+      "keywords": [
+        "IKE",
+        "Phase 1",
+        "Phase 2",
+        "SA"
+      ]
+    }
+  },
+  {
+    "id": "K-12",
+    "question": "防火墙双机热备靠什么协议同步？",
+    "facts": [
+      "VRRP 负责网关角色",
+      "HRP 同步会话与配置"
+    ],
+    "reference": {
+      "docs": [
+        "doc-012.md"
+      ],
+      "keywords": [
+        "VRRP",
+        "HRP",
+        "主备"
+      ]
+    }
+  },
+  {
+    "id": "K-13",
+    "question": "网络故障排查一般按什么顺序做？",
+    "facts": [
+      "先确认现象与范围",
+      "分层/分段定位",
+      "用事实验证而非猜测"
+    ],
+    "reference": {
+      "docs": [
+        "doc-084.md"
+      ],
+      "keywords": [
+        "分层",
+        "分段",
+        "对比",
+        "验证"
+      ]
+    }
+  },
+  {
+    "id": "K-14",
+    "question": "设备安全加固里 SSH 应该怎么配？",
+    "facts": [
+      "关闭 telnet/使用 SSH",
+      "限制源地址 ACL",
+      "强认证与口令策略"
+    ],
+    "reference": {
+      "docs": [
+        "doc-109.md"
+      ],
+      "keywords": [
+        "SSH",
+        "stelnet",
+        "ACL",
+        "关闭 telnet"
+      ]
+    }
+  },
+  {
+    "id": "K-15",
+    "question": "ACL 的匹配顺序是什么？没匹配上会怎样？",
+    "facts": [
+      "自上而下首条匹配",
+      "未匹配默认拒绝（依类型）"
+    ],
+    "reference": {
+      "docs": [
+        "doc-057.md"
+      ],
+      "keywords": [
+        "ACL",
+        "自上而下",
+        "首条匹配",
+        "默认拒绝"
+      ]
+    }
+  },
+  {
+    "id": "K-16",
+    "question": "IPv6 的 NDP 用哪些报文替代 ARP？",
+    "facts": [
+      "NS/NA 解析邻居",
+      "RS/RA 做路由器发现"
+    ],
+    "reference": {
+      "docs": [
+        "doc-096.md"
+      ],
+      "keywords": [
+        "NS",
+        "NA",
+        "RS",
+        "RA",
+        "NDP"
+      ]
+    }
+  }
+]

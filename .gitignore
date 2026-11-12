@@ -1,0 +1,59 @@
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node
+node_modules/
+sim-frontend/node_modules
+node_modules.incomplete/
+dist/
+# 例外：前端构建产物入库，使"最小运行模式"无需 Node 也能打开界面
+!sim-frontend/dist/
+!sim-frontend/dist/**
+
+# IDE
+.vscode/
+.idea/
+
+# 日志
+logs/
+*.log
+
+# Local Windows runtime (user-mode MySQL/MinIO data)
+.runtime/
+
+# Docker数据
+mysql_data/
+minio_data/
+ollama_data/
+
+# RAGFlow upstream clone (large)
+third_party/ragflow/
+
+# 临时文件
+*.tmp
+*.bak
+~$*
+.gstack/
+.superpowers/
+backend/.coverage
+
+# 工具缓存（不入库）
+.codebase-memory/
+.codegraph/
+
+# Playwright
+sim-frontend/test-results/
+sim-frontend/playwright-report/
+sim-frontend/playwright/.cache/
+

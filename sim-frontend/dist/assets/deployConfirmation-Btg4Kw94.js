@@ -1,0 +1,1 @@
+async function c(i,e){var s;try{return await i(!1),!1}catch(t){const a=t==null?void 0:t.response;if((a==null?void 0:a.status)!==422||((s=a.data)==null?void 0:s.detail)!=="高风险任务需要二次确认")throw t}return await e(),await i(!0),!0}export{c};

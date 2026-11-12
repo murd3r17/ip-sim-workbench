@@ -1,0 +1,50 @@
+{
+  "scope": "Copied teaching documents only; source files remain unchanged. No secret values recorded.",
+  "changes": [
+    {
+      "path": "docs/guides/API文档.md",
+      "line": 46,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "docs/guides/API文档.md",
+      "line": 53,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Lab/15-101-ssh-实验.md",
+      "line": 125,
+      "rule": "private_key_or_token"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Lab/16-102-netconf-配置实验.md",
+      "line": 151,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Lab/16-102-netconf-配置实验.md",
+      "line": 153,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Lab/16-102-netconf-配置实验.md",
+      "line": 274,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Lab/16-102-netconf-配置实验.md",
+      "line": 274,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Training/21-网络编程自动化与ssh-paramiko.md",
+      "line": 364,
+      "rule": "literal_secret"
+    },
+    {
+      "path": "knowledge/corpus/huawei-ip/HCIE-Datacom-V1.0-Training/21-网络编程自动化与ssh-paramiko.md",
+      "line": 394,
+      "rule": "literal_secret"
+    }
+  ]
+}

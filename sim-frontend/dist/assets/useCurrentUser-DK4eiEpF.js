@@ -1,0 +1,1 @@
+import{m as t}from"./vendor-CFJyl0kO.js";function o(){const r=t(()=>{try{return JSON.parse(localStorage.getItem("user")||"null")}catch{return null}}),u=t(()=>{var e;return((e=r.value)==null?void 0:e.role)==="admin"});return{user:r,isAdmin:u}}export{o as u};

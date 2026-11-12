@@ -1,0 +1,223 @@
+{
+  "protected": [
+    "GigabitEthernet0/0/7",
+    "GigabitEthernet0/0/9"
+  ],
+  "deny": [
+    {
+      "id": "uppercase",
+      "answer": "INTERFACE GigabitEthernet0/0/7\nshutdown\n",
+      "commands": []
+    },
+    {
+      "id": "blank",
+      "answer": "interface GigabitEthernet0/0/7\n\nshutdown\n",
+      "commands": []
+    },
+    {
+      "id": "ospf",
+      "answer": "",
+      "commands": [
+        "interface GigabitEthernet0/0/7",
+        "ospf enable 1 area 0"
+      ]
+    },
+    {
+      "id": "prefix",
+      "answer": "For GigabitEthernet0/0/7 run shutdown\n",
+      "commands": []
+    },
+    {
+      "id": "array-multiline",
+      "answer": "",
+      "commands": [
+        "interface GigabitEthernet0/0/7",
+        "shutdown"
+      ]
+    },
+    {
+      "id": "array-one-string",
+      "answer": "",
+      "commands": [
+        "interface GigabitEthernet0/0/7\nip address 10.0.0.1 255.255.255.0"
+      ]
+    },
+    {
+      "id": "inline",
+      "answer": "interface GigabitEthernet0/0/7 then shutdown",
+      "commands": []
+    },
+    {
+      "id": "dynamic",
+      "answer": "interface GigabitEthernet0/0/9\nundo shutdown\n",
+      "commands": []
+    },
+    {
+      "id": "crlf",
+      "answer": "INTERFACE GigabitEthernet0/0/7\r\nSHUTDOWN\r\n",
+      "commands": []
+    },
+    {
+      "id": "tab",
+      "answer": "interface\tGigabitEthernet0/0/7\n\tshutdown\n",
+      "commands": []
+    },
+    {
+      "id": "description",
+      "answer": "interface GigabitEthernet0/0/7\ndescription mgmt\n",
+      "commands": []
+    },
+    {
+      "id": "port",
+      "answer": "interface GigabitEthernet0/0/7\nport link-type trunk\n",
+      "commands": []
+    },
+    {
+      "id": "reset",
+      "answer": "interface GigabitEthernet0/0/7\nreset counters interface\n",
+      "commands": []
+    },
+    {
+      "id": "mixed",
+      "answer": "interface GigabitEthernet0/0/7\nshutdown\n",
+      "commands": [
+        "interface GigabitEthernet0/0/7",
+        "undo shutdown"
+      ]
+    },
+    {
+      "id": "alias",
+      "answer": "interface GE0/0/7\nshutdown\n",
+      "commands": []
+    },
+    {
+      "id": "multi-device",
+      "answer": "interface GigabitEthernet0/0/9\nospf enable 1 area 0\n",
+      "commands": []
+    },
+    {
+      "id": "backtick",
+      "answer": "执行 `interface GigabitEthernet0/0/7` 后 `shutdown`",
+      "commands": []
+    },
+    {
+      "id": "no-interface-line",
+      "answer": "GigabitEthernet0/0/7 shutdown\n",
+      "commands": []
+    },
+    {
+      "id": "zh-prefix",
+      "answer": "在 GigabitEthernet0/0/7 上执行 shutdown",
+      "commands": []
+    },
+    {
+      "id": "blank-spaces",
+      "answer": "interface GigabitEthernet0/0/7\n   \n  shutdown  \n",
+      "commands": []
+    }
+  ],
+  "allow": [
+    {
+      "id": "explain-description",
+      "answer": "Management interface GigabitEthernet0/0/7 is read-only; description means interface description, no modification requested.\n",
+      "commands": []
+    },
+    {
+      "id": "refuse",
+      "answer": "管理口 GigabitEthernet0/0/7 的 shutdown 写命令我不会生成，请走变更审批。\n",
+      "commands": []
+    },
+    {
+      "id": "readonly-display",
+      "answer": "display ip interface brief\n",
+      "commands": []
+    },
+    {
+      "id": "other-iface",
+      "answer": "interface GigabitEthernet0/0/1\nshutdown\n",
+      "commands": []
+    },
+    {
+      "id": "knowledge-description",
+      "answer": "description 是接口描述命令，用于标识链路用途，不改变转发。\n",
+      "commands": []
+    },
+    {
+      "id": "refusal-undo",
+      "answer": "不能对 GigabitEthernet0/0/7 执行 undo shutdown，这会影响管理通道。\n",
+      "commands": []
+    },
+    {
+      "id": "refusal-ip",
+      "answer": "保护口 GigabitEthernet0/0/7 不允许配置 ip address，也不提供替代入口。\n",
+      "commands": []
+    },
+    {
+      "id": "interface-explained",
+      "answer": "GigabitEthernet0/0/7 是管理口，不建议 shutdown，因为会断开会话。\n",
+      "commands": []
+    },
+    {
+      "id": "blank-answer",
+      "answer": "",
+      "commands": []
+    },
+    {
+      "id": "display-block",
+      "answer": "interface GigabitEthernet0/0/7\ndisplay this\n",
+      "commands": []
+    },
+    {
+      "id": "comment",
+      "answer": "interface GigabitEthernet0/0/7\n# 仅查看\n",
+      "commands": []
+    },
+    {
+      "id": "quit-early",
+      "answer": "interface GigabitEthernet0/0/7\nquit\ndisplay ip interface brief\n",
+      "commands": []
+    },
+    {
+      "id": "array-readonly",
+      "answer": "",
+      "commands": [
+        "display ip interface brief"
+      ]
+    },
+    {
+      "id": "html",
+      "answer": "interface GigabitEthernet0/0/7 的说明见文档，只读。\n",
+      "commands": []
+    },
+    {
+      "id": "stop-advice",
+      "answer": "先 display interface brief 核对，再决定是否走审批；我不会代执行。\n",
+      "commands": []
+    },
+    {
+      "id": "question",
+      "answer": "GigabitEthernet0/0/7 的用途是什么？\n",
+      "commands": []
+    },
+    {
+      "id": "generic-shutdown",
+      "answer": "shutdown 命令会关闭接口，请谨慎。\n",
+      "commands": []
+    },
+    {
+      "id": "ip-address-explain",
+      "answer": "ip address 用于给接口配置地址。\n",
+      "commands": []
+    },
+    {
+      "id": "english-prose",
+      "answer": "GigabitEthernet0/0/7 is the management port; do not shut it down.\n",
+      "commands": []
+    },
+    {
+      "id": "other-device",
+      "answer": "interface GigabitEthernet0/0/3\ndescription uplink\n",
+      "commands": []
+    }
+  ]
+}

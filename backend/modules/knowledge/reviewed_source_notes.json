@@ -1,0 +1,192 @@
+[
+  {
+    "id": "source-nat-direction-and-port-modes",
+    "filename": "03-nat技术概述与源nat目的nat双向nat技术.md",
+    "match": "源NAT技术只对报文的源地址进行转换",
+    "title": "源NAT的方向与是否转换端口是不同维度",
+    "content": "原段的“只对源地址”是在区分源与目的方向，不意味着所有源NAT都不转换源端口。同章《源NAT的两种转换方式的区别》明确区分No-PAT（转换地址、不转换端口）和NAPT（同时转换地址和端口）。RFC3022同样区分Basic NAT与NAPT。因此概述应说源NAT转换源侧地址，是否连同端口取决于具体模式，不能把No-PAT的字段范围推广到所有源NAT。这是术语范围审校，不是当前设备配置事实。",
+    "reference": "RFC 3022 §2.1–2.2；同章《源NAT的两种转换方式的区别》",
+    "url": "https://www.rfc-editor.org/rfc/rfc3022.html#section-2.2",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ospfv2-neighbor-adjacency-network-scope",
+    "filename": "01-设备转发与ip路由ospf基础.md",
+    "match": ["Loading / Full：按需 LSR/LSU 后进入 Full", "本 Router ID 已出现在对方邻居列表中"],
+    "title": "OSPFv2邻居与邻接须结合链路及双方角色",
+    "content": "状态概览不能推出所有双向邻居都会到Full。RFC2328 §10.4规定：广播和NBMA网络的邻居对至少一端为DR或BDR时才建立邻接；两个DROther之间通常停留2-Way。不能说DROther与DR/BDR也不建立邻接。点到点、点到多点与虚链路的邻接判断不依赖DR/BDR选举，不能把选举当作所有网络到ExStart前的必经步骤。本说明限OSPFv2邻接条件，不推定当前设备网络类型或状态。",
+    "reference": "RFC 2328 §10.1、§10.4",
+    "url": "https://www.rfc-editor.org/rfc/rfc2328.html#section-10.4",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ospfv2-hello-multicast-destination",
+    "filename": "01-设备转发与ip路由ospf基础.md",
+    "match": "以太网缺省组播 Hello：",
+    "title": "以太网Hello目的地址不能把两组播组并列套用",
+    "content": "RFC2328 §9.5规定，广播网络和物理点到点网络的Hello发往AllSPFRouters（224.0.0.5）。224.0.0.6是AllDRouters组地址，不能因它面向DR/BDR就断言以太网Hello也缺省发往该地址。虚链路与NBMA等场景另有单播规则，不能把广播网络的目的地址推广到全部链路。这是对原段Hello表述的独立审校，原文保留。",
+    "reference": "RFC 2328 §9.5、Appendix A.1",
+    "url": "https://www.rfc-editor.org/rfc/rfc2328.html#section-9.5",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ipv6-solicited-ra-destination-and-delay",
+    "filename": "09-用户管理认证配置与ipv6安全技术.md",
+    "match": "网络上的路由器收到该RS报文后会立即向相应的主机单播回应RA报文",
+    "title": "RS 响应的目的地址与时机",
+    "content": "教材此处的“立即单播”不能作为通用规则。依据 RFC 4861 §6.2.6，响应有效 RS 的 RA 通常发往所有节点多播组；只有 RS 的源地址不是未指定地址时，路由器才可以选择单播回应。响应须遵守随机延迟，连续多播还受最小间隔限制。因此不能断言收到 RS 就立即单播 RA。此说明只修正目的地址与时机，不改变 RS/RA 的发送方、用途及类型号。",
+    "reference": "RFC 4861 §6.2.6",
+    "url": "https://www.rfc-editor.org/rfc/rfc4861.html#section-6.2.6",
+    "reviewed_at": "2026-11-05"
+  },
+  {
+    "id": "nssa-translation-conditions",
+    "filename": "02-ospf路由计算与特殊区域.md",
+    "match": ["ABR 将 7 类转为 5 类注入骨干", "NSSA 内 ASBR 产生；ABR 转 5 类进 Area0"],
+    "title": "Type7 转换与 NSSA 缺省路由须区分",
+    "content": "本章是简写，不能推出所有 Type7 都会转成 Type5。依据 RFC 3101 §2.4、§3.2，P-bit 未置位或转发地址 FA 为 0 的 Type7 不转换；P-bit 置位且 FA 非 0 只是转换所需条件，具体还受转换器与路由选择/汇总规则约束。ABR 自己向 NSSA 发布的 Type7 缺省必须清除 P-bit，因此它不转成 Type5。向 NSSA 提供缺省路由与把本地外部路由转换后向骨干传播是不同动作，不能混成同一条表格结论。",
+    "reference": "RFC 3101 §2.4、§3.2",
+    "url": "https://www.rfc-editor.org/rfc/rfc3101.html#section-3.2",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ipsec-sa-protection-not-always-encryption",
+    "filename": "10-ipsec-nat穿越智能选路与sd-wan概述.md",
+    "match": "使用 IPsec SA 加密数据",
+    "title": "IPsec SA 的保护不等于一律加密",
+    "content": "三步流程是简写：第二阶段协商建立 IPsec SA，不是把协商报文本身等同于 SA。数据随后按 SA 选择的安全协议与算法得到保护；只有协商使用非空加密算法的 ESP 才提供数据机密性，AH 提供认证/完整性而不加密，ESP 也不能仅凭名称就断言必定启用了非空加密。因此可说明协商 SA 后按其参数保护数据，不能把所有 IPsec SA 一概说成加密数据。本章上文对 AH/ESP 的区分应与这里一起阅读。",
+    "reference": "RFC 4301 §3.2、§4.1；本章 AH/ESP 协议介绍",
+    "url": "https://www.rfc-editor.org/rfc/rfc4301.html#section-3.2",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "vrrpv2-transition-state-and-preemption",
+    "filename": "14-vrf配置bfd联动与vrrp原理.md",
+    "match": ["优先级值是选举 Master 路由器和 Backup 路由器的依据", "如果优先级低的先启动，优先级高的后启动"],
+    "title": "VRRPv2 选举须保留状态与抢占前提",
+    "content": "原文概括不能推出任意高优先级设备恢复就必然接管。VRRPv2 普通 Backup 优先级为 1–254；关闭抢占且收到非零优先级通告时重置超时，仅在开启抢占时才可能取代较低优先级 Master。地址拥有者是明确例外：优先级为 255，不受抢占开关限制，启动即进入 Master。优先级 0 表示 Master 退出，不是普通参选优先级。Backup 收到同优先级通告会重置计时，不靠较大接口 IP 抢占；同优先级比较源 IP 是 Master 收到另一 Master 通告时的规则。此审校限于 VRRPv2，不推定现场版本或当前主备状态。",
+    "reference": "RFC 3768 §5.3.4、§6.1、§6.4.1–6.4.3（VRRPv2）",
+    "url": "https://www.rfc-editor.org/rfc/rfc3768.html#section-6.4.2",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "dhcpv4-ack-delivery-conditions",
+    "filename": "15-dhcp原理配置与网络管理协议.md",
+    "match": "| 确认阶段 | DHCP ACK | 单播 |",
+    "title": "DHCPACK 的单播与广播条件",
+    "content": "表格将 DHCP ACK 只列为单播不完整。RFC 2131 §4.1 规定：有中继地址 giaddr 时服务器回给中继；无中继且 ciaddr 非零时可回给该地址；giaddr、ciaddr 都为零时，BROADCAST 位决定广播或向客户端地址单播。因此不能断言首次地址分配的 ACK 一律单播。此说明针对 DHCPv4，不改变 Discover、Offer、Request、ACK 的典型首次分配顺序。",
+    "reference": "RFC 2131 §4.1",
+    "url": "https://www.rfc-editor.org/rfc/rfc2131.html#section-4.1",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "dhcp-selecting-request-address-fields",
+    "filename": "15-dhcp原理配置与网络管理协议.md",
+    "match": "该报文中包含客户端想选择的 DHCP 服务器标识符和客户端 IP 地址",
+    "title": "首次选择地址时，申请地址不等于已配置的客户端地址",
+    "content": "这里的“客户端 IP 地址”是首次 SELECTING 阶段希望申请的地址，不能理解为客户端已配置完成的地址。RFC2131 §3.1、§4.4.1规定，该阶段 DHCPREQUEST 带 server identifier 和 requested IP address 选项；ciaddr 字段为0。续租等其他阶段的字段规则不同，不能把这条首次申请规则推广到所有 DHCPREQUEST。此补充不改变 Discover、Offer、Request、ACK 的典型首次分配顺序。",
+    "reference": "RFC 2131 §3.1、§4.4.1",
+    "url": "https://www.rfc-editor.org/rfc/rfc2131.html#section-4.4.1",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ah-integrity-fields-and-esp-confidentiality",
+    "filename": "10-ipsec-nat穿越智能选路与sd-wan概述.md",
+    "match": "AH 协议的完整性验证范围为整个 IP 报文",
+    "title": "AH 可变头字段例外与 ESP 机密性条件",
+    "content": "原文“整个IP报文”不能解释为每一个头字段的传输原值都参与认证。RFC4302 §3.3.3规定，AH对不可变或可预测字段计算ICV；TTL等传输中会变化的字段按规定置零处理。隧道模式可保护整个内层包，外层头仍保留可变字段例外。AH不提供加密；ESP有提供机密性的能力，但实际取决于所选算法，采用NULL加密时不提供机密性（RFC4303 §3.3.2）。不能仅凭使用AH或ESP就断言内容一定加密。",
+    "reference": "RFC 4302 §3.3.3；RFC 4303 §3.3.2",
+    "url": "https://www.rfc-editor.org/rfc/rfc4302.html#section-3.3.3",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "nssa-no-summary-default-exception",
+    "filename": "02-ospf路由计算与特殊区域.md",
+    "match": "area 0.0.0.2 nssa no-summary",
+    "title": "普通 NSSA 与禁止汇总时的缺省例外",
+    "content": "不能把普通 NSSA 的 Type7 缺省直接推广到 Totally NSSA。RFC 3101 §2.7 区分是否引入汇总路由：引入时 ABR 的缺省不能是 Type3；禁止引入时应以 Type3 缺省维持域内连通。因此 no-summary 过滤其他 Type3 汇总，不等于连 Type3 缺省也禁止。具体设备是否已发布缺省须核验配置与 LSDB，实验结果不是任意现场的事实。",
+    "reference": "RFC 3101 §2.7",
+    "url": "https://www.rfc-editor.org/rfc/rfc3101.html#section-2.7",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "bgp-experiment-asn-versus-path-length",
+    "filename": "09-34-bgp-路由优选.md",
+    "match": "AS-path 200, origin igp, MED 0, localpref 200",
+    "title": "AS 号码数值不同不等于路径长度不同",
+    "content": "本段两条 AS_PATH 分别只含 AS100 或 AS200，长度都是1；100和200是AS号码，不是路径长度。实验可说明该例按较大Local_Preference优选，但不能单独证明Local_Preference与不同AS_PATH长度冲突时谁先比较；比较顺序应依据优选规则。RFC4271 §9.1.2.2 按AS_PATH中AS数量比较，不能按AS号码数值大小比较。",
+    "reference": "原实验字段对照；RFC 4271 §9.1.2.2",
+    "url": "https://www.rfc-editor.org/rfc/rfc4271.html#section-9.1.2.2",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "rr-summary-loop-detection-mechanism",
+    "filename": "04-bgp表项通告与路径属性.md",
+    "match": "**Originator_ID**：原始发布者 Router ID",
+    "title": "反射防环属性的实际判定方法",
+    "content": "教材此处省略了判定步骤。RFC4456 §8：RR首次反射时建立ORIGINATOR_ID，保存路由在本AS内始发者的BGP标识，已有时不重建；接收者发现它等于自身BGP标识时应忽略该路由。RR反射时把本地CLUSTER_ID加入CLUSTER_LIST头部（prepend），收到列表含自身CLUSTER_ID的路由时应忽略。不能把“记录始发者”本身当作完整防环过程。",
+    "reference": "RFC 4456 §8",
+    "url": "https://www.rfc-editor.org/rfc/rfc4456.html#section-8",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "rr-role-table-loop-detection-mechanism",
+    "filename": "03-bgp安全反射器与ipv6路由.md",
+    "match": "Originator_ID 防集群内环路",
+    "title": "反射防环表格的判定步骤补充",
+    "content": "此表的“防环”是用途摘要。RFC4456 §8规定：ORIGINATOR_ID记录路由在本AS内始发者的BGP标识，接收者发现它等于自身BGP标识时应忽略；RR反射时把本地CLUSTER_ID加入CLUSTER_LIST头部，收到含自身CLUSTER_ID的路由时应忽略。防环不仅是保存一个ID，还包括接收时比较并拒绝回环更新。",
+    "reference": "RFC 4456 §8",
+    "url": "https://www.rfc-editor.org/rfc/rfc4456.html#section-8",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "rstp-discarding-user-traffic-not-all-frames",
+    "filename": "08-园区网服务可靠性与stp-rstp.md",
+    "match": "被阻塞后的链路将不承载任何流量",
+    "title": "生成树阻塞针对用户数据转发",
+    "content": "原文“任何流量”应限定为用户数据转发，不能理解成端口完全不收发任何帧。RSTP的Discarding端口不转发用户数据，仍可能接收/处理BPDU；例如备用端口会靠持续收到BPDU保持阻塞，指定端口的快速迁移也会使用BPDU协商。MSTP按实例/VLAN分担用户流量的比较不受此限定影响。",
+    "reference": "Cisco Understand Rapid Spanning Tree Protocol (802.1w)，端口状态与Proposal/Agreement说明",
+    "url": "https://www.cisco.com/c/en/us/support/docs/lan-switching/spanning-tree-protocol/24062-146.html",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "solicited-node-multicast-shared-low24",
+    "filename": "11-ipv6地址报文与icmpv6-ndp.md",
+    "match": "由于只有目标节点才会侦听这个地址",
+    "title": "被请求节点组播地址不保证目标唯一",
+    "content": "原文的“只有目标节点”过于绝对。RFC4291 §2.7.1规定，被请求节点组播地址由单播/任播地址的低24位与ff02::1:ff00:0/104前缀组成；低24位相同的不同地址会映射到同一组。由此可知，多个节点可能加入并侦听同一组，不能断言其他节点绝不接收该NS。组播缩小接收范围，但不保证接收者唯一；收到报文也不等于就是被查询的目标地址。",
+    "reference": "RFC 4291 §2.7.1",
+    "url": "https://www.rfc-editor.org/rfc/rfc4291.html#section-2.7.1",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ssh-legacy-key-range-not-hardening-recommendation",
+    "filename": "13-设备安全加固ssh与vpn-vrf概述.md",
+    "match": "最小长度为 512 位",
+    "title": "教材设备取值范围不等于安全加固建议",
+    "content": "这里的512～2048位及缺省2048位是教材所述设备命令取值，不能当作任意版本的支持表或安全推荐范围；尤其不推荐把512位下限用于新加固。RFC8332 §5.1引用NIST当时的美国政府指引，不允许短于2048位的RSA/DSA密钥，并建议其他用途也考虑该安全意见；这一限定不能改写成所有VRP版本都支持同一命令或上限。具体算法、密钥长度和兼容性仍须核对目标型号/版本与适用安全要求。不要仅为回答一般配置问题重复旧范围或把首次信任当成身份已核验；原文保留供历史核对。",
+    "reference": "RFC 8332 §5.1（安全建议及其适用范围）；原教材命令取值范围核对",
+    "url": "https://www.rfc-editor.org/rfc/rfc8332.html#section-5.1",
+    "reviewed_at": "2026-11-07"
+  },
+  {
+    "id": "ssh-algorithm-examples-not-current-hardening-recommendations",
+    "filename": "12-dhcpv6与防火墙基础.md",
+    "match": "主机公钥（RSA/DSA）",
+    "title": "算法分类举例不等于当前加固推荐",
+    "content": "本段只列SSH算法类别和历史举例，不等同于每种算法都应启用的加固推荐。OpenSSH官方说明ssh-dss（DSA）较弱，7.0起默认禁用并不推荐使用；这是OpenSSH的安全说明，不等同于任意VRP型号/版本的支持表。具体主机密钥、算法和兼容性须按目标版本核对，不能把RSA/DSA并列举例直接当成默认配置建议。原段也未给出管理账号、AAA、VTY、源地址ACL的具体做法或CLI；这些额外建议不能附本段编号冒充片段直接支持。",
+    "reference": "原段范围核对；OpenSSH Legacy Options",
+    "url": "https://www.openssh.org/legacy.html",
+    "reviewed_at": "2026-11-06"
+  },
+  {
+    "id": "ikev1-phases-not-ikev2-exchanges",
+    "filename": "06-ipsec-vpn与ssl-vpn配置举例.md",
+    "match": "IKEv2正常情况使用2次交换共4条消息",
+    "title": "IKEv1 两阶段不能直接套用到 IKEv2",
+    "content": "这是版本边界的独立审校，不是教材原文。两阶段（建立IKE SA、再建立IPsec SA）是IKEv1的讲法，不能把IKEv2称为同样的两个阶段。RFC7296 §1.2：IKEv2通常先用IKE_SA_INIT协商算法、交换随机数并完成DH，再用IKE_AUTH认证、交换身份并建立首个Child SA；后续Child SA可通过CREATE_CHILD_SA交换建立。这里仍有保护协商和保护数据两种安全目标，但交换结构、认证时机与SA建立不能与IKEv1阶段一一等同。问题只问IKEv1时不必额外扩写IKEv2。",
+    "reference": "RFC 7296 §1.2",
+    "url": "https://www.rfc-editor.org/rfc/rfc7296.html#section-1.2",
+    "reviewed_at": "2026-11-06"
+  }
+]

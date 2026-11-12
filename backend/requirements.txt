@@ -1,0 +1,26 @@
+# 依赖下限（宽松约束）。需要完全可复现的环境请用 requirements.lock。
+# Generated: 2026-06-17 / 修订: 2026-09-09（补 python-dotenv、移除 passlib/cachetools）
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.6
+sqlalchemy>=2.0.23
+alembic>=1.14.0
+pymysql>=1.1.0
+aiomysql>=0.2.0
+aiosqlite>=0.22.0
+cryptography>=43.0.0
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+netmiko>=4.4.0
+paramiko>=3.5.0
+httpx>=0.28.0
+apscheduler>=3.10.0
+minio>=7.2.0
+openpyxl>=3.1.0
+structlog>=24.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+jinja2>=3.1.0
+websockets>=13.0.0

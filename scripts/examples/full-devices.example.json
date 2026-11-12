@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "topology": { "name": "接收方主拓扑" },
+  "devices": [
+    { "hostname": "R1", "mgmt_ip": "EDIT-ME", "ssh_port": 22, "device_type": "router", "vendor": "huawei", "model": "" },
+    { "hostname": "R2", "mgmt_ip": "EDIT-ME", "ssh_port": 22, "device_type": "router", "vendor": "huawei", "model": "" },
+    { "hostname": "R3", "mgmt_ip": "EDIT-ME", "ssh_port": 22, "device_type": "router", "vendor": "huawei", "model": "" }
+  ]
+}

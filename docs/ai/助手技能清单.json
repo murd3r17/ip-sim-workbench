@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "version": "v7-d1.11",
+  "source": "backend/modules/ai_text/skills.py",
+  "source_sha256": "c3aa5a9df6ba65b248e81ca689ce1e45bbbed2e451baa491ef6ca6ba1887f81c",
+  "authority": "Runtime source registry and executor authorization; this file is a release summary, not a permission grant",
+  "skills": [
+    {
+      "id": "page_help",
+      "label": "页面与功能说明",
+      "tool_subset": [],
+      "context_requirements": [
+        "authenticated_role",
+        "route_catalog"
+      ]
+    },
+    {
+      "id": "live_evidence",
+      "label": "现场证据核对",
+      "tool_subset": [
+        "query_devices",
+        "query_device_detail",
+        "run_display_command",
+        "query_monitor_stats",
+        "query_alarms",
+        "query_topology",
+        "query_deploy_tasks",
+        "query_config_versions"
+      ],
+      "context_requirements": [
+        "target",
+        "verified_snapshot_or_tool_results"
+      ]
+    },
+    {
+      "id": "knowledge_answer",
+      "label": "知识库问答",
+      "tool_subset": [],
+      "context_requirements": [
+        "retrieval_sources"
+      ]
+    },
+    {
+      "id": "config_draft",
+      "label": "配置草稿",
+      "tool_subset": [],
+      "context_requirements": [
+        "target",
+        "environment_policy",
+        "protected_interfaces",
+        "retrieval_sources"
+      ]
+    },
+    {
+      "id": "troubleshooting",
+      "label": "故障排查",
+      "tool_subset": [
+        "query_devices",
+        "query_device_detail",
+        "run_display_command",
+        "query_alarms",
+        "query_topology"
+      ],
+      "context_requirements": [
+        "target",
+        "symptom",
+        "tool_feedback"
+      ]
+    },
+    {
+      "id": "lab_coach",
+      "label": "实训教练",
+      "tool_subset": [
+        "query_devices",
+        "query_device_detail",
+        "run_display_command"
+      ],
+      "context_requirements": [
+        "lab_steps",
+        "target",
+        "verified_snapshot_or_tool_results"
+      ]
+    }
+  ]
+}

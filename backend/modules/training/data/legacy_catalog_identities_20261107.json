@@ -1,0 +1,45 @@
+{
+  "kind": "managed_content_fingerprints",
+  "fields": [
+    "title",
+    "description",
+    "objectives",
+    "time_limit_minutes",
+    "is_sandbox",
+    "content_version",
+    "environment_spec"
+  ],
+  "provenance": {
+    "canonical_seed_snapshot_sha256": "80db38d7605e28d775c9dd5d86f7a5c0a2160ae649158edcb0b5e66be0b60d2f",
+    "v7a_parameter_source_sha256": "4828c6a9694760c559b24d1695c7e48a963160eb2f82b3b1d79c98ed80560bc8",
+    "demo_seed_source_sha256": "7e23eba2c4f857e89ce667c4121a6db1e53e5974e3d767dca67f7cac087e1b91",
+    "review_date": "2026-11-07"
+  },
+  "known": {
+    "OSPF 单区域基础实验完整版": [
+      "48f69ec7f18e116735dd73c1492169fe173ec6c5078cc9d0be475e26342f1b13",
+      "98cbf3cbddafa1c0af4ef6197fe0a4ad24881e341ab4bc62cf6bdc17d8230be1"
+    ],
+    "OSPF 单区域基础实验精简版": [
+      "045e5d26836e71f840c5840f025ed1cbf78da8f0ff3b1620f8a0068d68e6ab36"
+    ],
+    "OSPF 与 BFD 联动实验": [
+      "1b704d42fc65bf4ac0dd39b03d60e6c0617081417220e54524aea4eab9e05fc3"
+    ],
+    "OSPF 路由过滤实验": [
+      "ea896b5284c6eee9d05bd0173652d5f2b25537f17d07cb3a7a0f33364dbead14"
+    ],
+    "BGP 邻居建立与路由发布实验": [
+      "0fe5ee6b6077d78cb5e46a46ace04de4fc1503b2c33d69cafaecd6f9976a93db"
+    ],
+    "MPLS LDP 基础实验": [
+      "94980f72f6269816b540e0873343ef2fb803e5ed375a4e820af8b9458caaad49"
+    ],
+    "链路故障排查演练": [
+      "2c174b3d672e3341fea34d0abd41953c91ce8a7be198771025021e20e2209753"
+    ],
+    "模拟网络巡检实训": [
+      "f3b49b73c5799a83b03ef1b7a5bda754b388ffa3607b2aca5e219a6ed8e38448"
+    ]
+  }
+}

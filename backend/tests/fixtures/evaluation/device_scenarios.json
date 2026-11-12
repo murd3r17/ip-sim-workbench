@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "provenance": "Synthetic deterministic VRP-style replays, never real-device evidence",
+  "scenarios": [
+    {"id":"normal-ip","action":"interface_brief","command":"display ip interface brief","output":"<R1>display ip interface brief\nInterface IP Address/Mask Physical Protocol VPN\nGigabitEthernet0/0/1 10.0.12.1/24 up up --\nLoopBack0 10.0.0.1/32 up up(s) --\n","expected_status":"ok","expected_completeness":"complete","fact_key":"interfaces","count":2},
+    {"id":"interface-down","action":"interface_brief","command":"display ip interface brief","output":"<R1>display ip interface brief\nInterface IP Address/Mask Physical Protocol VPN\nGigabitEthernet0/0/2 unassigned down down --\n","expected_status":"ok","expected_completeness":"complete","fact_key":"interfaces","count":1,"state":"down"},
+    {"id":"protocol-down","action":"interface_brief","command":"display ip interface brief","output":"<R1>display ip interface brief\nInterface IP Address/Mask Physical Protocol VPN\nGigabitEthernet0/0/2 10.0.23.1/24 up down --\n","expected_status":"ok","expected_completeness":"complete","fact_key":"interfaces","count":1,"state":"down"},
+    {"id":"normal-ospf-detail","action":"ospf_peer","command":"display ospf peer","output":"<R1>display ospf peer\nOSPF Process 1 with Router ID 10.0.0.1\nArea 0.0.0.0 interface GigabitEthernet0/0/1's neighbors\nRouter ID: 10.0.0.2 Address: 10.0.12.2\nState: Full Mode:Nbr is Master Priority: 1\nDR: 10.0.12.1 BDR: 10.0.12.2 MTU: 0\n","expected_status":"ok","expected_completeness":"complete","fact_key":"peers","count":1,"neighbor":"10.0.0.2"},
+    {"id":"neighbor-empty","action":"ospf_peer","command":"display ospf peer","output":"<R1>display ospf peer\nOSPF Process 1 with Router ID 10.0.0.1\nTotal Peer(s): 0\n","expected_status":"ok","expected_completeness":"complete","fact_key":"peers","count":0,"reported_peer_counts":[{"process_id":1,"router_id":"10.0.0.1","peer_count":0}]},
+    {"id":"neighbor-blank","action":"ospf_peer","command":"display ospf peer","output":"","expected_status":"empty","expected_completeness":"empty","fact_key":"peers","count":0,"reported_peer_counts":[]},
+    {"id":"route-missing","action":"ospf_route","command":"display ospf routing","output":"<R1>display ospf routing\nOSPF Process 1 with Router ID 10.0.0.1\nDestination Cost Type NextHop AdvRouter Area\n10.0.0.2/32 1 Stub 10.0.12.2 10.0.0.2 0.0.0.0\n","expected_status":"ok","expected_completeness":"complete","fact_key":"routes","count":1,"absent_destination":"203.0.113.0/24"},
+    {"id":"truncated","action":"interface_brief","command":"display ip interface brief","output":"<R1>display ip interface brief\nGigabitEthernet0/0/1 10.0.12.1/24 up up --\n---- More ----\n","expected_status":"partial","expected_completeness":"partial","fact_key":"interfaces","count":1},
+    {"id":"timeout","action":"ospf_peer","command":"display ospf peer","exception":"TimeoutError","expected_status":"error","expected_completeness":"error","fact_key":"peers","count":0}
+  ],
+  "trust_replays": [
+    {"id":"fresh-positive","selection":"R1","age_seconds":0,"trusted":true},
+    {"id":"stale","selection":"R1","age_seconds":7200,"trusted":false,"reason":"stale"},
+    {"id":"wrong-object","selection":"R2","age_seconds":0,"trusted":false,"reason":"device_mismatch"}
+  ],
+  "tool_replays": [
+    {"id":"denied","tool":"query_audit_logs","role":"user","expected_status":"forbidden"},
+    {"id":"busy","tool":"run_display_command","role":"admin","exception":"DeviceBusyError","expected_status":"busy"},
+    {"id":"tool-timeout","tool":"run_display_command","role":"admin","exception":"TimeoutError","expected_status":"timeout"}
+  ]
+}

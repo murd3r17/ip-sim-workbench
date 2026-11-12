@@ -1,0 +1,150 @@
+{
+  "source": "2026-08 V6.0 seed_training_labs.py（归档副本，2026-10-12）",
+  "labs": [
+    {
+      "title": "OSPF 单区域基础实验完整版",
+      "description": "手册《01-11-ospf-单区域》：三台路由器经二层组成 10.0.123.0/24 广播网，完成地址核对、单区域 OSPF、区域明文认证、邻居/路由/环回互通、debug 观察邻居与 DR、Loopback 网络类型、Cost、Silent-Interface。现场按 NE40E-X16 改：R1 互联 GE3/0/3、R2/R3 互联 GE3/0/4；LoopBack0 为 10.0.0.1/2/3（不是教材 10.0.1.1/10.0.2.2/10.0.3.3）；S1 不纳管；禁止操作管理口 GE0/0/0。",
+      "objectives": [
+        {
+          "id": 1,
+          "name": "互联与环回地址核对",
+          "goal": "确认 R1/R2/R3 互联口与 LoopBack0 地址已通，三台在同一广播域 10.0.123.0/24",
+          "config_hint": "现场已配好，不要按教材改成 GE0/0/3、GE0/0/4 或 10.0.1.1/10.0.2.2/10.0.3.3。R1 互联 GigabitEthernet3/0/3 10.0.123.1/24、LoopBack0 10.0.0.1/24；R2 互联 GE3/0/4 10.0.123.2/24、LoopBack0 10.0.0.2/24；R3 互联 GE3/0/4 10.0.123.3/24、LoopBack0 10.0.0.3/24。在 R1 上 ping 10.0.123.2、10.0.123.3。GE0/0/0 是网管口，不要改、不要 shutdown。S1 不在工作台，二层互通即可。",
+          "verify_command": "display ip interface brief",
+          "verify_contains": [
+            "10.0.123.",
+            "LoopBack0"
+          ],
+          "expected": "互联口与 LoopBack0 均为 up，地址为 10.0.123.x 与 10.0.0.x"
+        },
+        {
+          "id": 2,
+          "name": "单区域 OSPF 与区域明文认证",
+          "goal": "在 R1/R2/R3 上启动 OSPF 进程 1，Router ID 用本机 LoopBack0，互联口和环回口宣告进区域 0，并配置区域明文认证",
+          "config_hint": "NE40E VRP8 示例（R1）：ospf 1 router-id 10.0.0.1 → area 0.0.0.0 → authentication-mode simple plain huawei → network 10.0.123.1 0.0.0.0 → network 10.0.0.1 0.0.0.0。R2 用 10.0.0.2 / 10.0.123.2；R3 用 10.0.0.3 / 10.0.123.3。三台认证方式和密码必须一致，否则邻居建不起来。",
+          "verify_command": "display ospf 1 brief",
+          "verify_contains": [
+            "Process ID: 1",
+            "RouterID"
+          ],
+          "expected": "OSPF 进程 1 运行，Router ID 分别为 10.0.0.1/2/3"
+        },
+        {
+          "id": 3,
+          "name": "邻居、路由与环回互通",
+          "goal": "三台 Full 邻居，学到对端 LoopBack0，并用环回地址互 ping",
+          "config_hint": "display ospf peer / display ospf routing / ping -c 1 -a 10.0.0.1 10.0.0.2（在 R1）。广播网会选 DR/BDR。可选：display ospf lsdb 看 Type-1/Type-2 LSA。",
+          "verify_command": "display ospf peer",
+          "verify_contains": [
+            "Full"
+          ],
+          "expected": "每台至少 2 个 Full 邻居；OSPF 路由含对端 10.0.0.x；环回互 ping 通"
+        },
+        {
+          "id": 4,
+          "name": "观察邻居建立与 DR 选举",
+          "goal": "shutdown 互联口后开 debugging ospf event，再 undo shutdown，观察 Down→Init→2-Way→ExStart→Exchange→Loading→Full 以及 DR/BDR",
+          "config_hint": "只关互联口：R1 GigabitEthernet3/0/3，R2/R3 GigabitEthernet3/0/4。禁止关 GE0/0/0。user-view：terminal debugging、terminal monitor、debugging ospf 1 event；再 undo shutdown。做完 undo debugging all。DR 非抢占，同时 up 时选举结果可能与先配先起不同。",
+          "verify_command": "display ospf peer",
+          "verify_contains": [
+            "Full",
+            "DR"
+          ],
+          "expected": "邻居重新 Full；能从 debug 或 peer 输出看出 DR/BDR"
+        },
+        {
+          "id": 5,
+          "name": "修改环回 OSPF 网络类型",
+          "goal": "把 R2 LoopBack0 的 OSPF 网络类型改成 broadcast，观察路由掩码由 /32 变为真实 /24",
+          "config_hint": "改前在 R1：display ospf routing 10.0.0.2，应为 10.0.0.2/32。然后 [R2-LoopBack0] ospf network-type broadcast。再查应变为 10.0.0.0/24。原因：Loopback 默认按主机路由通告（RFC 2328）。",
+          "verify_command": "display ospf routing 10.0.0.2",
+          "verify_contains": [
+            "10.0.0."
+          ],
+          "expected": "改类型后 R2 环回在 OSPF 路由中以 /24 出现"
+        },
+        {
+          "id": 6,
+          "name": "修改 OSPF 接口 Cost",
+          "goal": "改互联口 Cost，确认对端环回路由 Cost 跟着变",
+          "config_hint": "[R1-GigabitEthernet3/0/3] ospf cost 20；[R3-GigabitEthernet3/0/4] ospf cost 10。R1 上看 display ospf routing 10.0.0.2，Cost 应为 20；R3 上看 10.0.0.1，Cost 应为 10。",
+          "verify_command": "display ospf routing",
+          "verify_contains": [
+            "Cost"
+          ],
+          "expected": "R1 侧经互联口学到的路由 Cost 为 20，R3 侧为 10"
+        },
+        {
+          "id": 7,
+          "name": "Silent-Interface 对比",
+          "goal": "对比互联口与 LoopBack0 做成 silent-interface 的不同现象，做完恢复互联口",
+          "config_hint": "先 [R1-ospf-1] silent-interface GigabitEthernet 3/0/3，邻居会掉，display ospf interface GigabitEthernet 3/0/3 含 Silent interface。undo silent-interface 恢复。再在 R2/R3 对 LoopBack0 做 silent-interface，环回路由仍在（不发 Hello，但仍通告）。",
+          "verify_command": "display ospf interface GigabitEthernet 3/0/3",
+          "verify_contains": [
+            "GigabitEthernet"
+          ],
+          "expected": "互联口 silent 后无 Hello、邻居消失；环回 silent 后对端仍能看到该环回路由。实验结束请恢复互联口 Hello。"
+        }
+      ],
+      "time_limit_minutes": 90,
+      "is_sandbox": false,
+      "environment_spec": null,
+      "content_version": null
+    },
+    {
+      "title": "OSPF 单区域基础实验精简版",
+      "description": "三台 NE40E（R1/R2/R3）组成 10.0.123.0/24 广播网。完成 OSPF 进程/区域配置、邻居建立（Full）、路由学习与状态机观察。参考《03-13-ospf-的邻接关系和lsa.md》《01-11-ospf-单区域.md》。",
+      "objectives": [
+        {
+          "id": 1,
+          "name": "OSPF 进程与区域配置",
+          "goal": "在三台设备上启动 OSPF 进程 1，并把 10.0.123.0/24 网段与 Loopback0 宣告进区域 0",
+          "config_hint": "ospf 1 router-id X.X.X.X → area 0.0.0.0 → network 10.0.123.0 0.0.0.255；network 10.0.x.x 0.0.0.0（x=设备号）",
+          "verify_command": "display ospf 1 brief",
+          "verify_contains": [
+            "Process ID: 1",
+            "OSPF 1"
+          ],
+          "expected": "OSPF 进程 1 已建立并运行"
+        },
+        {
+          "id": 2,
+          "name": "OSPF 邻居建立",
+          "goal": "三台设备之间形成 OSPF 邻居关系（Full）",
+          "config_hint": "无需额外配置；邻居自动建立（同一广播域）",
+          "verify_command": "display ospf peer brief",
+          "verify_contains": [
+            "Full"
+          ],
+          "expected": "至少看到 2 个邻居状态为 Full"
+        },
+        {
+          "id": 3,
+          "name": "路由学习验证",
+          "goal": "确认三台设备都学到彼此 Loopback0 的路由并互通",
+          "config_hint": "OSPF 内部路由自动学习，无需额外配置",
+          "verify_command": "display ip routing-table",
+          "verify_contains": [
+            "10.0.0."
+          ],
+          "expected": "路由表中可见其他设备 Loopback 路由（10.0.0.x/32）"
+        },
+        {
+          "id": 4,
+          "name": "邻居状态机观察（思考题）",
+          "goal": "理解 OSPF 邻居状态机：Init/2-Way/ExStart/Exchange/Loading/Full",
+          "config_hint": "可在终端执行 display ospf peer verbose 查看详细状态",
+          "verify_command": "display ospf peer verbose",
+          "verify_contains": [
+            "State"
+          ],
+          "expected": "能看到邻居状态字段（Full）与状态机相关输出"
+        }
+      ],
+      "time_limit_minutes": 45,
+      "is_sandbox": false,
+      "environment_spec": null,
+      "content_version": null
+    }
+  ]
+}

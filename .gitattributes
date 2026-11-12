@@ -1,0 +1,47 @@
+# 行尾与文本规范化
+# 背景：Windows 是本项目主战场，core.autocrlf 在不同机器上取值不同，
+# 导致 .ps1 / .md 行尾在 LF 与 CRLF 之间漂移（已出现过 .ps1 因编码+行尾组合解析失败）。
+# 这里显式固定，保证「别人克隆下来」拿到一致的文件。
+* text=auto
+
+# Windows 脚本与前端单文件组件：检出为 CRLF（项目既有约定）
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.vue  text eol=crlf
+
+# 其余文本：统一 LF
+*.py   text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.sql  text eol=lf
+*.ts   text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini  text eol=lf
+*.conf text eol=lf
+*.env.example text eol=lf
+
+# 知识库引用和审校清单按原文的字节计算摘要。
+knowledge/corpus/**/*.md -text
+
+# 二进制：禁止行尾转换与文本 diff
+*.pdf   binary
+*.exe   binary
+*.dll   binary
+*.pdb   binary
+*.zip   binary
+*.7z    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.lance binary

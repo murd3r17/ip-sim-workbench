@@ -1,0 +1,68 @@
+name: CI
+
+# 最小 CI：类型检查 + 后端测试 + 编码/秘密校验。
+# 不跑 e2e（需要真实服务与设备）；e2e 用 `npm run test:e2e:strict` 在本地/受控环境执行。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  backend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+          python -m pip check
+      - name: Run tests
+        env:
+          JWT_SECRET_KEY: ci-only-jwt-secret-key-32chars-min!!
+        run: python -m pytest tests -q
+
+  frontend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sim-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: sim-frontend/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
+  hygiene:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 编码校验（.ps1 带 BOM；其它文本不带 BOM）
+        run: python backend/scripts/check_encoding.py --root .
+      - name: 秘密扫描（明文口令不得入库）
+        run: python scripts/delivery.py scan --root .

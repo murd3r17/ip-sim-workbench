@@ -1,0 +1,758 @@
+{
+  "schema_version": 1,
+  "review_kind": "agent_semantic_review_not_human_expert_gold",
+  "reviewed_at": "2026-11-05",
+  "original_questions_sha256": "18748d35c5202c4a6647135f4349141293a6b46ec694817a620c6837d89aabe7",
+  "original_provenance": ".runtime/v7/final-delegation/20261104-1815-ds-final/reference-data/knowledge-questions.json",
+  "facts": [
+    {
+      "id": "K-01-F01",
+      "question_id": "K-01",
+      "original_fact": "Type1 Router LSA",
+      "status": "supported",
+      "reviewed_expectation": "Type 1 Router LSA 由区域内每台 OSPF 路由器产生。",
+      "reason": "名称和产生者均有直接依据。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 306,
+          "end_line": 306,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "| 1 | Router LSA | 每台设备产生，描述链路状态与开销，区内泛洪 |"
+        }
+      ]
+    },
+    {
+      "id": "K-01-F02",
+      "question_id": "K-01",
+      "original_fact": "Type2 Network LSA",
+      "status": "supported",
+      "reviewed_expectation": "Type 2 Network LSA 由 DR 产生。",
+      "reason": "限定广播/NBMA 多路访问网络。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 129,
+          "end_line": 131,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "### Network LSA（2 类）\n\n由 DR 产生，描述 MA 网络中与之形成邻接的路由器及自身。"
+        }
+      ]
+    },
+    {
+      "id": "K-01-F03",
+      "question_id": "K-01",
+      "original_fact": "Type3 Summary LSA",
+      "status": "supported",
+      "reviewed_expectation": "Type 3 Network Summary LSA 由 ABR 产生。",
+      "reason": "名称及区域间通告机制。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 179,
+          "end_line": 179,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "区域间路由通过 ABR 产生的 **Network Summary LSA（3 类）** 传递。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 308,
+          "end_line": 308,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "| 3 | Network Summary LSA | ABR 产生，区域间路由 |"
+        }
+      ]
+    },
+    {
+      "id": "K-01-F04",
+      "question_id": "K-01",
+      "original_fact": "Type5 External LSA",
+      "status": "supported",
+      "reviewed_expectation": "Type 5 AS External LSA 由 ASBR 产生。",
+      "reason": "避免与 Type 4 ASBR Summary 混淆。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 310,
+          "end_line": 310,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "| 5 | AS External LSA | ASBR 产生，域外路由 |"
+        }
+      ]
+    },
+    {
+      "id": "K-01-F05",
+      "question_id": "K-01",
+      "original_fact": "Type7 仅 NSSA",
+      "status": "qualified",
+      "reviewed_expectation": "Type 7 由 NSSA 内 ASBR 产生，只在始发 NSSA 泛洪；ABR 可转换为 Type 5。",
+      "reason": "仅 NSSA 指泛洪范围，不是说该外部路由不能通告出区域。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 291,
+          "end_line": 295,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "Stub 不能引入外部路由。既需本地引入外部、又不希望学习其他区域外部路由时用 **NSSA**：\n\n- **7 类 LSA（NSSA LSA）**：NSSA 内 ASBR 描述外部路由；仅在始发 NSSA 泛洪。\n- NSSA 的 ABR 将 7 类转为 5 类注入骨干。\n- NSSA 内无 4/5 类；ABR 自动注入用 7 类描述的缺省路由。"
+        }
+      ]
+    },
+    {
+      "id": "K-02-F01",
+      "question_id": "K-02",
+      "original_fact": "Down→Init→2-Way",
+      "status": "qualified",
+      "reviewed_expectation": "通常建邻过程为 Down、Init、2-Way。",
+      "reason": "问题限定走向 Full 的通常过程；原事实不能覆盖 NBMA Attempt，也不能要求所有邻居都到 Full。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/01-设备转发与ip路由ospf基础.md",
+          "start_line": 340,
+          "end_line": 350,
+          "sha256": "a5a2947dcc336debd7b501ce3fd6246d653158dea5dee1f13c35836e8faf015e",
+          "quote": "邻居状态：\n\n- **Down**：初始，未收到邻居信息\n- **Init**：已收到 Hello，但本 Router ID 不在对方邻居列表\n- **2-way**：本 Router ID 已出现在对方邻居列表中\n\n#### 建立邻接（DD 交换要点）\n\n- ExStart：双方发首个 DD（I=1,M=1,MS=1），Router ID 较大者成为 Master。\n- Exchange：交换含 LSDB 摘要的 DD；Slave 需确认 Master 的每个 DD。\n- Loading / Full：按需 LSR/LSU 后进入 Full。"
+        }
+      ]
+    },
+    {
+      "id": "K-02-F02",
+      "question_id": "K-02",
+      "original_fact": "ExStart→Exchange→Loading→Full",
+      "status": "supported",
+      "reviewed_expectation": "建立邻接经历 ExStart、Exchange，按需请求与加载后达到 Full。",
+      "reason": "不要把 2-Way 邻居关系一律当故障。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/01-设备转发与ip路由ospf基础.md",
+          "start_line": 346,
+          "end_line": 350,
+          "sha256": "a5a2947dcc336debd7b501ce3fd6246d653158dea5dee1f13c35836e8faf015e",
+          "quote": "#### 建立邻接（DD 交换要点）\n\n- ExStart：双方发首个 DD（I=1,M=1,MS=1），Router ID 较大者成为 Master。\n- Exchange：交换含 LSDB 摘要的 DD；Slave 需确认 Master 的每个 DD。\n- Loading / Full：按需 LSR/LSU 后进入 Full。"
+        }
+      ]
+    },
+    {
+      "id": "K-03-F01",
+      "question_id": "K-03",
+      "original_fact": "Stub 不允许 Type5",
+      "status": "supported",
+      "reviewed_expectation": "Stub 区域阻断 Type 5（也阻断 Type 4）。",
+      "reason": "教材直接列明。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 279,
+          "end_line": 279,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "Stub：无 4/5 类，仍有描述区域间路由的 3 类。"
+        }
+      ]
+    },
+    {
+      "id": "K-03-F02",
+      "question_id": "K-03",
+      "original_fact": "NSSA 允许 Type7 外部路由",
+      "status": "supported",
+      "reviewed_expectation": "NSSA 内 ASBR 可引入外部路由并产生 Type 7。",
+      "reason": "不接受其他区域 Type 5。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 291,
+          "end_line": 295,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "Stub 不能引入外部路由。既需本地引入外部、又不希望学习其他区域外部路由时用 **NSSA**：\n\n- **7 类 LSA（NSSA LSA）**：NSSA 内 ASBR 描述外部路由；仅在始发 NSSA 泛洪。\n- NSSA 的 ABR 将 7 类转为 5 类注入骨干。\n- NSSA 内无 4/5 类；ABR 自动注入用 7 类描述的缺省路由。"
+        }
+      ]
+    },
+    {
+      "id": "K-03-F03",
+      "question_id": "K-03",
+      "original_fact": "Stub 由 ABR 下发缺省路由",
+      "status": "supported",
+      "reviewed_expectation": "Stub 区域由 ABR 注入 Type 3 缺省路由指向自身。",
+      "reason": "引用实验结论，避免仅用 Totally Stub 段证明普通 Stub。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Lab/04-14-ospf-stub-区域与nssa-区域.md",
+          "start_line": 477,
+          "end_line": 477,
+          "sha256": "e37e7968d909f0e55e2f2b409590000c3ea5b71b08803d8a97932219aefad68e",
+          "quote": "此时不存在Type-4 LSA、Type-5 LSA，去往OSPF 域外通过ABR 生成的Type-3 LSA 所 携带的缺省路由实现。同时此时前往其他区域的Type-3 LSA 依旧存在。 以上验证了将一个区域配置为Stub 区域以后，ABR 会阻断Type-4 LSA、Type-5 LSA 向该区 域发送，并通过Type-3 LSA 向该区域内泛洪一条默认路由指向ABR 自身。"
+        }
+      ]
+    },
+    {
+      "id": "K-04-F01",
+      "question_id": "K-04",
+      "original_fact": "Weight 先于 Local_Preference",
+      "status": "unsupported",
+      "reviewed_expectation": "本教材华为选路使用 Preferred-Value，不能把 Weight 当成已证实的华为属性。",
+      "reason": "原事实厂商语境不符，不应要求回答本题时补充 Weight；此项不作正向答案标准。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/05-bgp路由优选.md",
+          "start_line": 43,
+          "end_line": 50,
+          "sha256": "b048412de4198a2aba922bfe35789fb6dd5a5c2d02e9dc9a66c10575d2fc8d83",
+          "quote": "## BGP 路由优选规则\n\n到达同一目的多条路由时，按序比较；当前规则能决出最优则停止。下文为常用 12 步（先丢弃下一跳不可达）：\n\n1. 优选 **Preferred-Value** 最大\n2. 优选 **Local_Preference** 最大\n3. **本地始发**优于从对等体学习；本地优先级：手动聚合 > 自动聚合 > network > import > 从对等体学到\n4. 优选 **AS_Path** 最短"
+        }
+      ]
+    },
+    {
+      "id": "K-04-F02",
+      "question_id": "K-04",
+      "original_fact": "Local_Preference 先于 AS_PATH 长度",
+      "status": "supported",
+      "reviewed_expectation": "Local_Preference 在 AS_Path 长度之前比较。",
+      "reason": "同一前缀候选路由且下一跳可达，当前规则决出优选即停止。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/05-bgp路由优选.md",
+          "start_line": 43,
+          "end_line": 50,
+          "sha256": "b048412de4198a2aba922bfe35789fb6dd5a5c2d02e9dc9a66c10575d2fc8d83",
+          "quote": "## BGP 路由优选规则\n\n到达同一目的多条路由时，按序比较；当前规则能决出最优则停止。下文为常用 12 步（先丢弃下一跳不可达）：\n\n1. 优选 **Preferred-Value** 最大\n2. 优选 **Local_Preference** 最大\n3. **本地始发**优于从对等体学习；本地优先级：手动聚合 > 自动聚合 > network > import > 从对等体学到\n4. 优选 **AS_Path** 最短"
+        }
+      ]
+    },
+    {
+      "id": "K-05-F01",
+      "question_id": "K-05",
+      "original_fact": "RR 反射 iBGP 路由，减少全互联",
+      "status": "supported",
+      "reviewed_expectation": "RR 反射 IBGP 路由，使 Client 不必全互联。",
+      "reason": "Non-Client 仍有全互联约束，不能泛称整个 AS 无需任何全互联。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/03-bgp安全反射器与ipv6路由.md",
+          "start_line": 69,
+          "end_line": 77,
+          "sha256": "36d255e18d8dd3d4d4a87c732a50b4d6453d34866d8f1593cb6d01d1baf6b2af",
+          "quote": "| 角色 | 说明 |\n| --- | --- |\n| RR | 可将从 IBGP 学到的路由反射给其他 IBGP 对等体 |\n| Client | 与 RR 形成反射邻居；AS 内只需与 RR 直连 |\n| Non-Client | 非 RR 也非客户机；与 RR 及非客户机之间仍需全互联 |\n| Originator | AS 内始发路由的设备；Originator_ID 防集群内环路 |\n| Cluster | RR 及其客户机集合；Cluster_List 防集群间环路 |\n\n指定 RR 时需指定 Client；Client 本身无需配置，不知网络中存在 RR。"
+        }
+      ]
+    },
+    {
+      "id": "K-05-F02",
+      "question_id": "K-05",
+      "original_fact": "用 Cluster ID/Originator ID 防环",
+      "status": "qualified",
+      "reviewed_expectation": "Originator_ID 和携带 Cluster ID 的 Cluster_List 用于防环。",
+      "reason": "严格区分 Cluster_ID 标识与 Cluster_List 路径属性。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/03-bgp安全反射器与ipv6路由.md",
+          "start_line": 74,
+          "end_line": 75,
+          "sha256": "36d255e18d8dd3d4d4a87c732a50b4d6453d34866d8f1593cb6d01d1baf6b2af",
+          "quote": "| Originator | AS 内始发路由的设备；Originator_ID 防集群内环路 |\n| Cluster | RR 及其客户机集合；Cluster_List 防集群间环路 |"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/03-bgp安全反射器与ipv6路由.md",
+          "start_line": 87,
+          "end_line": 87,
+          "sha256": "36d255e18d8dd3d4d4a87c732a50b4d6453d34866d8f1593cb6d01d1baf6b2af",
+          "quote": "同一集群配置多个 RR 防单点故障；转发路径上路由器与所有 RR 建 IBGP。同集群 RR 配置相同 Cluster ID：互相反射时发现 Cluster_List 已含本 Cluster ID 则丢弃，避免环路。"
+        }
+      ]
+    },
+    {
+      "id": "K-06-F01",
+      "question_id": "K-06",
+      "original_fact": "外层由运营商网络添加",
+      "status": "supported",
+      "reviewed_expectation": "运营商接入侧在已有 VLAN Tag 外添加公网外层 Tag。",
+      "reason": "基础和灵活 QinQ 加标签方式不同。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/05-mux-vlan-qinq与交换安全.md",
+          "start_line": 48,
+          "end_line": 57,
+          "sha256": "f96d9d2f09b4e3abe683f05ff5cdf992eb2b3ae05d8d8494bffcc84a2b183986",
+          "quote": "802.1Q VLAN ID 仅 12 bit（4096），城域网不够用。QinQ（802.1Q in 802.1Q）在已有 Tag 外再加一层 Tag，扩展 VLAN 空间。公网按外层 Tag 转发；内层为私网 Tag。\n\nTPID：内层通常 0x8100；外层华为缺省 0x8100，802.1ad 规定 0x88A8，可用命令调整。\n\n不同企业私网 VLAN 可重叠，靠不同公网外层 VLAN 隔离；对端 PE 剥离公网 Tag 后交给 CE。\n\n### 基本 QinQ vs 灵活 QinQ\n\n- **基本 QinQ（端口）**：入端口统一打缺省 VLAN 外层 Tag；方式固定，难按业务区分\n- **灵活 QinQ（Selective）**：按内层 VLAN、802.1p、MAC、IP、端口等流分类选择外层 Tag"
+        }
+      ]
+    },
+    {
+      "id": "K-06-F02",
+      "question_id": "K-06",
+      "original_fact": "内层是用户私网 VLAN",
+      "status": "supported",
+      "reviewed_expectation": "内层 Tag 对应用户私网 VLAN。",
+      "reason": "公网按外层 Tag 转发。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/05-mux-vlan-qinq与交换安全.md",
+          "start_line": 48,
+          "end_line": 52,
+          "sha256": "f96d9d2f09b4e3abe683f05ff5cdf992eb2b3ae05d8d8494bffcc84a2b183986",
+          "quote": "802.1Q VLAN ID 仅 12 bit（4096），城域网不够用。QinQ（802.1Q in 802.1Q）在已有 Tag 外再加一层 Tag，扩展 VLAN 空间。公网按外层 Tag 转发；内层为私网 Tag。\n\nTPID：内层通常 0x8100；外层华为缺省 0x8100，802.1ad 规定 0x88A8，可用命令调整。\n\n不同企业私网 VLAN 可重叠，靠不同公网外层 VLAN 隔离；对端 PE 剥离公网 Tag 后交给 CE。"
+        }
+      ]
+    },
+    {
+      "id": "K-07-F01",
+      "question_id": "K-07",
+      "original_fact": "RSTP 单生成树快速收敛",
+      "status": "supported",
+      "reviewed_expectation": "RSTP 快速收敛，但所有 VLAN 共享一棵生成树。",
+      "reason": "直接支持两个组成部分。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/08-园区网服务可靠性与stp-rstp.md",
+          "start_line": 319,
+          "end_line": 323,
+          "sha256": "6b9eeae06e36d73fadf7e1fef4521459261d4aaee3c7639abce5c81698b1af6e",
+          "quote": "## MSTP 概述（引入）\n\nRSTP 在 STP 基础上实现了网络拓扑快速收敛，但在划分 VLAN 的网络中运行 RSTP/STP，局域网内所有 VLAN 共享一棵生成树，被阻塞后的链路将不承载任何流量，无法在 VLAN 间实现数据流量的负载均衡，导致链路带宽利用率、设备资源利用率较低。\n\n为了弥补 RSTP/STP 的缺陷，IEEE 于 2002 年发布的 802.1s 标准定义了 MSTP（Multiple Spanning Tree Protocol，多生成树协议）。MSTP 兼容 STP 和 RSTP，通过建立多棵无环路的树，解决广播风暴并实现冗余备份。"
+        }
+      ]
+    },
+    {
+      "id": "K-07-F02",
+      "question_id": "K-07",
+      "original_fact": "MSTP 支持多实例与 VLAN 映射",
+      "status": "supported",
+      "reviewed_expectation": "MSTP 通过 VLAN 到实例的映射支持多生成树。",
+      "reason": "一个 VLAN 对应一个 MSTI，一个 MSTI 可承载多个 VLAN。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/09-mstp与交换机堆叠集群.md",
+          "start_line": 50,
+          "end_line": 62,
+          "sha256": "52062cad7d0e97826b882c21c2294117c6fdc221a446874b1ebe1c0e096bb415",
+          "quote": "| MST 域 | 交换网络被划分成多个域；同属一个 MST 域的交换机必须配置相同的域名、相同的修订级别、以及相同的 VLAN 映射表 |\n| MSTI | 基于 Instance 的生成树 |\n| VLAN 映射表 | VLAN 和 MSTI 之间的映射关系 |\n| CST | 公共生成树，连接所有 MST 域的一棵生成树 |\n| IST | 内部生成树，MST 域内 Instance ID 为 0 的一棵生成树 |\n| CIST | 公共和内部生成树，连接一个交换网络内所有交换设备的生成树（各域 IST + CST） |\n| SST | 单生成树（域内仅一台设备，或设备只能属于一个生成树） |\n| 总根 | CIST 的根桥 |\n| IST 域根 | MST 域中，IST 距离总根最近的交换设备 |\n| MSTI 域根 | MSTI 的根桥 |\n| 主桥 | 距离总根最近的交换设备，包括总根和 IST 域根 |\n\n同一 MST 域设备特点：都启动了 MSTP；具有相同的域名；具有相同的 VLAN 到生成树实例映射配置；具有相同的修订级别配置。IST 缺省存在，缺省时华为交换机上所有 VLAN 都映射到 Instance 0。每个 VLAN 只能对应一个 MSTI，而一个 MSTI 可能对应多个 VLAN。"
+        }
+      ]
+    },
+    {
+      "id": "K-08-F01",
+      "question_id": "K-08",
+      "original_fact": "Master 失效后 Backup 升主",
+      "status": "qualified",
+      "reviewed_expectation": "Master 故障不能发通告时，Backup 在 Master_Down 超时后升主。",
+      "reason": "不是无条件瞬间切换；主动优先级 0 通告另有快速路径。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/14-vrf配置bfd联动与vrrp原理.md",
+          "start_line": 480,
+          "end_line": 481,
+          "sha256": "de47761d47d60727bf28413c383a51a66ab8144ac9087370671ba31ff1648bd3",
+          "quote": "- 当 Master 设备主动放弃 Master 地位（如 Master 设备退出备份组）时，会发送优先级为 0 的通告报文，用来使 Backup 设备快速切换成 Master 设备，而不用等到 MASTER_DOWN 定时器超时。这个切换的时间称为 Skew_time。\n- 当 Master 设备发生网络故障而不能发送通告报文的时候，Backup 设备并不能立即知道其工作状况。等到 MASTER_DOWN 定时器超时后，才会认为 Master 设备无法正常工作，从而将状态切换为 Master。"
+        }
+      ]
+    },
+    {
+      "id": "K-08-F02",
+      "question_id": "K-08",
+      "original_fact": "虚拟 IP/MAC 保持网关不变",
+      "status": "supported",
+      "reviewed_expectation": "虚拟路由器有固定的虚拟 IP/MAC；当前 Master 响应虚拟 IP 的 ARP。",
+      "reason": "此事实针对同一 VRID/配置保持不变的角色切换，不证明零丢包。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/14-vrf配置bfd联动与vrrp原理.md",
+          "start_line": 413,
+          "end_line": 417,
+          "sha256": "de47761d47d60727bf28413c383a51a66ab8144ac9087370671ba31ff1648bd3",
+          "quote": "**虚拟 IP 地址及虚拟 MAC 地址**：虚拟路由器拥有自己的 IP 地址以及 MAC 地址，其中 IP 地址由网络管理员在配置 VRRP 时指定，一台虚拟路由器可以有一个或多个 IP 地址，通常情况下用户使用该地址作为网关地址。而虚拟 MAC 地址的格式是 `0000-5e00-01xx`，其中 xx 为 VRID。\n\n示例：虚拟 IP `192.168.1.254`，虚拟 MAC `0000-5e00-0101`（VRID=1）。\n\n**Master 路由器**：在一个 VRRP 组中承担报文转发任务。在每一个 VRRP 组中，只有 Master 路由器才会响应针对虚拟 IP 地址的 ARP Request。Master 路由器会以一定的时间间隔周期性地发送 VRRP 报文，以便通知同一个 VRRP 组中的 Backup 路由器关于自己的存活情况。"
+        }
+      ]
+    },
+    {
+      "id": "K-08-F03",
+      "question_id": "K-08",
+      "original_fact": "抢占可配延迟",
+      "status": "supported",
+      "reviewed_expectation": "VRRP 抢占可以设置延时。",
+      "reason": "防止不稳定设备导致频繁抢占。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/14-vrf配置bfd联动与vrrp原理.md",
+          "start_line": 492,
+          "end_line": 492,
+          "sha256": "de47761d47d60727bf28413c383a51a66ab8144ac9087370671ba31ff1648bd3",
+          "quote": "在抢占模式下，当 Master 的设备状态不稳定或者网络质量差时，会导致 VRRP 备份组频繁切换，从而引发终端 ARP 表项频繁刷新。为缓解此问题，通常设置抢占延时定时器，通过 MASTER_INTERVAL 定时器超时时间加上延时时间，确定状态稳定后，再进行主备回切。"
+        }
+      ]
+    },
+    {
+      "id": "K-09-F01",
+      "question_id": "K-09",
+      "original_fact": "Discover→Offer→Request→ACK",
+      "status": "qualified",
+      "reviewed_expectation": "DHCPv4 初次分配通常为 Discover、Offer、Request、ACK。",
+      "reason": "续租、重绑定和 NAK 分支不适用完整四步。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/15-dhcp原理配置与网络管理协议.md",
+          "start_line": 39,
+          "end_line": 42,
+          "sha256": "1894097063f8cbbd030e1faad0e031badd6d5dafd4130aaf1fdf164f20f6b16b",
+          "quote": "1. **发现阶段**：DHCP 客户端发现 DHCP 服务器的阶段。DHCP 客户端发送 DHCP DISCOVER 报文来发现 DHCP 服务器。DHCP DISCOVER 报文中携带了客户端的 MAC 地址、需要请求的参数列表选项、广播标志位等信息。\n2. **提供阶段**：DHCP 服务器提供网络配置信息的阶段。服务器接收到 DHCP DISCOVER 报文后，选择跟接收 DHCP DISCOVER 报文接口的 IP 地址处于同一网段的地址池，并且从中选择一个可用的 IP 地址，然后通过 DHCP OFFER 报文发送给 DHCP 客户端。\n3. **选择阶段**：DHCP 客户端选择 IP 地址的阶段。如果有多个 DHCP 服务器向 DHCP 客户端回应 DHCP OFFER 报文，则 DHCP 客户端一般只接收第一个收到的 DHCP OFFER 报文，然后以广播方式发送 DHCP REQUEST 报文，该报文中包含客户端想选择的 DHCP 服务器标识符和客户端 IP 地址。\n4. **确认阶段**：DHCP 服务器确认所分配 IP 地址的阶段。DHCP 客户端收到 DHCP ACK 报文，会广播发送免费 ARP 报文，探测本网段是否有其他终端使用服务器分配的 IP 地址。"
+        }
+      ]
+    },
+    {
+      "id": "K-10-F01",
+      "question_id": "K-10",
+      "original_fact": "源 NAT 改源地址",
+      "status": "supported",
+      "reviewed_expectation": "源 NAT 转换报文源地址。",
+      "reason": "允许具体方式同时转换端口，但不作为本题必要事实。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIA-Security-V4.0-Training/03-nat技术概述与源nat目的nat双向nat技术.md",
+          "start_line": 83,
+          "end_line": 83,
+          "sha256": "f8959b62ebeb0a8c3d14d5905f5979111e612ac77b098200c54816112a1defb1",
+          "quote": "在学校、公司中经常会有多个用户共享少量公网地址访问Internet的需求，通常情况下可以使用源NAT技术来实现。源NAT技术只对报文的源地址进行转换。通过源NAT策略对IPv4报文头中的源地址进行转换，可以实现私网用户通过公网IP地址访问Internet的目的。"
+        }
+      ]
+    },
+    {
+      "id": "K-10-F02",
+      "question_id": "K-10",
+      "original_fact": "目的 NAT 改目的地址",
+      "status": "supported",
+      "reviewed_expectation": "目的 NAT 转换报文目的地址（可包含端口）。",
+      "reason": "描述原方向首包，返回流有反向映射。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIA-Security-V4.0-Training/03-nat技术概述与源nat目的nat双向nat技术.md",
+          "start_line": 172,
+          "end_line": 176,
+          "sha256": "f8959b62ebeb0a8c3d14d5905f5979111e612ac77b098200c54816112a1defb1",
+          "quote": "目的NAT是指对报文中的目的地址和端口进行转换。通过目的NAT技术将公网IP地址转换成私网IP地址，使公网用户可以利用公网地址访问内部Server。\n\n当外网用户访问内部Server时，防火墙的处理过程如下：\n- 当外网用户访问内网Server的报文到达防火墙时，防火墙将报文的目的IP地址由公网地址转换为私网地址；\n- 当回程报文返回至防火墙时，防火墙再将报文的源地址由私网地址转换为公网地址。"
+        }
+      ]
+    },
+    {
+      "id": "K-10-F03",
+      "question_id": "K-10",
+      "original_fact": "双向 NAT 同时改源和目的",
+      "status": "supported",
+      "reviewed_expectation": "双向 NAT 同时转换该报文源和目的地址。",
+      "reason": "不是把一个会话的正反向 NAT 泛称双向 NAT。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIA-Security-V4.0-Training/03-nat技术概述与源nat目的nat双向nat技术.md",
+          "start_line": 266,
+          "end_line": 266,
+          "sha256": "f8959b62ebeb0a8c3d14d5905f5979111e612ac77b098200c54816112a1defb1",
+          "quote": "当外部网络中的用户访问内部服务器时，使用该双向NAT功能同时转换该报文的源和目的地址可以避免在内部服务器上设置网关，简化配置。"
+        }
+      ]
+    },
+    {
+      "id": "K-11-F01",
+      "question_id": "K-11",
+      "original_fact": "阶段1 建 IKE SA/身份认证",
+      "status": "qualified",
+      "reviewed_expectation": "IKEv1 第一阶段建立 IKE SA 并认证对等体。",
+      "reason": "明确 IKEv1，不将两阶段术语无条件推广到 IKEv2。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 494,
+          "end_line": 497,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "IKE 作为密钥协商协议，存在两个版本：IKEv1 和 IKEv2。本课程采用 IKEv1 为例进行介绍，IKEv2 内容可参考产品文档对应内容。\n\n- **IKEv1 协商阶段 1**：目的是建立 IKE SA。IKE SA 建立后对等体间的所有 ISAKMP 消息都将通过加密和验证，这条安全通道可以保证 IKEv1 第二阶段的协商能够安全进行。IKE SA 是一个双向的逻辑连接，两个 IPSec 对等体间只建立一个 IKE SA。\n- **IKEv1 协商阶段 2**：目的就是建立用来安全传输数据的 IPSec SA，并为数据传输衍生出密钥。该阶段使用 IKEv1 协商阶段 1 中生成的密钥对 ISAKMP 消息的完整性和身份进行验证，并对 ISAKMP 消息进行加密，故保证了交换的安全性。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIA-Security-V4.0-Training/06-ipsec-vpn与ssl-vpn配置举例.md",
+          "start_line": 27,
+          "end_line": 27,
+          "sha256": "9c9e6ce84dbf35eac11d328522849ca7fdfaf8b10b4e7606f5484cbdb6f53776",
+          "quote": "- 第三次交换是对标识载荷和散列载荷进行交换。标识载荷包含了发起者的标识信息、IP地址或主机名，散列载荷包含上一过程中产生的三组密钥进行Hash运算得出的值。这两个载荷通过SKEYID_e进行加密，如果双方的载荷相同，那么认证成功。IKE第一阶段主模式预共享密钥交换也就完成了。"
+        }
+      ]
+    },
+    {
+      "id": "K-11-F02",
+      "question_id": "K-11",
+      "original_fact": "阶段2 建 IPsec SA",
+      "status": "qualified",
+      "reviewed_expectation": "IKEv1 第二阶段建立 IPsec SA，并衍生数据保护密钥。",
+      "reason": "快速模式受已建立 IKE SA 保护。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 494,
+          "end_line": 497,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "IKE 作为密钥协商协议，存在两个版本：IKEv1 和 IKEv2。本课程采用 IKEv1 为例进行介绍，IKEv2 内容可参考产品文档对应内容。\n\n- **IKEv1 协商阶段 1**：目的是建立 IKE SA。IKE SA 建立后对等体间的所有 ISAKMP 消息都将通过加密和验证，这条安全通道可以保证 IKEv1 第二阶段的协商能够安全进行。IKE SA 是一个双向的逻辑连接，两个 IPSec 对等体间只建立一个 IKE SA。\n- **IKEv1 协商阶段 2**：目的就是建立用来安全传输数据的 IPSec SA，并为数据传输衍生出密钥。该阶段使用 IKEv1 协商阶段 1 中生成的密钥对 ISAKMP 消息的完整性和身份进行验证，并对 ISAKMP 消息进行加密，故保证了交换的安全性。"
+        }
+      ]
+    },
+    {
+      "id": "K-12-F01",
+      "question_id": "K-12",
+      "original_fact": "VRRP 负责网关角色",
+      "status": "qualified",
+      "reviewed_expectation": "采用 VRRP 的三层防火墙双机组网中，VRRP 提供网关角色，VGMP 协调组状态。",
+      "reason": "不能把 VRRP 说成会话/配置同步协议或所有组网的必需协议。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Security-V4.0-Training/01-hcip-security-认证概述与防火墙高可靠性技术.md",
+          "start_line": 312,
+          "end_line": 316,
+          "sha256": "2fc9c731738bc74634e6509a6165397c027c3187203f4aa4f7a0a14f23290edc",
+          "quote": "- HRP协议：即Huawei Redundancy Protocol，主要用于实现防火墙双机之间关键配置命令和状态化信息的备份，状态化信息主要包括会话表、Servermap表、黑白名单、NAT映射表等。\n- VGMP协议：即VRRP Group Management Protocol，主要用于实现对VRRP备份组的统一管理，保证多个VRRP备份组状态的一致性，同时VGMP的状态也会影响路由协议的开销。\n- 备份通道：也称为\"心跳线\"，用于HRP协议和VGMP协议的通信。\n\nVGMP状态：当防火墙上的VGMP为Active状态时，它保证组内所有VRRP备份组的状态统一为Active状态，这样所有报文都将从该防火墙上通过，该防火墙成为主用防火墙。此时另外一台防火墙上对应的VGMP为备状态，该防火墙成为备用防火墙。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Security-V4.0-Training/01-hcip-security-认证概述与防火墙高可靠性技术.md",
+          "start_line": 347,
+          "end_line": 347,
+          "sha256": "2fc9c731738bc74634e6509a6165397c027c3187203f4aa4f7a0a14f23290edc",
+          "quote": "- 基于VRRP的双机热备：防火墙的业务接口工作在三层模式，上下行与交换机互联，运行VRRP协议。"
+        }
+      ]
+    },
+    {
+      "id": "K-12-F02",
+      "question_id": "K-12",
+      "original_fact": "HRP 同步会话与配置",
+      "status": "supported",
+      "reviewed_expectation": "HRP 备份关键配置和会话等状态化信息。",
+      "reason": "配置同步方向与主备/负载分担模式有关。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Security-V4.0-Training/01-hcip-security-认证概述与防火墙高可靠性技术.md",
+          "start_line": 312,
+          "end_line": 312,
+          "sha256": "2fc9c731738bc74634e6509a6165397c027c3187203f4aa4f7a0a14f23290edc",
+          "quote": "- HRP协议：即Huawei Redundancy Protocol，主要用于实现防火墙双机之间关键配置命令和状态化信息的备份，状态化信息主要包括会话表、Servermap表、黑白名单、NAT映射表等。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Security-V4.0-Training/01-hcip-security-认证概述与防火墙高可靠性技术.md",
+          "start_line": 341,
+          "end_line": 341,
+          "sha256": "2fc9c731738bc74634e6509a6165397c027c3187203f4aa4f7a0a14f23290edc",
+          "quote": "- 负载分担组网下，发送备份配置命令的防火墙称为配置主设备（命令行提示符前有HRP_M前缀），接收备份配置命令的防火墙称为配置从设备（命令行提示符前有HRP_S前缀）。配置命令只能由\"配置主设备\"备份到\"配置从设备\"。状态信息则是两台设备相互备份。"
+        }
+      ]
+    },
+    {
+      "id": "K-13-F01",
+      "question_id": "K-13",
+      "original_fact": "先确认现象与范围",
+      "status": "supported",
+      "reviewed_expectation": "先确认故障、收集信息，识别受影响业务路径和范围。",
+      "reason": "由流程及业务路径段综合支持。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 22,
+          "end_line": 26,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "结构化流程：报告故障 → 确认故障 → 收集信息 → 判断分析 → **原因列表** → 故障评估 → 逐一排查 → 解决故障 → 收尾工作。\n\n### 原因列表\n\n列出所有可能原因，经信息过滤保留最可能项，排除当前最不可能项，缩小范围。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 42,
+          "end_line": 44,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "### 以业务流量路径为核心\n\n掌握受影响业务的往返路径，沿线逐步排查。需确认网络层路径与数据链路层转发路径。"
+        }
+      ]
+    },
+    {
+      "id": "K-13-F02",
+      "question_id": "K-13",
+      "original_fact": "分层/分段定位",
+      "status": "supported",
+      "reviewed_expectation": "可分层、分段定位故障。",
+      "reason": "方法可组合，不是一条不可改变的固定命令顺序。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 46,
+          "end_line": 60,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "### 分层故障处理法\n\n自底向上：物理层 → 数据链路层 → 网络层 → 传输层 → …（低层正常高层才可能正常）。\n\n### 对比配置法\n\n对比正常与故障状态下的配置、版本、硬件差异（如 Hello 定时器不同）。\n\n### 分块故障处理法\n\n按配置结构归类缩小范围：管理、端口、路由协议、策略、接入、其他应用。例如路由表仅直连，可能出自协议/策略/端口三块。\n\n### 分段故障处理法\n\n按物理/逻辑分段（接入–汇聚–核心–出口）逐段排查。"
+        }
+      ]
+    },
+    {
+      "id": "K-13-F03",
+      "question_id": "K-13",
+      "original_fact": "用事实验证而非猜测",
+      "status": "qualified",
+      "reviewed_expectation": "提出可能原因后按信息过滤、对比或替换验证，解决后持续观察。",
+      "reason": "用事实而非猜测是对流程的归纳，不是教材原句。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 22,
+          "end_line": 26,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "结构化流程：报告故障 → 确认故障 → 收集信息 → 判断分析 → **原因列表** → 故障评估 → 逐一排查 → 解决故障 → 收尾工作。\n\n### 原因列表\n\n列出所有可能原因，经信息过滤保留最可能项，排除当前最不可能项，缩小范围。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 38,
+          "end_line": 38,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "现象消失后持续观察，确认未引入新故障。收尾：变更备份、故障文档与总结报告、资料移交、向用户提改进建议，并通告受影响方、授权方及厂家/服务商等。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Advanced-RS-Training/10-网络故障排除.md",
+          "start_line": 50,
+          "end_line": 64,
+          "sha256": "84b598450410e8e85543574e7b7abf2b3fffbbbf2a7d051c9cc95fa35eaff91b",
+          "quote": "### 对比配置法\n\n对比正常与故障状态下的配置、版本、硬件差异（如 Hello 定时器不同）。\n\n### 分块故障处理法\n\n按配置结构归类缩小范围：管理、端口、路由协议、策略、接入、其他应用。例如路由表仅直连，可能出自协议/策略/端口三块。\n\n### 分段故障处理法\n\n按物理/逻辑分段（接入–汇聚–核心–出口）逐段排查。\n\n### 替换法\n\n怀疑线缆、模块、设备时用确认良好的备件替换验证。"
+        }
+      ]
+    },
+    {
+      "id": "K-14-F01",
+      "question_id": "K-14",
+      "original_fact": "关闭 telnet/使用 SSH",
+      "status": "qualified",
+      "reviewed_expectation": "启用 SSH 安全登录，可关闭不需要的 Telnet 服务。",
+      "reason": "源文分别支持 SSH 和在攻击处置场景关闭 Telnet；上线前仍应保留受控管理路径。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 72,
+          "end_line": 78,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "1. 使能设备的 SSH 服务器功能。\n\n```cli\n[Huawei] stelnet server enable\n```\n\n2. 配置 SSH 用户的认证方式。当用户使用 RSA 认证方式时，需要在 SSH 服务器上输入 SSH 客户端生成的密钥中的公钥部分。这样当客户端登录服务器时，自己的私钥如果与输入的公钥匹配成功，则认证通过。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 343,
+          "end_line": 345,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "5. 关闭 R1 的 Telnet 服务器功能，使 R1 丢弃收到的 Telnet 报文。\n\n应用层联动不需要使能，只要关闭 Router 的 Telnet 服务器功能，Router 会丢弃收到的 Telnet 报文。"
+        }
+      ]
+    },
+    {
+      "id": "K-14-F02",
+      "question_id": "K-14",
+      "original_fact": "限制源地址 ACL",
+      "status": "partial",
+      "reviewed_expectation": "限制允许登录的客户端来源。",
+      "reason": "所查原文支持仅允许 R1/R2 的安全策略，但选取片段未直接证明使用源地址 ACL 的具体绑定位置。保留来源证据缺口，不冒充完整支持。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 122,
+          "end_line": 122,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "用户希望安全地远程登录设备，因此配置 STelnet 方式进行远程安全登录。使用 RSA 认证方式登录 R3。配置安全策略，保证只有 R1 和 R2 才能登录设备。"
+        }
+      ]
+    },
+    {
+      "id": "K-14-F03",
+      "question_id": "K-14",
+      "original_fact": "强认证与口令策略",
+      "status": "partial",
+      "reviewed_expectation": "配置 SSH 认证，可使用公钥认证。",
+      "reason": "原复合事实的认证部分有依据；当前章节没有查到强口令复杂度/周期策略的直接依据。不得用 RSA 示例等同完整强口令策略。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/13-设备安全加固ssh与vpn-vrf概述.md",
+          "start_line": 78,
+          "end_line": 80,
+          "sha256": "e74dfd88b23d24ec2f962d0f7ca9bb22b36b0ccf21ee6ced8a7a8edad45e9a95",
+          "quote": "2. 配置 SSH 用户的认证方式。当用户使用 RSA 认证方式时，需要在 SSH 服务器上输入 SSH 客户端生成的密钥中的公钥部分。这样当客户端登录服务器时，自己的私钥如果与输入的公钥匹配成功，则认证通过。\n\n3. 配置 SSH 服务器基于 SSH 客户端生成的密钥中的公钥部分。"
+        }
+      ]
+    },
+    {
+      "id": "K-15-F01",
+      "question_id": "K-15",
+      "original_fact": "自上而下首条匹配",
+      "status": "qualified",
+      "reviewed_expectation": "按配置的匹配顺序逐条匹配，首次命中停止。",
+      "reason": "缺省 config 按规则号，auto 深度优先；自上而下不能解释为所有模式均按文本顺序。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/06-bgp优选收尾与evpn及acl入门.md",
+          "start_line": 129,
+          "end_line": 135,
+          "sha256": "609d4fffb2836152751d4e1459d9b10063b3e3cb4db1a59adfdd0d654f3a5c68",
+          "quote": "### ACL 匹配机制\n\n- 按规则逐条匹配，**一旦命中即停止**（不论 permit 还是 deny 都算“匹配”）。\n- ACL 不存在 / 无规则 / 全部未命中 → “不匹配”。\n- 匹配顺序：缺省 **config**（按规则号）；另有 **auto**（深度优先，较复杂）。\n\n注意：与路由过滤结合时，permit≈匹配该路由，deny≈不匹配该路由。"
+        }
+      ]
+    },
+    {
+      "id": "K-15-F02",
+      "question_id": "K-15",
+      "original_fact": "未匹配默认拒绝（依类型）",
+      "status": "unsupported",
+      "reviewed_expectation": "未命中表示不匹配；后续处理由应用 ACL 的功能决定。",
+      "reason": "原句默认拒绝缺少条件；本地策略路由未命中仍按目的路由转发，是直接反例。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/06-bgp优选收尾与evpn及acl入门.md",
+          "start_line": 131,
+          "end_line": 135,
+          "sha256": "609d4fffb2836152751d4e1459d9b10063b3e3cb4db1a59adfdd0d654f3a5c68",
+          "quote": "- 按规则逐条匹配，**一旦命中即停止**（不论 permit 还是 deny 都算“匹配”）。\n- ACL 不存在 / 无规则 / 全部未命中 → “不匹配”。\n- 匹配顺序：缺省 **config**（按规则号）；另有 **auto**（深度优先，较复杂）。\n\n注意：与路由过滤结合时，permit≈匹配该路由，deny≈不匹配该路由。"
+        },
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/07-filter-policy与route-policy策略路由.md",
+          "start_line": 291,
+          "end_line": 296,
+          "sha256": "ad10371c15eb1d3f7a11180f6fc60adab36cf1c933607e8978775caf8b5e0070",
+          "quote": "当 ACL 的 rule 配置为 permit 时，设备会对匹配该规则的报文执行本地策略路由的动作：\n\n- 本地策略路由中策略点为 permit 时对满足匹配条件的报文进行策略路由；\n- 本地策略路由中策略点为 deny 时对满足匹配条件的报文不进行策略路由，即根据目的地址查找路由表转发报文。\n- 当 ACL 配置了 rule，如果报文未匹配上任何规则，则根据目的地址查找路由表转发报文。\n- 当 ACL 的 rule 配置为 deny 或 ACL 未配置规则时，应用该 ACL 的本地策略路由不生效，即根据目的地址查找路由表转发报文。"
+        }
+      ]
+    },
+    {
+      "id": "K-16-F01",
+      "question_id": "K-16",
+      "original_fact": "NS/NA 解析邻居",
+      "status": "supported",
+      "reviewed_expectation": "NS/NA 完成邻居链路层地址解析。",
+      "reason": "IPv6 NDP 不使用 IPv4 ARP 报文。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/11-ipv6地址报文与icmpv6-ndp.md",
+          "start_line": 203,
+          "end_line": 205,
+          "sha256": "861a1f8d16452b3e6966d25880f418ce325fe9d2ae92ff8e993c79185b4cd9d6",
+          "quote": "### 地址解析（NS/NA）\n\nPC1 不知 PC2 链路层地址时：发送 NS 到被请求节点组播地址，选项携带本端链路层地址；PC2 回复 NA 并携带自己的链路层地址；双方建立邻居缓存表项（类似 IPv4 ARP 表）。"
+        }
+      ]
+    },
+    {
+      "id": "K-16-F02",
+      "question_id": "K-16",
+      "original_fact": "RS/RA 做路由器发现",
+      "status": "supported",
+      "reviewed_expectation": "RS/RA 用于路由器发现和相关参数发现。",
+      "reason": "与地址解析不同的 NDP 功能。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/11-ipv6地址报文与icmpv6-ndp.md",
+          "start_line": 197,
+          "end_line": 199,
+          "sha256": "861a1f8d16452b3e6966d25880f418ce325fe9d2ae92ff8e993c79185b4cd9d6",
+          "quote": "### 路由器发现\n\n主机发现本地链路上路由器并确定配置信息的过程，包括：路由器发现、前缀发现、参数发现。使用 RS/RA：主机发送 RS 触发路由器回应 RA；路由器也可周期发送 RA。"
+        }
+      ]
+    }
+  ],
+  "additional_question_requirements": [
+    {
+      "question_id": "K-01",
+      "requirement": "题目问类型及产生者，原 5 个事实没有涵盖 Type 4，也未逐项要求产生者；评估完整回答须另检查，不能宣称原 39 项已覆盖全部知识。",
+      "evidence": [
+        {
+          "path": "knowledge/corpus/huawei-ip/HCIP-Datacom-Core-Training/02-ospf路由计算与特殊区域.md",
+          "start_line": 304,
+          "end_line": 311,
+          "sha256": "5540b376537a948ad1bc696d707f6e06602ff0a40a2278fd7418efe5d25e0fc0",
+          "quote": "| 类型 | 名称 | 说明 |\n|------|------|------|\n| 1 | Router LSA | 每台设备产生，描述链路状态与开销，区内泛洪 |\n| 2 | Network LSA | DR 产生，描述 MA 邻接成员，区内泛洪 |\n| 3 | Network Summary LSA | ABR 产生，区域间路由 |\n| 4 | ASBR Summary LSA | ABR 产生，描述到 ASBR |\n| 5 | AS External LSA | ASBR 产生，域外路由 |\n| 7 | NSSA LSA | NSSA 内 ASBR 产生；ABR 转 5 类进 Area0 |"
+        }
+      ]
+    }
+  ],
+  "usage": "原 39 条全部保留并分类；unsupported 不作为要求模型复述的正确事实。partial 仅能在证实部分计分，缺口另报；qualified 必须连同适用条件评估。不得将此审查覆盖率当成 RAG 引用正确率。"
+}
