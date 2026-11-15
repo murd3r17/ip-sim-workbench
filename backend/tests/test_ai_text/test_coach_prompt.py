@@ -54,11 +54,12 @@ class TestCopilotSystemPrompt:
         prompt = LLMService.copilot_system_prompt()
 
         assert "配置下发（5 步" in prompt
-        for step in ("创建任务", "确认", "执行", "验证报告", "查看结果"):
+        for step in ("提交待确认", "确认变更", "执行", "验证", "查看结果"):
             assert step in prompt, f"5 步流程缺少：{step}"
+        assert "「配置批次」的设备明细可点「核对回读」" in prompt
         # 实测踩过的坑：confirmed 被当成"已下发到设备"
         assert "confirmed=已确认未执行" in prompt
-        assert "这只是确认，配置还没下发到设备" in prompt
+        assert "此时已确认，下一步才是执行" in prompt
 
     def test_webssh_occupancy_and_paste_are_documented(self):
         prompt = LLMService.copilot_system_prompt()
@@ -117,7 +118,7 @@ class TestCoachTrainingPrompt:
         assert "实训教练输出规范" in prompt
         assert "next_steps" in prompt and "可直接照做的动作" in prompt
         # 明确要求把「配置下发」当前该点哪个按钮写出来
-        assert "创建任务 / 确认下发 / 执行 / 验证" in prompt
+        assert "提交待确认 / 确认变更 / 执行 / 验证" in prompt
 
     @pytest.mark.asyncio
     async def test_degraded_response_still_returns_contract_fields(self):

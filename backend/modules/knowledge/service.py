@@ -1,6 +1,7 @@
 """知识库服务编排层。"""
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -183,18 +184,60 @@ class KnowledgeService:
 
     async def list_documents(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         workspace = self.resolve_workspace_id(workspace_id)
-        return await self.provider.list_documents(workspace)
+        items = await self.provider.list_documents(workspace)
+        edition = self.edition()
+        if not edition:
+            return items
+        managed = set(edition.documents) | {row[0]["document_id"] for row in edition.aliases.values()}
+        return edition.catalog() + [item for item in items if item["id"] not in managed]
 
     async def document_catalog(self) -> dict:
         from .reader import catalog
         workspace = self.resolve_workspace_id()
-        return await catalog(self.provider, await self.provider.list_documents(workspace), workspace)
+        edition = self.edition()
+        if not edition:
+            return await catalog(self.provider, await self.provider.list_documents(workspace), workspace)
+        from datetime import datetime, timezone
+        managed_ids = set(edition.documents) | {row[0]["document_id"] for row in edition.aliases.values()}
+        try:
+            items = await self.provider.list_documents(workspace)
+        except Exception as exc:
+            logger.warning("edition_current_upload_catalog_unavailable", error=type(exc).__name__)
+            items = []
+        other = await catalog(self.provider, [item for item in items if item["id"] not in managed_ids], workspace)
+        rows = edition.catalog() + other["documents"]
+        return {"provider": self.provider.name, "documents": rows, "count": len(rows),
+                "readable_count": sum(row["readable"] for row in rows),
+                "catalog_version": f'{edition.version}:{other["catalog_version"]}',
+                "checked_at": datetime.now(timezone.utc).isoformat()}
 
     async def read_document(self, document_id: str | None, filename: str | None, version: str | None) -> dict:
         from .reader import read_current
+        edition = self.edition()
+        if edition and document_id in edition.documents:
+            return await asyncio.to_thread(edition.read, document_id, version)
         workspace = self.resolve_workspace_id()
         return await read_current(self.provider, await self.provider.list_documents(workspace),
                                   workspace, document_id, filename, version)
+
+    @staticmethod
+    def edition():
+        from .edition import open_edition
+        directory = getattr(get_settings(), "knowledge_edition_dir", "")
+        return open_edition(directory) if isinstance(directory, str) and directory.strip() else None
+
+    async def original_figure(self, document_id: str, version: str, page: int) -> bytes:
+        from .reader import DocumentReadError
+        edition = self.edition()
+        if not edition:
+            raise DocumentReadError("preview_unavailable", "当前知识库未配置原页图。", 404)
+        return await asyncio.to_thread(edition.figure, document_id, version, page)
+
+    async def legacy_locator(self, document_id: str, version: str, section_id: str | None) -> dict:
+        edition = self.edition()
+        if not edition:
+            return {}
+        return await asyncio.to_thread(edition.legacy_locator, document_id, version, section_id)
 
     async def upload_document(
         self,
@@ -210,6 +253,9 @@ class KnowledgeService:
         return result
 
     async def delete_document(self, document_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        edition = self.edition()
+        if edition and (document_id in edition.documents or any(row[0]["document_id"] == document_id for row in edition.aliases.values())):
+            return {"deleted": [], "status": "protected", "error": "教材随知识库版本更新。"}
         workspace = self.resolve_workspace_id(workspace_id)
         result = await self.provider.delete_document(workspace, document_id)
         from modules.ai_text.kb_cache import invalidate
@@ -224,10 +270,89 @@ class KnowledgeService:
     ) -> list[dict[str, Any]]:
         workspace = self.resolve_workspace_id(workspace_id)
         limit = top_k or get_settings().knowledge_top_k
-        sources = await self.provider.search(query, workspace, limit)
+        edition = self.edition()
+        references = await self._reviewed_learning_hits(query, workspace, edition)
+        if references and edition is None:
+            return references[:limit]
+        learning = list(references)
+        if edition and len(learning) < limit:
+            additional = await asyncio.to_thread(edition.learning_hits, query, min(4, limit - len(learning)))
+            reference_pages = {(row["document_id"], row.get("page")) for row in learning}
+            learning.extend(row for row in additional if (row["document_id"], row.get("page")) not in reference_pages)
+        if len(learning) == limit:
+            return learning
+        frozen_workspace = edition and self.provider.name == "anythingllm" and workspace == edition.vector["workspace"]
+        provider_limit = limit
+        if frozen_workspace:
+            # The frozen workspace has the same source files as the local
+            # index. Prefer the exact-text results for identifiers and page
+            # facts, leaving spare slots to the configured vector provider.
+            local = await edition.keyword_index.search(query, workspace, limit)
+            local = await asyncio.to_thread(edition.resolve_hits, local, edition.keyword_index, workspace)
+            learning.extend(hit for hit in local if hit.get("document_id") in edition.documents and hit.get("document_version"))
+            if len(learning) >= limit:
+                return learning[:limit]
+            provider_limit -= len(learning)
+        try:
+            sources = await self.provider.search(query, workspace, provider_limit)
+        except Exception as exc:
+            if not learning:
+                raise
+            logger.warning("edition_search_provider_unavailable", error=type(exc).__name__)
+            sources = []
+        if edition:
+            sources = await asyncio.to_thread(edition.resolve_hits, sources, self.provider, workspace)
         # 部分 provider（如 RAGFlow v0.26 retrieval）可能返回超过 top_k 的 chunk，
         # 统一在契约层截断，保证所有路由（/ask、/copilot/*、/knowledge/search）遵守 top_k。
-        return sources[:limit]
+        return (learning + sources)[:limit]
+
+    async def _reviewed_learning_hits(self, query: str, workspace: str | None, edition=None) -> list[dict]:
+        """Locate a reviewed passage in this provider's active, readable corpus."""
+        from core.markdown_blocks import blocks
+        from .reader import DocumentReadError, read_current
+        from .reviewed_source_notes import matching_learning_notes
+
+        notes = matching_learning_notes(query)
+        if not notes:
+            return []
+        if edition:
+            hits = []
+            for note in notes:
+                if note.get("source_page"):
+                    hits.extend(await asyncio.to_thread(edition.reviewed_page_hits, note, workspace, self.provider.name))
+            return hits
+        notes = [note for note in notes if not note.get("source_page")]
+        if not notes:
+            return []
+        try:
+            documents = await self.provider.list_documents(workspace)
+        except Exception as exc:
+            logger.warning("reviewed_learning_catalog_unavailable", error=type(exc).__name__)
+            return []
+        hits = []
+        for note in notes:
+            matches = [item for item in documents if (item.get("filename") or item.get("title")) == note["filename"]]
+            if len(matches) != 1:
+                continue
+            try:
+                document = await read_current(self.provider, documents, workspace, str(matches[0]["id"]))
+            except DocumentReadError:
+                continue
+            body = document["content"]
+            compact = "".join(note["match"].split())
+            for _, start, end in blocks(body):
+                excerpt = body[start:end].strip()
+                if compact not in "".join(excerpt.split()):
+                    continue
+                line = body.count("\n", 0, start) + 1
+                chapter = next((section for section in reversed(document["sections"]) if section["line"] <= line), None)
+                hits.append({
+                    "filename": note["filename"], "title": document["title"], "text": excerpt,
+                    "document_id": document["id"], "document_version": document["version"],
+                    "section_id": chapter["id"] if chapter else None, "retriever": "reviewed_excerpt",
+                })
+                break
+        return hits
 
     async def ask(
         self,

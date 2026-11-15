@@ -36,6 +36,10 @@ export interface KnowledgeDocument {
   message?: string
   section_count?: number
   page?: number | null
+  page_start?: number
+  page_end?: number
+  edition?: string
+  bundled?: boolean
   metadata?: Record<string, string | null>
 }
 
@@ -54,6 +58,18 @@ export interface KnowledgeFullDocument extends KnowledgeDocument {
   scope: 'current_document'
   truncated: boolean
   source_kind: string
+  warnings?: string[]
+  reviewed_notes?: KnowledgeReviewNote[]
+  original_pages?: { physical: number; section_id?: string | null; preview: boolean }[]
+  subsections?: KnowledgeDocument[]
+}
+
+export interface KnowledgeReviewNote {
+  id: string
+  title: string
+  content: string
+  reference: string
+  url: string
 }
 
 export const getKnowledgeCatalog = () =>
@@ -62,11 +78,15 @@ export const getKnowledgeCatalog = () =>
 export const readKnowledgeDocument = (params: { document_id?: string; filename?: string; version?: string }) =>
   request.get<KnowledgeFullDocument, KnowledgeFullDocument>('/ai/knowledge/read', { params, silent: true })
 
+export const getKnowledgeOriginalFigure = (params: { document_id: string; version: string; page: number }) =>
+  request.get<Blob, Blob>('/ai/knowledge/original-figure', { params, responseType: 'blob', silent: true })
+
 export interface KnowledgeSearchResult {
-  score: number
+  score?: number | null
   text?: string
   content?: string
   title?: string
+  reviewed_notes?: KnowledgeReviewNote[]
   [key: string]: unknown
 }
 

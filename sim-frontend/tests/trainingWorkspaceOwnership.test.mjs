@@ -13,13 +13,14 @@ function harness(){
   const refs=Object.fromEntries(['currentSession','workspaceNotes','workspaceSteps','workspaceRevision','workspaceReadOnly','workspaceSaving','workspaceSavedAt','workspaceConflict','workspaceLoading','workspaceError','workspaceSavedContent'].map(k=>[k,{value:null}]))
   Object.assign(refs.currentSession,{value:{id:1,status:'in_progress'}})
   refs.workspaceNotes.value='A';refs.workspaceSteps.value=[{id:1,status:'todo'}];refs.workspaceRevision.value=3
-  const deps={...refs,normalizeWorkspaceSteps:v=>v,
+  const drafts={training:{}}
+  const deps={...refs,normalizeWorkspaceSteps:v=>v,drafts,rememberWorkspace() {},
     getTrainingWorkspace:()=>{const d=deferred();reads.push(d);return d.promise},
     updateTrainingWorkspace:(id,data)=>{const d=deferred();saves.push({...d,id,data});return d.promise},
     ElMessage:{success(){},error(){},warning(){}},
     ElMessageBox:{confirm:()=>{const d=deferred();confirmations.push(d);return d.promise}}}
   const methods=new Function(...Object.keys(deps),'let sessionSelectionSeq=0,workspaceReadSeq=0,workspaceSaveSeq=0;'+code+';return {loadWorkspace,saveWorkspace,overwriteWithLocal};')(...Object.values(deps))
-  return {...refs,...methods,reads,saves,confirmations}
+  return {...refs,...methods,reads,saves,confirmations,drafts}
 }
 test('late A save cannot change B revision, saved time or save spinner',async()=>{
   const h=harness();const a=h.saveWorkspace();h.currentSession.value={id:2};h.workspaceRevision.value=10;h.workspaceSavedAt.value='B';h.workspaceSaving.value=false
@@ -48,4 +49,21 @@ test('confirmation to overwrite A cannot write B after navigation',{timeout:1000
   const h=harness();h.workspaceConflict.value={revision:8,notes:'A',steps:[]}
   const p=h.overwriteWithLocal();h.currentSession.value={id:2};h.workspaceConflict.value={revision:20,notes:'B',steps:[]};h.confirmations[0].resolve();await p
   assert.equal(h.saves.length,0);assert.equal(h.workspaceConflict.value.revision,20)
+})
+
+test('returning to a session preserves edits and keeps the old revision if the server changed', async () => {
+  const h = harness()
+  h.drafts.training[1] = { revision: 3, notes: 'unsaved', steps: [{ id: 1, status: 'done' }] }
+  const opening = h.loadWorkspace(1)
+  h.reads[0].resolve({ revision: 4, notes: 'server', steps: [{ id: 1, status: 'todo' }], read_only: false })
+  await opening
+  assert.equal(h.workspaceNotes.value, 'unsaved')
+  assert.equal(h.workspaceRevision.value, 3)
+  assert.equal(h.workspaceSteps.value[0].status, 'done')
+  assert.equal(h.workspaceConflict.value.revision, 4)
+  const discard = h.loadWorkspace(1, false)
+  h.reads[1].resolve({ revision: 4, notes: 'server', steps: [{ id: 1, status: 'todo' }], read_only: false })
+  await discard
+  assert.equal(h.workspaceNotes.value, 'server')
+  assert.equal(h.drafts.training[1], undefined)
 })

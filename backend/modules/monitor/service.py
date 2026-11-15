@@ -307,12 +307,15 @@ class MonitorService:
         topology_id: int | None = None,
         job_type: MonitorJobType | None = None,
         limit: int = 50,
+        job_id: int | None = None,
     ) -> list[dict]:
         query = select(MonitorJob)
         if topology_id is not None:
             query = query.where(MonitorJob.topology_id == topology_id)
         if job_type is not None:
             query = query.where(MonitorJob.job_type == job_type)
+        if job_id is not None:
+            query = query.where(MonitorJob.id == job_id)
         query = query.order_by(MonitorJob.created_at.desc()).limit(limit)
         rows = (await db.execute(query)).scalars().all()
         return [MonitorService._job_to_dict(job) for job in rows]

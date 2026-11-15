@@ -27,7 +27,7 @@
         <el-card shadow="hover">
           <div class="stat-card">
             <div class="stat-value" style="color: var(--v7b-ok)">{{ labLoadError ? '—' : stats.readyLabs }}</div>
-            <div class="stat-label">就绪Lab</div>
+            <div class="stat-label">可开始学习的课程</div>
           </div>
         </el-card>
       </el-col>
@@ -43,7 +43,7 @@
         <el-card shadow="hover">
           <div class="stat-card">
             <div class="stat-value" style="color: var(--v7b-warn)">{{ sessionLoadError ? '—' : stats.completedSessions }}</div>
-            <div class="stat-label">已完成会话</div>
+            <div class="stat-label">已结束会话</div>
           </div>
         </el-card>
       </el-col>
@@ -70,8 +70,12 @@
             <el-button v-if="!labLoadError" type="primary" @click="$router.push('/topology')">去拓扑页</el-button>
           </el-empty>
         </template>
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="title" label="Lab名称" min-width="200" />
+        <el-table-column label="实验" min-width="230">
+          <template #default="{ row }">
+            <button type="button" class="lab-title-link" @click="showSteps(row)">{{ row.title }}</button>
+            <p class="lab-intro">{{ labReadiness(row) }}</p>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
@@ -99,7 +103,7 @@
               v-if="Array.isArray(row.objectives) && row.objectives.length"
               link
               type="primary"
-              aria-label="实验步骤"
+              :aria-label="`查看${row.title}的步骤`"
               @click="showSteps(row)"
             >{{ row.objectives.length }} 步</el-button>
             <span v-else style="color: var(--el-text-color-secondary)">未设置</span>
@@ -109,7 +113,8 @@
           <template #default="{ row }">
             <div class="lab-actions">
               <el-button v-if="activeSessionOf(row)" size="small" type="primary" @click="resumeLab(row)">继续实训</el-button>
-              <el-button v-else size="small" type="primary" @click="handleStart(row)">开始实训</el-button>
+              <el-button v-else-if="row.status !== 'draft' || isAdmin" size="small" type="primary" :loading="startingLab === row.id" :disabled="startingLab !== null" @click="handleStart(row)">开始实训</el-button>
+              <span v-else class="muted">等待发布</span>
               <el-dropdown trigger="click">
                 <el-button size="small" aria-label="更多实验操作">更多操作</el-button>
                 <template #dropdown><el-dropdown-menu>
@@ -189,10 +194,12 @@
             <strong>{{ s.name || s.goal }}</strong>
           </div>
           <div class="step-goal">目标：{{ s.goal }}</div>
-          <div v-if="s.config_hint" class="step-hint">配置提示：{{ s.config_hint }}</div>
+          <div v-if="s.start_guidance" class="step-goal">先做什么 · {{ s.start_guidance }}</div>
+          <div v-if="s.config_hint" class="step-hint">操作说明 · {{ s.config_hint }}</div>
           <div v-if="s.verify_command" class="step-verify">
             观察建议：<code>{{ s.verify_command }}</code>
           </div>
+          <div v-if="s.expected" class="step-goal">判断依据 · {{ s.expected }}</div>
           <div v-if="s.verification" class="step-goal">核验范围：{{ s.verification.limitations }}</div>
         </div>
       </div>
@@ -233,24 +240,29 @@
     </el-dialog>
 
     <!-- 会话详情对话框 -->
-    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" width="min(700px, 96vw)" draggable :close-on-click-modal="false" append-to-body destroy-on-close>
+    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" width="min(94vw, clamp(740px, 58vw, 1120px))" draggable :close-on-click-modal="false" append-to-body destroy-on-close>
       <el-alert
         v-if="sessionReadOnly"
         type="warning"
         :closable="false"
         show-icon
         style="margin-bottom: 12px"
-        :title="`该会话${sessionStatusLabel(currentSession?.status || '')}，只能回看：不能继续记操作、绑定终端或请求教练。需要练习请新开会话。`"
-      />
-      <el-alert
-        v-else
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-        title="关闭本窗口不会结束实训。回到本页「我的实训会话」或点顶部实训条即可再打开。"
+        :title="`该会话${sessionStatusLabel(currentSession?.status || '')}。可回看保存的笔记、步骤和操作记录，继续练习请新开会话。`"
       />
       <div v-if="currentSession">
+        <section v-if="!sessionReadOnly" class="session-next" aria-label="当前实训步骤">
+          <div>
+            <strong>{{ nextWorkspaceStep ? `接着做 · ${nextWorkspaceStep.name || nextWorkspaceStep.goal || '下一步'}` : workspaceSteps.length ? '所有步骤已手动标记完成' : '从本次实验目标开始' }}</strong>
+            <p v-if="currentStepGuide?.goal">{{ currentStepGuide.goal }}</p>
+            <p v-if="currentStepGuide?.start_guidance || currentStepGuide?.config_hint">{{ currentStepGuide.start_guidance || currentStepGuide.config_hint }}</p>
+            <p v-if="currentStepGuide?.expected"><strong>判断依据</strong> {{ currentStepGuide.expected }}</p>
+            <p v-if="currentStepGuide?.verify_command"><strong>观察命令</strong> <code>{{ currentStepGuide.verify_command }}</code></p>
+            <p v-if="!currentStepGuide">可以切到拓扑或设备页，关闭窗口后从顶部实训条继续。</p>
+          </div>
+          <el-button type="primary" plain @click="askAboutCurrentStep">{{ nextWorkspaceStep ? '问助手这一步' : '问助手实训进度' }}</el-button>
+        </section>
+        <details class="session-facts">
+          <summary>会话与环境信息 · {{ teachingLabel(currentSession) }} · {{ deviceTagLabelFor(currentSession) }}</summary>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="会话ID">{{ currentSession.id }}</el-descriptions-item>
           <el-descriptions-item label="状态">
@@ -269,7 +281,7 @@
             </template>
             <span v-else>未绑定或旧快照不足</span>
           </el-descriptions-item>
-          <el-descriptions-item label="实验内容版本">{{ currentSession.content_version || (currentSession.content_source === 'session_snapshot' ? '未登记内容版本（新建会话）' : '未记录（旧会话）') }}</el-descriptions-item>
+          <el-descriptions-item label="实验内容版本">{{ currentSession.content_version || '旧记录缺少版本' }}</el-descriptions-item>
           <el-descriptions-item label="历史参考分（未验证）">{{ currentSession.score ?? '无' }}</el-descriptions-item>
           <el-descriptions-item label="技能达标">
             <el-tag type="warning">未验证</el-tag>
@@ -292,6 +304,7 @@
           style="margin-top: 8px"
           :title="currentSession.content_warning"
         />
+        </details>
 
         <!-- 仅复盘参考，不作为技能成绩 -->
         <div v-if="currentSession?.score_detail" style="margin-top: 16px">
@@ -324,20 +337,13 @@
         <!-- B-10：连续任务视图：笔记/步骤持久化，刷新恢复，已结束只读 -->
         <details class="workspace-panel" :open="workspaceOpen" @toggle="workspaceOpen = ($event.target as HTMLDetailsElement).open">
           <summary>
-            连续任务 · 笔记与步骤
-            <span class="workspace-meta">revision {{ workspaceRevision }}<template v-if="workspaceReadOnly"> · 只读</template></span>
+            笔记与步骤
+            <span class="workspace-meta">{{ workspaceError ? '读取待重试' : workspaceReadOnly ? '只读' : workspaceDirty ? '有未保存更改' : workspaceSavedAt ? '已保存' : '尚未保存笔记' }}</span>
           </summary>
           <div class="workspace-body">
             <el-alert v-if="workspaceError" type="error" :closable="false" :title="workspaceError">
               <el-button size="small" :loading="workspaceLoading" @click="loadWorkspace(currentSession!.id)">重新读取笔记</el-button>
             </el-alert>
-            <el-alert
-              v-else-if="workspaceReadOnly && !workspaceLoading"
-              type="info"
-              :closable="false"
-              show-icon
-              title="该会话已结束：可以回看笔记与步骤，不能修改。需要继续练习请新开会话。"
-            />
             <el-alert
             v-if="workspaceConflict"
             type="warning"
@@ -346,12 +352,12 @@
             title="保存冲突：本地稿仍在，未自动覆盖"
           >
             <template #default>
-              <p class="conflict-copy">服务端已有 revision {{ workspaceConflict.revision }}。请先查看最新内容，合并后再保存；不会自动用新 revision 覆盖他人。</p>
+              <p class="conflict-copy">{{ workspaceConflict.revision < 0 ? '暂时无法读取最新版本。请重试读取，当前稿仍保留。' : '另一个窗口已保存更新。可载入最新版本，或确认用当前笔记与步骤替换它。' }}</p>
               <pre class="conflict-pre">{{ workspaceConflict.notes || '（服务端笔记为空）' }}</pre>
               <div class="v7b-actions">
-                <el-button size="small" @click="loadServerConflict">载入服务端最新（丢弃本地）</el-button>
-                <el-button size="small" type="warning" @click="overwriteWithLocal">确认用本地稿覆盖</el-button>
-                <el-button size="small" text @click="workspaceConflict = null">继续手动合并</el-button>
+                <el-button v-if="workspaceConflict.revision < 0" size="small" @click="loadWorkspace(currentSession!.id)">重试读取最新版本</el-button>
+                <el-button v-else size="small" @click="loadServerConflict">载入最新版本（放弃当前稿）</el-button>
+                <el-button v-if="workspaceConflict.revision >= 0" size="small" type="warning" @click="overwriteWithLocal">确认用当前稿覆盖</el-button>
               </div>
             </template>
           </el-alert>
@@ -363,11 +369,11 @@
                   type="textarea"
                   :rows="5"
                   :disabled="workspaceReadOnly"
-                  placeholder="记录当前现象、判断和下一步；刷新或重开会话后可恢复。"
+                  placeholder="记录当前现象、判断和下一步。保存后刷新页面也能继续。"
                 />
               </div>
               <div>
-                <div class="workspace-label">步骤状态 <small>（点击切换，保存后持久化）</small></div>
+                <div class="workspace-label">步骤进度 <small>（自己标记，完成后可点下方保存）</small></div>
                 <div class="workspace-steps">
                   <button
                     v-for="(step, index) in workspaceSteps"
@@ -386,9 +392,9 @@
               </div>
             </div>
             <div class="v7b-actions" style="margin-top: 10px">
-              <el-button type="primary" :loading="workspaceSaving" :disabled="workspaceReadOnly" @click="saveWorkspace">保存笔记/步骤</el-button>
-              <span v-if="workspaceDirty && !workspaceReadOnly" class="workspace-meta">有未保存更改</span>
-              <span v-if="workspaceSavedAt" class="workspace-meta">上次保存 {{ workspaceSavedAt }}</span>
+              <el-button type="primary" :loading="workspaceSaving" :disabled="workspaceReadOnly || !workspaceDirty || !!workspaceConflict" @click="saveWorkspace">保存笔记/步骤</el-button>
+              <span v-if="workspaceDirty" class="workspace-meta">切换工作台页面后仍可继续。刷新前请保存。</span>
+              <span v-if="workspaceSavedAt" class="workspace-meta">上次保存 {{ formatApiTime(workspaceSavedAt) }}</span>
             </div>
           </div>
         </details>
@@ -439,6 +445,7 @@
             <el-dropdown trigger="click" @command="handleExportRecord">
               <el-button size="small" :loading="exporting">导出记录</el-button>
               <template #dropdown><el-dropdown-menu>
+                <el-dropdown-item command="learning">学习记录（Markdown）</el-dropdown-item>
                 <el-dropdown-item command="jsonl">操作日志（JSONL）</el-dropdown-item>
                 <el-dropdown-item command="session">已保存笔记与复盘（JSON）</el-dropdown-item>
               </el-dropdown-menu></template>
@@ -456,12 +463,12 @@
         <!-- 故障注入与处理（进行中会话） -->
         <el-alert v-if="labDeviceLoadError" :title="labDeviceLoadError" type="error" :closable="false" show-icon><el-button @click="loadLabDevices">重试设备列表</el-button></el-alert>
         <div v-if="currentSession?.status === 'in_progress'" style="margin-top: 16px">
-          <h4>故障注入</h4>
+          <h4>登记演练场景</h4>
           <el-alert
             type="warning"
             :closable="false"
             show-icon
-            title="只把场景写入本会话记录，不会 SSH、不会改设备。真故障请在 WebSSH 按实验步骤自行操作。"
+            title="登记用于记录演练计划。实际故障与恢复需要管理员批准，并以设备观察核对。"
             style="margin-bottom: 8px"
           />
           <div style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap">
@@ -469,7 +476,7 @@
               <el-option
                 v-for="d in labDevices"
                 :key="d.id"
-                :label="`${d.hostname} · ${d.model || 'NE40E'}`"
+                :label="`${d.hostname} · ${d.model || '型号未登记'}`"
                 :value="d.id"
               />
             </el-select>
@@ -477,12 +484,12 @@
               <el-option v-for="(label, value) in FAULT_TYPES" :key="value" :label="label" :value="value" />
             </el-select>
             <AdminAction v-slot="{ disabled }">
-              <el-button type="danger" :disabled="disabled" @click="handleInjectFault" :loading="faultSubmitting">注入故障</el-button>
+              <el-button :disabled="disabled || !faultForm.device_id || !faultForm.fault_type" @click="handleInjectFault" :loading="faultSubmitting">登记故障场景</el-button>
             </AdminAction>
           </div>
           <el-table :data="sessionFaults" size="small" max-height="260" v-loading="faultsLoading">
             <template #empty>
-              <p class="session-empty">暂无记录。注入只写会话、不下发设备。</p>
+              <p class="session-empty">暂无登记的演练场景。</p>
             </template>
             <!-- 展开行：把"到底注入了什么、怎么回滚"摊开说清（此前只显示设备 ID+类型，学员不知道要复现什么） -->
             <el-table-column type="expand">
@@ -495,15 +502,15 @@
                     </ul>
                   </div>
                   <div v-if="row.injected_commands?.length">
-                    <strong>注入命令（效果等价于这些命令已执行）</strong>
+                    <strong>场景参考配置</strong>
                     <pre class="fault-pre">{{ row.injected_commands.join('\n') }}</pre>
                   </div>
                   <div v-if="row.rollback_commands?.length">
-                    <strong>回滚命令（把网络恢复到故障前）</strong>
+                    <strong>恢复参考配置</strong>
                     <pre class="fault-pre">{{ row.rollback_commands.join('\n') }}</pre>
                   </div>
                   <p class="fault-tip">
-                    真机排障请在左侧「WebSSH终端」连到对应设备操作（支持 Ctrl+V 粘贴多行）；注入本身不会改设备。
+                    此处保存场景与参考配置。实际设备状态请从「只读观察」核对。
                   </p>
                 </div>
               </template>
@@ -515,14 +522,14 @@
             <el-table-column label="故障类型" min-width="170">
               <template #default="{ row }">{{ FAULT_TYPES[row.fault_type] || row.fault_type }}</template>
             </el-table-column>
-            <el-table-column label="注入时间" width="170">
+            <el-table-column label="登记时间" width="170">
               <template #default="{ row }">{{ formatTime(row.injected_at) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
-                <el-tag v-if="row.resolved_correctly === true" type="success" size="small">已解决</el-tag>
-                <el-tag v-else-if="row.resolved_correctly === false" type="danger" size="small">解决失败</el-tag>
-                <el-tag v-else type="warning" size="small">未处理</el-tag>
+                <el-tag v-if="row.resolved_correctly === true" type="success" size="small">已记录处理完成</el-tag>
+                <el-tag v-else-if="row.resolved_correctly === false" type="danger" size="small">处理待复核</el-tag>
+                <el-tag v-else type="warning" size="small">待记录处理</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="220">
@@ -691,7 +698,7 @@
       </div>
       <template #footer>
         <div class="session-footer">
-          <div class="session-cta">
+          <div v-if="!sessionReadOnly" class="session-cta">
             <el-button type="primary" @click="goTopology">看拓扑</el-button>
             <el-button @click="goDevices">去设备</el-button>
             <el-button @click="goWebSSH">开终端</el-button>
@@ -738,6 +745,7 @@ import {
 import { getTopologies, getDevices, type DeviceRecord } from '../../api/device'
 import { useLabContextStore } from '../../stores/labContext'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
+import { useWorkbenchDraftsStore } from '../../stores/workbenchDrafts'
 import AdminAction from '../../components/AdminAction.vue'
 import PageHeader from '../../components/v7b/PageHeader.vue'
 const { isAdmin } = useCurrentUser()
@@ -914,6 +922,7 @@ const sessionRequest = useSnapshotRequest('实训会话列表')
 const sessionsLoading = sessionRequest.loading
 const sessionLoadError = sessionRequest.error
 const submitting = ref(false)
+const startingLab = ref<number | null>(null)
 const searchText = ref('')
 const labs = ref<Lab[]>([])
 const sessions = ref<SessionSummary[]>([])
@@ -939,6 +948,8 @@ const router = useRouter()
 const route = useRoute()
 const labCtx = useLabContextStore()
 const copilot = useAiCopilotStore()
+const drafts = useWorkbenchDraftsStore()
+const signedInToken = localStorage.getItem('token')
 
 // 操作记录与故障注入表单
 const logForm = ref({ action: 'command', target_device: '', command: '', success: true })
@@ -950,18 +961,16 @@ const faultForm = ref({ device_id: 0, fault_type: 'interface_shutdown' })
 const faultSubmitting = ref(false)
 const faultsLoading = ref(false)
 
-function bindLabContext(lab: Lab, sessionId: number) {
+function bindLabContext(lab: Lab, sessionId: number, session?: Session) {
   currentLab.value = lab
+  const snapshotTitle = session?.content_snapshot?.title
   labCtx.startLab({
     sessionId,
     labId: lab.id,
-    labTitle: lab.title,
+    labTitle: typeof snapshotTitle === 'string' && snapshotTitle.trim() ? snapshotTitle : lab.title,
     topologyId: lab.topology_id,
-    // 旧实验的 objectives 可能是字符串数组；后端 lab_steps 契约是 list[dict]，先过滤避免自动引导 422。
-    labSteps: (Array.isArray(lab.objectives) ? lab.objectives : []).filter(
-      (item) => item && typeof item === 'object' && !Array.isArray(item),
-    ),
-    modeFacts: lab.mode_facts,
+    labSteps: sessionObjectiveSteps(session, lab),
+    modeFacts: session?.mode_facts || lab.mode_facts,
   })
 }
 
@@ -1016,6 +1025,19 @@ function goWebSSH() {
   showSessionDialog.value = false
   if (labCtx.device?.id) router.push(`/webssh/${labCtx.device.id}`)
   else router.push('/webssh')
+}
+
+function askAboutCurrentStep() {
+  if (currentSession.value?.status !== 'in_progress') return
+  copilot.linkLab(currentSession.value.id)
+  const title = sessionLabTitle.value || '本次实训'
+  const step = nextWorkspaceStep.value
+  const label = step?.name || step?.goal
+  const prompt = label
+    ? `我正在做「${title}」的「${label}」。请说明这一步要看什么、如何判断结果，以及应该记录哪些证据。`
+    : `我正在做「${title}」。请根据当前会话说明接下来可以核对什么。`
+  showSessionDialog.value = false
+  window.dispatchEvent(new CustomEvent('copilot-prefill', { detail: { prompt } }))
 }
 const hintLoading = ref(false)
 const hintBlockRef = ref<HTMLElement | null>(null)
@@ -1082,7 +1104,7 @@ function invalidateSessionRequests() {
   workspaceSaving.value = false
   workspaceLoading.value = false
 }
-const workspaceOpen = ref(false)
+const workspaceOpen = ref(true)
 const workspaceNotes = ref('')
 const workspaceSteps = ref<Array<Record<string, any>>>([])
 const workspaceRevision = ref(0)
@@ -1092,12 +1114,25 @@ const workspaceLoading = ref(false)
 const workspaceError = ref('')
 const workspaceSavedContent = ref('')
 const workspaceDirty = computed(() => workspaceSavedContent.value !== workspaceContent(workspaceNotes.value, workspaceSteps.value))
+const nextWorkspaceStep = computed(() => workspaceSteps.value.find(step => step.status !== 'done'))
+const currentStepGuide = computed(() => {
+  const stepId = nextWorkspaceStep.value?.id
+  const steps = currentSession.value?.content_snapshot?.objectives
+  if (stepId == null || !Array.isArray(steps)) return undefined
+  return steps.find(step => step && typeof step === 'object' && String(step.id) === String(stepId))
+})
 const workspaceSavedAt = ref('')
 const workspaceConflict = ref<{ revision: number; notes: string; steps: Array<Record<string, any>> } | null>(null)
 
 
+function sessionObjectiveSteps(session?: Session | null, lab?: Lab | null) {
+  const frozen = session?.content_snapshot?.objectives
+  const objectives = Array.isArray(frozen) ? frozen : lab?.objectives || []
+  return objectives.filter(item => item && typeof item === 'object' && !Array.isArray(item)) as Array<Record<string, any>>
+}
+
 function normalizeWorkspaceSteps(saved: Array<Record<string, any>>) {
-  const objectives = (currentLab.value?.objectives || []).filter((item) => item && typeof item === 'object' && !Array.isArray(item)) as Array<Record<string, any>>
+  const objectives = sessionObjectiveSteps(currentSession.value, currentLab.value)
   const byId = new Map(saved.map((item) => [String(item.id ?? item.name ?? ''), item]))
   if (!objectives.length) return saved
   return objectives.map((item, index) => {
@@ -1111,7 +1146,23 @@ function normalizeWorkspaceSteps(saved: Array<Record<string, any>>) {
   })
 }
 
-async function loadWorkspace(sessionId: number) {
+function rememberWorkspace() {
+  const session = currentSession.value
+  if (!signedInToken || localStorage.getItem('token') !== signedInToken || session?.status !== 'in_progress' || workspaceReadOnly.value) return
+  if (!workspaceDirty.value) {
+    delete drafts.training[session.id]
+    return
+  }
+  drafts.training[session.id] = {
+    revision: workspaceRevision.value,
+    notes: workspaceNotes.value,
+    steps: workspaceSteps.value.map(step => ({ ...step })),
+  }
+}
+
+watch([workspaceNotes, workspaceSteps], rememberWorkspace, { deep: true, flush: 'sync' })
+
+async function loadWorkspace(sessionId: number, restoreDraft = true) {
   const selection = sessionSelectionSeq
   const request = ++workspaceReadSeq
   const owns = () => selection === sessionSelectionSeq && request === workspaceReadSeq && currentSession.value?.id === sessionId
@@ -1123,12 +1174,19 @@ async function loadWorkspace(sessionId: number) {
       notes: string; steps: Array<Record<string, any>>; revision: number; updated_at: string; read_only: boolean
     }
     if (!owns()) return
-    workspaceNotes.value = res.notes || ''
-    workspaceSteps.value = normalizeWorkspaceSteps(res.steps || [])
-    workspaceRevision.value = res.revision || 0
-    workspaceReadOnly.value = res.read_only === true
+    const server = { revision: res.revision || 0, notes: res.notes || '', steps: normalizeWorkspaceSteps(res.steps || []) }
+    const draft = restoreDraft && !res.read_only ? drafts.training[sessionId] : undefined
+    const savedContent = workspaceContent(server.notes, server.steps)
+    const unsaved = draft && workspaceContent(draft.notes, draft.steps) !== savedContent ? draft : undefined
+    const visible = unsaved || server
+    workspaceNotes.value = visible.notes
+    workspaceSteps.value = visible.steps.map(step => ({ ...step }))
+    workspaceRevision.value = visible.revision
     workspaceSavedAt.value = res.updated_at || ''
-    workspaceSavedContent.value = workspaceContent(workspaceNotes.value, workspaceSteps.value)
+    workspaceSavedContent.value = savedContent
+    workspaceConflict.value = unsaved && unsaved.revision !== server.revision ? server : null
+    if (!unsaved) delete drafts.training[sessionId]
+    workspaceReadOnly.value = res.read_only === true
     return true
   } catch {
     if (!owns()) return
@@ -1167,6 +1225,7 @@ async function saveWorkspace() {
     workspaceSavedAt.value = res.updated_at
     workspaceSavedContent.value = content
     workspaceConflict.value = null
+    rememberWorkspace()
     ElMessage.success('笔记/步骤已保存')
   } catch (error: any) {
     if (!owns()) return
@@ -1194,7 +1253,7 @@ async function loadServerConflict() {
   const sessionId = currentSession.value?.id
   if (!sessionId || workspaceSaving.value) return
   const selection = sessionSelectionSeq
-  const loaded = await loadWorkspace(sessionId)
+  const loaded = await loadWorkspace(sessionId, false)
   if (loaded && selection === sessionSelectionSeq && currentSession.value?.id === sessionId) workspaceConflict.value = null
 }
 
@@ -1331,12 +1390,14 @@ const stats = computed(() => {
   return { totalLabs: total, readyLabs: ready, activeSessions: active, completedSessions: completed }
 })
 
-const sessionDialogTitle = computed(() => {
-  if (!currentSession.value) return '实训会话'
-  const lab = labs.value.find(l => l.id === currentSession.value?.lab_id)
-  const name = lab?.title || currentLab.value?.title || `会话 #${currentSession.value.id}`
-  return `实训会话 #${currentSession.value.id} · ${name}`
+const sessionLabTitle = computed(() => {
+  const session = currentSession.value
+  const title = session?.content_snapshot?.title
+  if (typeof title === 'string' && title.trim()) return title
+  return labs.value.find(lab => lab.id === session?.lab_id)?.title || currentLab.value?.title || '实训会话'
 })
+const sessionDialogTitle = computed(() => currentSession.value
+  ? `实训会话 #${currentSession.value.id} · ${sessionLabTitle.value}` : '实训会话')
 
 function activeSessionOf(lab: Lab): SessionSummary | undefined {
   return sessions.value.find(s => s.lab_id === lab.id && s.status === 'in_progress')
@@ -1359,8 +1420,16 @@ function statusType(s: string) {
 }
 
 function statusLabel(s: string) {
-  const map: Record<string, string> = { draft: '草稿', ready: '就绪', in_progress: '进行中', completed: '已完成' }
-  return map[s] || s
+  const map: Record<string, string> = { draft: '未发布', ready: '可开始学习', in_progress: '可继续学习', completed: '可回看' }
+  return map[s] || '状态未登记'
+}
+
+function labReadiness(lab: Lab) {
+  const spec = lab.environment_spec
+  if (spec?.supports_binding === false) return '从拓扑与设备开始，练习观察、保存笔记和复盘。'
+  if (spec?.trust_environment_id) return '已选环境。先看实验步骤，核对协议先修和观察目标。'
+  if (spec?.prerequisites?.length) return '可以学习步骤和记笔记。需要核对设备时，请管理员先绑定环境。'
+  return lab.description || '打开实验查看目标、步骤和环境要求。'
 }
 
 function sessionStatusType(s: string) {
@@ -1369,7 +1438,7 @@ function sessionStatusType(s: string) {
 }
 
 function sessionStatusLabel(s: string) {
-  const map: Record<string, string> = { pending: '待开始', in_progress: '进行中', completed: '已完成', abandoned: '已放弃' }
+  const map: Record<string, string> = { pending: '待开始', in_progress: '进行中', completed: '已结束', abandoned: '已放弃' }
   return map[s] || s
 }
 
@@ -1410,7 +1479,7 @@ async function resumeSession(id: number) {
     currentLab.value = lab
     // A-04：只有进行中的会话才绑定终端/教练；已结束会话只读回看。
     if (lab && session.status === 'in_progress') {
-      bindLabContext(lab, session.id)
+      bindLabContext(lab, session.id, session)
     } else if (labCtx.sessionId === session.id) {
       labCtx.clearLab()
     }
@@ -1461,6 +1530,8 @@ async function ensureLabReady(lab: Lab) {
 }
 
 async function handleStart(lab: Lab) {
+  if (startingLab.value !== null) return
+  startingLab.value = lab.id
   try {
     const existing = activeSessionOf(lab)
     if (existing) {
@@ -1469,8 +1540,6 @@ async function handleStart(lab: Lab) {
         '已有进行中会话',
         { type: 'warning' },
       )
-    } else {
-      await ElMessageBox.confirm(`确认开始 "${lab.title}" 实训?`, '确认')
     }
     await ensureLabReady(lab)
     const res = await startSession(lab.id) as unknown as { id: number }
@@ -1479,11 +1548,11 @@ async function handleStart(lab: Lab) {
     await loadSessions()
     await loadSession(res.id)
     await loadLabs()
-    // 自动触发 AI 助手引导（监听方为 AiCopilotPanel）
-    window.dispatchEvent(new CustomEvent('copilot-send', {
-      detail: { prompt: `我刚刚开始实训「${lab.title}」。请根据实验步骤引导我完成：先说明第一步要做什么和注意事项。` },
-    }))
-  } catch { /* cancelled */ }
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') notifyRequestError(error, '实训未能开始，请重试')
+  } finally {
+    startingLab.value = null
+  }
 }
 
 async function handleSandbox(lab: Lab) {
@@ -1495,9 +1564,6 @@ async function handleSandbox(lab: Lab) {
     await loadSessions()
     await loadSession(res.id)
     await loadLabs()
-    window.dispatchEvent(new CustomEvent('copilot-send', {
-      detail: { prompt: `我刚刚以自由练习方式开始实训「${lab.title}」。请根据实验步骤引导我完成：先说明第一步要做什么和注意事项。` },
-    }))
   } catch (error) {
     notifyRequestError(error, '启动自由练习失败')
   }
@@ -1522,6 +1588,7 @@ async function handleDeleteSession(row: SessionSummary) {
       : `确定删除会话 #${row.id}（「${row.lab_title}」）？删除后才能删除该实验。`
     await ElMessageBox.confirm(warn, '删除会话', { type: 'warning' })
     await deleteSession(row.id)
+    delete drafts.training[row.id]
     if (currentSession.value?.id === row.id) {
       showSessionDialog.value = false
       currentSession.value = null
@@ -1546,6 +1613,7 @@ async function loadSession(id: number, selection?: number) {
   try {
     const [session, logs, faults] = await Promise.all([getSession(id), getOperationLogs(id), getSessionFaults(id)])
     if (selection !== sessionSelectionSeq) return
+    workspaceReadOnly.value = true
     currentSession.value = session as unknown as Session
     operationLogs.value = logs as unknown as OpLog[]
     sessionFaults.value = faults as unknown as SessionFault[]
@@ -1554,9 +1622,10 @@ async function loadSession(id: number, selection?: number) {
     reportVersions.value = []
     reportError.value = ''
     workspaceConflict.value = null
-    workspaceNotes.value = ''
-    workspaceSteps.value = []
-    workspaceRevision.value = 0
+    const draft = currentSession.value.status === 'in_progress' ? drafts.training[id] : undefined
+    workspaceNotes.value = draft?.notes || ''
+    workspaceSteps.value = draft?.steps.map(step => ({ ...step })) || []
+    workspaceRevision.value = draft?.revision || 0
     workspaceSavedAt.value = ''
     workspaceSavedContent.value = workspaceContent('', [])
     // 读取已保存的复盘（不调用模型）；失败不影响会话本身
@@ -1663,7 +1732,7 @@ async function handleInjectFault() {
     ElMessage.success('已记录故障场景（未下发设备）')
     await loadSessionFaults()
   } catch (error: any) {
-    notifyRequestError(error, '注入故障失败（需要管理员权限）')
+    notifyRequestError(error, '登记故障场景失败，请联系管理员核对')
   } finally {
     faultSubmitting.value = false
   }
@@ -1705,6 +1774,7 @@ function handleSessionFooterCommand(command: string) {
 
 async function handleScore() {
   if (!currentSession.value) return
+  if (!readyToFinish()) return
   try {
     // 评分即结束会话：用时冻结、操作记录与故障注入区关闭，必须提前告知（此前无确认，学员以为只是"看看多少分"）
     await ElMessageBox.confirm(
@@ -1742,6 +1812,7 @@ async function handleScore() {
 
 async function handleComplete() {
   if (!currentSession.value) return
+  if (!readyToFinish()) return
   try {
     await ElMessageBox.confirm(
       '结束后将冻结本次会话的操作记录、故障判定与用时；技能达标仍为未验证。确定结束？',
@@ -1760,16 +1831,24 @@ async function handleComplete() {
   }
 }
 
+function readyToFinish() {
+  if (!workspaceSaving.value && !workspaceDirty.value) return true
+  workspaceOpen.value = true
+  ElMessage.info('请先保存本次笔记与步骤，再结束实训。')
+  return false
+}
+
 /** 放弃会话：保留记录只读回看，不生成参考明细。 */
 async function handleAbandon() {
   if (!currentSession.value) return
   try {
     await ElMessageBox.confirm(
-      '放弃后本会话只能回看：不能继续记录操作、绑定终端或请求教练。记录与已保存的复盘会保留。确定放弃？',
+      `放弃后可回看已保存的笔记、步骤和操作记录。${workspaceDirty.value ? '尚未保存的更改会丢失。' : ''}确定放弃？`,
       '放弃本次实训',
       { type: 'warning', confirmButtonText: '放弃并结束', cancelButtonText: '继续练习' },
     )
     await abandonSession(currentSession.value.id)
+    delete drafts.training[currentSession.value.id]
     currentSession.value = { ...currentSession.value, status: 'abandoned', completed_at: new Date().toISOString() }
     labCtx.clearLab()
     ElMessage.success('会话已放弃，可随时回看')
@@ -1782,7 +1861,7 @@ async function handleAbandon() {
 }
 
 async function handleExportRecord(kind: string) {
-  if (!currentSession.value || exporting.value || !['jsonl', 'session'].includes(kind)) return
+  if (!currentSession.value || exporting.value || !['jsonl', 'session', 'learning'].includes(kind)) return
   const sessionId = currentSession.value.id
   const version = trainingReport.value?.version
   const selection = sessionSelectionSeq
@@ -1792,15 +1871,19 @@ async function handleExportRecord(kind: string) {
   exportError.value = ''
   try {
     const data = kind === 'jsonl' ? await exportLogsJsonl(sessionId) as unknown as string
-      : await exportTrainingSession(sessionId, version) as unknown as { session: { id: number }; report: { version: number } | null }
+      : await exportTrainingSession(sessionId, version, kind === 'learning' ? 'markdown' : 'json') as unknown as
+        string | { session: { id: number }; report: { version: number } | null }
     if (!owns()) return
     if (typeof data !== 'string' && (data.session.id !== sessionId || (version !== undefined && data.report?.version !== version))) throw new Error('Export identity mismatch')
     const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
-    const blob = new Blob([text], { type: kind === 'jsonl' ? 'application/jsonl' : 'application/json' })
+    const mime = kind === 'learning' ? 'text/markdown;charset=utf-8' : kind === 'jsonl' ? 'application/jsonl' : 'application/json'
+    const blob = new Blob([text], { type: mime })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = kind === 'jsonl' ? `session_${sessionId}_logs.jsonl` : `session_${sessionId}_report_v${typeof data === 'string' ? 0 : data.report?.version ?? 0}.json`
+    a.download = kind === 'learning' ? `session_${sessionId}_learning.md`
+      : kind === 'jsonl' ? `session_${sessionId}_logs.jsonl`
+        : `session_${sessionId}_report_v${typeof data === 'string' ? 0 : data.report?.version ?? 0}.json`
     a.click()
     URL.revokeObjectURL(url)
   } catch (error) {
@@ -1961,6 +2044,7 @@ h4 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   width: 100%;
 }
@@ -2053,6 +2137,25 @@ h4 {
   max-height: 62vh;
   overflow-y: auto;
 }
+.session-next {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--v7b-line);
+  background: var(--v7b-surface-2);
+  color: var(--v7b-text);
+}
+.session-next p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--v7b-muted); }
+.session-next code { overflow-wrap: anywhere; }
+.lab-title-link { background: none; border: 0; color: var(--v7b-accent); padding: 0; font: inherit; text-align: left; cursor: pointer; }
+.lab-title-link:hover { text-decoration: underline; }
+.lab-intro { margin: 4px 0 0; color: var(--v7b-muted); font-size: 12px; line-height: 1.45; }
+.session-facts { margin-top: 10px; }
+.session-facts > summary { cursor: pointer; padding: 8px 0; color: var(--v7b-muted); }
 
 .workspace-panel { margin-top: 14px; border: 1px solid var(--v7b-line); border-radius: 9px; background: rgba(16, 26, 36, .65); }
 .workspace-panel > summary { cursor: pointer; padding: 10px 12px; color: var(--v7b-text); font-size: 12px; font-weight: 650; }

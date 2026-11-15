@@ -53,6 +53,7 @@ class CopilotAttachment(BaseModel):
     """AI 助手附件（图片：data URL / 外链 URL）"""
     contentString: str = Field(..., min_length=1, max_length=30000000, description="data:image/...;base64,xxx 或 https:// 图片 URL")
     mime: Optional[str] = Field(None, max_length=64, description="如 image/png")
+    name: Optional[str] = Field(None, max_length=255)
 
 
 class CopilotChatRequest(BaseModel):
@@ -74,6 +75,10 @@ class CopilotChatRequest(BaseModel):
         default_factory=list,
         max_length=4,
         description="图片附件（截图/拓扑图/告警图等）；由视觉模型理解",
+    )
+    conversation_id: Optional[str] = Field(None, max_length=64)
+    attachment_message_id: Optional[str] = Field(
+        None, max_length=64, description="同一已保存对话内含附件的用户消息 ID",
     )
     lab_steps: list[dict] = Field(
         default_factory=list,

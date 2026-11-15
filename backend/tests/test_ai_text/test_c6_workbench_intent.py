@@ -35,7 +35,7 @@ def test_actual_workbench_control_question_keeps_page_help(question):
  '实训结束以后，重新生成复盘报告是不是另一次生成？',
  '我在设备列表点健康检查，它也会读OSPF路由吗？',
  '配置版本的采集并保存配置会做什么？',
- '拓扑保存草稿和发布到总览的作用一样吗？',
+ '拓扑保存草稿和发布布局的作用一样吗？',
  '知识库的检索和右侧助手文件入口作用一样吗？',
  '系统配置里的测试模型连通性能证明回答正确吗？',
  '后台任务的刷新会重新执行设备命令吗？',
@@ -53,7 +53,10 @@ def test_product_actions_without_page_suffix_use_actual_capability_guide(questio
 @pytest.mark.parametrize('question', [
  '首页刷新状态会自动重新探测所有设备吗？',
  '总览里的刷新状态和只读采集一样吗？',
- '首页的完整拓扑按钮会做什么？',
+ '首页的拓扑链路卡片会打开哪里？',
+ '我没管理员权限，怎样知道拓扑刚更新失败后看的是什么？',
+ '首页上拓扑刚刚更新失败，我现在看到的是之前的关系吗？',
+ '刚才采集所有设备失败，页面没有新的告警，是不是现在网络都正常了？',
 ])
 def test_homepage_aliases_share_workbench_controls_without_knowledge_lookup(question):
     choice=select_skill(question,route='/dashboard')
@@ -109,7 +112,7 @@ def test_protocol_questions_and_actual_read_requests_keep_their_skill(question,s
 @pytest.mark.parametrize('question,needed',[
  ('系统配置页在哪里？我是普通用户。','系统管理（仅管理员）'),
  ('环境映射页的“预检”和“保存”有什么区别？','环境映射：'),
- ('监控页“刷新”与“采集”有什么区别？','刷新数据'),
+ ('监控页“刷新”与“采集”有什么区别？','刷新已保存记录'),
  ('实训里“查看复盘”和“重新生成复盘报告”会不会再调用模型？','重新生成复盘报告'),
  ('模拟下发开关开启后WebSSH是不是只读？','不使WebSSH只读'),
  ('你能直接帮我把配置写进 R1 吗？','没有设备写入、创建/确认/执行下发任务的工具'),

@@ -309,13 +309,11 @@ test.describe('全页面真实按钮验收', () => {
     await expectToast(page, minimal ? /配置审查失败/ : /审查完成/, 90000)
 
     await page.getByPlaceholder('输入VRP配置命令...').fill('sysname E2EProbe')
-    await page.getByRole('button', { name: '创建任务' }).click()
-    await expectToast(page, /配置任务已创建/)
-
-    await page.getByRole('tab', { name: '任务管理' }).click()
-    await page.getByRole('button', { name: '详情' }).first().click()
-    await expect(page.getByText('任务详情')).toBeVisible()
-    const confirmBtn = page.getByRole('button', { name: '确认' }).first()
+    await page.getByRole('button', { name: '提交变更' }).click()
+    await expect(page).toHaveURL(/\/approvals\?task_id=\d+/)
+    const changeDialog = page.getByRole('dialog', { name: /任务 #\d+ 详情/ })
+    await expect(changeDialog).toBeVisible()
+    const confirmBtn = changeDialog.getByRole('button', { name: '确认变更' })
     if (await confirmBtn.isVisible()) {
       // 用 HTTP 响应断言而不是只等 Toast：ElMessage 约 3 秒消失，而"是否为高风险、要不要
       // 二次确认"的判断本身要等 2 秒，容易偶发地"点了却没看到提示"（实测命中过一次）。
@@ -332,33 +330,29 @@ test.describe('全页面真实按钮验收', () => {
         const secondConfirm = page.waitForResponse(
           (r) => confirmPath.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
         )
-        await risk.getByRole('button', { name: /我确认/ }).click()
+        await risk.getByRole('button', { name: '确认变更' }).click()
         expect((await secondConfirm).status()).toBe(200)
       }
     }
-    const execBtn = page.getByRole('button', { name: '执行', exact: true }).first()
+    const execBtn = changeDialog.getByRole('button', { name: '执行', exact: true })
     if (await execBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       const execResp = page.waitForResponse(
         (r) => /\/deploy\/tasks\/\d+\/execute$/.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
       )
       await execBtn.click()
       expect((await execResp).status()).toBe(200)
-      await expectToast(page, /模拟执行完成/)
+      await expectToast(page, /已执行（模拟）/)
     }
-    const verifyBtn = page.getByRole('button', { name: /验证报告|查看结果/ }).first()
+    const verifyBtn = changeDialog.getByRole('button', { name: /验证|查看结果/ })
     if (await verifyBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       await verifyBtn.click()
-      await expect(page.getByRole('dialog', { name: '验证报告' })).toBeVisible()
-      await closeDialog(page, '验证报告')
-      await expect(page.getByRole('dialog', { name: '验证报告' })).toBeHidden({ timeout: 10000 })
-    }
-    const detailDlg = page.getByRole('dialog', { name: '任务详情' })
-    if (await detailDlg.isVisible().catch(() => false)) {
-      await detailDlg.getByRole('button', { name: '刷新' }).click({ force: true })
-      await clickDialogFooter(page, '任务详情', '关闭')
-      await expect(detailDlg).toBeHidden({ timeout: 10000 })
+      const result = page.getByRole('dialog', { name: /验证报告/ })
+      await expect(result).toBeVisible()
+      await result.getByRole('button', { name: '关闭', exact: true }).last().click()
+      await expect(result).toBeHidden({ timeout: 10000 })
     }
     await page.keyboard.press('Escape')
+    await openMenu(page, '配置下发')
     await page.getByRole('tab', { name: '配置模板' }).click({ force: true })
     await page.getByRole('button', { name: '新建模板' }).click()
     await clickDialogFooter(page, '新建配置模板', '取消')
@@ -385,7 +379,7 @@ test.describe('全页面真实按钮验收', () => {
       await loadDraft.click()
       await page.getByRole('button', { name: '清除草稿' }).click()
     }
-    await page.getByRole('button', { name: '配置管理' }).click()
+    await page.getByRole('button', { name: '查看配置版本' }).click()
     await expect(page).toHaveURL(/\/config-versions/)
 
     // 收尾只处理本次新增任务：已执行的任务必须验证，执行前的任务才允许取消。
@@ -408,10 +402,10 @@ test.describe('全页面真实按钮验收', () => {
   test('配置管理：选设备采集、查看、比对、变更日志', async ({ page }) => {
     const guards = attachGuards(page)
     await loginAsAdmin(page)
-    await openMenu(page, '配置管理')
-    await page.getByRole('button', { name: '返回下发' }).click()
+    await openMenu(page, '配置版本')
+    await page.getByRole('button', { name: '返回配置批次' }).click()
     await expect(page).toHaveURL(/\/deploy/)
-    await openMenu(page, '配置管理')
+    await openMenu(page, '配置版本')
 
     await page.getByRole('button', { name: '全量设备' }).click()
     await page.getByRole('button', { name: '选择采集设备' }).first().click()

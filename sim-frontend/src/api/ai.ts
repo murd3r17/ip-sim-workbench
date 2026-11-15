@@ -71,7 +71,9 @@ export async function copilotChatStream(
     device_model?: string
     top_k?: number
     page_data?: string
-    attachments?: Array<{ contentString: string; mime?: string }>
+    attachments?: Array<{ contentString: string; mime?: string; name?: string }>
+    conversation_id?: string
+    attachment_message_id?: string
     lab_steps?: any[]
     lab_id?: number | null
     lab_session_id?: number | null
@@ -101,14 +103,16 @@ export async function copilotChatStream(
         : `/login?expired=1&redirect=${encodeURIComponent(path)}`
     }
     let detail = ''
+    let code = ''
     try {
       const payload = await res.json()
       const raw = payload?.detail ?? payload?.message ?? payload
       detail = typeof raw === 'string' ? raw : (raw?.message || '')
+      code = typeof raw?.code === 'string' ? raw.code : ''
     } catch {
       detail = await res.text().catch(() => '')
     }
-    throw new Error(detail || `流式请求失败 (${res.status})`)
+    throw Object.assign(new Error(detail || `流式请求失败 (${res.status})`), { code, status: res.status })
   }
 
   const reader = res.body?.getReader()
@@ -185,9 +189,19 @@ export const cancelCopilotRequest = (requestId: string) =>
     { request_id: string; cancelled: boolean; upstream: string; note?: string }>(
     `/ai/copilot/requests/${encodeURIComponent(requestId)}/cancel`, {}, { silent: true })
 
-/** B5：对一次巡检/采集任务做 AI 归因总结。 */
+export interface InspectionSummary {
+  summary: string
+  coverage?: { observed?: number; target?: number; failed?: number; skipped?: number; finished_at?: string }
+  basis?: string
+  missing_devices?: Array<{ device_id?: number; hostname: string; status: 'failed' | 'skipped'; reason?: string }>
+  key_findings?: string[]
+  root_causes?: string[]
+  recommendations?: string[]
+  report_text?: string
+}
+
 export const inspectionSummary = (jobId: number) =>
-  request.post('/ai/inspection-summary', { job_id: jobId }, { silent: true })
+  request.post<InspectionSummary, InspectionSummary>('/ai/inspection-summary', { job_id: jobId }, { silent: true })
 
 /** B5：用白话解释两个配置版本之间的差异（后端已脱敏）。 */
 export const diffExplanation = (versionIdA: number, versionIdB: number) =>

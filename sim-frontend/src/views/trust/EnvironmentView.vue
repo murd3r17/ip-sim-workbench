@@ -1,6 +1,6 @@
 <template>
   <div class="v7b-page">
-    <PageHeader title="环境映射" subtitle="把实验/任务绑定到接收方现场的设备、角色、接口和保护项。状态由服务端 preflight 判定，缺项不会自动绿灯。">
+    <PageHeader title="环境映射" subtitle="登记实训使用的设备、接口和保护项。保存后运行预检，核对登记内容和实际读取结果。">
       <template #actions>
         <el-button @click="load">刷新</el-button>
         <el-button type="primary" @click="openCreate">新建环境</el-button>
@@ -27,10 +27,10 @@
         <el-table-column label="保护项" width="130">
           <template #default="{ row }">{{ row.protections.length ? `${row.protections.length} 项` : '缺失' }}</template>
         </el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" width="180" />
+        <el-table-column label="更新时间" width="180"><template #default="{ row }">{{ formatApiTime(row.updated_at) }}</template></el-table-column>
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" @click="runPreflight(row)">预检</el-button>
+            <el-button size="small" :loading="preflighting === row.id" :disabled="preflighting !== null" @click="runPreflight(row)">预检</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
           </template>
         </el-table-column>
@@ -69,17 +69,32 @@
           <el-form-item label="版本"><el-input v-model="form.version" /></el-form-item>
           <el-form-item label="站点"><el-input v-model="form.site" /></el-form-item>
           <el-form-item label="状态">
-            <el-input :model-value="'由预检写入，不能手填 ready'" disabled />
+            <el-input :model-value="'保存映射后运行预检'" disabled />
           </el-form-item>
         </div>
         <el-form-item label="设备映射">
           <div class="mapping-list">
             <div v-for="(item, index) in form.devices" :key="index" class="mapping-row">
-              <el-select v-model="item.device_id" placeholder="选择设备" style="width: 190px">
+              <el-select v-model="item.device_id" placeholder="选择设备" style="width: 190px" aria-label="映射设备" @change="updateMappedDevice(item)">
                 <el-option v-for="d in devices" :key="d.id" :label="`${d.hostname} · ${d.mgmt_ip}`" :value="d.id" />
               </el-select>
-              <el-input v-model="item.role" placeholder="角色，如 R1" style="width: 110px" />
-              <el-input v-model="item.interfacesText" placeholder="link:GE3/0/3=10.0.123.1/24,loopback:LoopBack0=10.0.0.1/32" style="flex: 1; min-width: 220px" />
+              <el-input v-model="item.role" aria-label="实验角色" placeholder="角色，如 R1" style="width: 132px" />
+              <el-button text type="danger" @click="form.devices.splice(index, 1)">移除设备映射</el-button>
+              <fieldset class="interface-fields">
+                <legend>本设备的接口</legend>
+                <div v-for="(iface, ifaceIndex) in item.interfaces" :key="ifaceIndex" class="interface-row">
+                  <el-input v-model="iface.purpose" aria-label="接口用途" placeholder="用途，如 link 或 loopback" />
+                  <el-input v-model="iface.name" aria-label="接口名称" placeholder="接口名，如 GE0/0/1" />
+                  <el-input v-model="iface.address" aria-label="地址及掩码" placeholder="地址/掩码，如 192.0.2.1/24" />
+                  <el-button text type="danger" @click="item.interfaces.splice(ifaceIndex, 1)">移除接口</el-button>
+                </div>
+                <el-button size="small" @click="item.interfaces.push({ name: '', purpose: '', address: '' })">添加接口</el-button>
+                <details class="advanced-interfaces">
+                  <summary>从文本批量填入</summary>
+                  <el-input v-model="item.interfacesText" aria-label="接口映射文本" placeholder="link:GE0/0/1=192.0.2.1/24,loopback:LoopBack0=192.0.2.2/32" />
+                  <el-button size="small" @click="applyInterfaceText(item)">替换本设备的接口行</el-button>
+                </details>
+              </fieldset>
               <div class="role-expectations">
                 <label>本角色预期 Full 邻居
                   <el-input v-model="item.neighborsText" placeholder="邻居 Router ID，逗号分隔" aria-label="本角色预期邻居" />
@@ -88,10 +103,9 @@
                   <el-input v-model="item.routesText" placeholder="精确前缀及掩码，逗号分隔" aria-label="本角色预期路由" />
                 </label>
               </div>
-              <el-button text type="danger" @click="form.devices.splice(index, 1)">移除</el-button>
             </div>
             <el-button size="small" @click="addDeviceRow">添加设备映射</el-button>
-            <p class="muted">步骤核对按各角色自己的预期比较。接口用途写 link（互联）或 loopback（环回），并保留地址掩码；保存预期不会判通过。全局预期继续用于原环境规则。</p>
+            <p class="muted">角色名来自实验说明。接口用途填 link（互联）或 loopback（环回），地址填写实际掩码。每个角色的邻居和路由用于步骤核对。</p>
           </div>
         </el-form-item>
         <el-form-item label="保护项">
@@ -103,7 +117,7 @@
         <el-form-item label="预期路由">
           <el-input v-model="form.expectedRoutesText" placeholder="逗号分隔，如 10.0.9.9/32；用于环境规则，不手填通过" />
         </el-form-item>
-        <el-alert type="info" :closable="false" show-icon title="接口/地址是接收方现场映射，不把 R1/R2/R3 当作全局默认；缺失角色、接口或保护项时 preflight 返回 mismatch。" />
+        <el-alert type="info" :closable="false" show-icon title="保存只登记映射。随后运行预检，检查设备连接、接口地址和保护项，再把该环境选进对应实训。" />
       </el-form>
       <template #footer>
         <el-button @click="showForm = false">取消</el-button>
@@ -111,26 +125,35 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showPreflight" title="环境预检" width="min(680px, 92vw)">
+    <el-dialog v-model="showPreflight" :title="`环境预检 · ${preflightName}`" width="min(680px, 92vw)">
       <div v-if="preflight" class="preflight">
         <div class="preflight-head">
           <span class="v7b-pill" :class="statusClass(preflight.status)">{{ statusLabel(preflight.status) }}</span>
-          <span class="muted">{{ preflight.version }} · {{ preflight.checked_at }} · {{ preflight.verification_mode }}<template v-if="!preflight.real_device_verified"> · 未验证真实设备</template></span>
+          <span>{{ preflight.version }} · {{ formatApiTime(preflight.checked_at) }} · {{ observationModeLabel(preflight.verification_mode) }}</span>
         </div>
-        <ul>
-          <li v-for="(check, index) in preflight.checks" :key="index">
-            <span class="v7b-pill" :class="statusClass(check.status)">{{ check.status }}</span>
-            <span>{{ check.check }}：{{ check.detail }}</span>
+        <p>{{ preflightNextStep(preflight.status) }}</p>
+        <ul v-if="preflightProblems.length" aria-label="待处理检查项">
+          <li v-for="(check, index) in preflightProblems" :key="index">
+            <strong>{{ checkTitle(check) }}</strong><span>{{ check.detail }}</span>
           </li>
         </ul>
-        <p class="muted">预检只读，不修改设备；ready 表示本次固定只读事实与映射一致，不替代真实写权限或人工确认。模拟模式会显式标注，不宣称真实设备通过。</p>
+        <details>
+          <summary>查看全部 {{ preflight.checks.length }} 项检查</summary>
+          <ul>
+            <li v-for="(check, index) in preflight.checks" :key="index">
+              <span class="v7b-pill" :class="statusClass(check.status)">{{ check.status === 'ok' ? '通过' : check.status === 'simulated' ? '模拟读取' : '需核对' }}</span>
+              <strong>{{ checkTitle(check) }}</strong><span>{{ check.check === 'adapter' ? observationModeLabel(preflight.verification_mode) : check.detail }}</span>
+            </li>
+          </ul>
+        </details>
+        <p class="muted">本次检查只读取设备信息。涉及配置变更时，仍须在变更审批页核对并确认。</p>
       </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { ElMessage } from 'element-plus/es/components/message/index'
@@ -139,6 +162,8 @@ import SectionCard from '../../components/v7b/SectionCard.vue'
 import { getDevices, type DeviceRecord } from '../../api/device'
 import { useCurrentUser } from '../../composables/useCurrentUser'
 import { notifyRequestError } from '../../utils/requestError'
+import { formatApiTime } from '../../utils/datetime'
+import { environmentStatusLabel as statusLabel, observationModeLabel } from '../../utils/display'
 import {
   createEnvironment, getEnvironments, preflightEnvironment, updateEnvironment,
   type EnvironmentDevice, type EnvironmentRecord, type PreflightResult,
@@ -163,18 +188,36 @@ const saving = ref(false)
 const showForm = ref(false)
 const showPreflight = ref(false)
 const preflight = ref<PreflightResult | null>(null)
+const preflighting = ref<number | null>(null)
+const preflightName = ref('')
+const preflightProblems = computed(() => preflight.value?.checks.filter(check => !['ok', 'simulated'].includes(check.status)) || [])
 const editingId = ref<number | null>(null)
+type DeviceMappingForm = EnvironmentDevice & { interfacesText: string; neighborsText: string; routesText: string }
 const form = ref({
   name: '', version: 'v1', site: '', status: 'draft', protectionsText: '',
   expectedNeighborsText: '', expectedRoutesText: '',
-  devices: [] as Array<EnvironmentDevice & { interfacesText: string; neighborsText: string; routesText: string }>,
+  devices: [] as DeviceMappingForm[],
 })
 
-function statusLabel(status: string) {
-  return ({ ready: '就绪', mismatch: '映射不一致', unreachable: '不可达', busy: '占用中', unknown: '未知', draft: '草稿' } as Record<string, string>)[status] || status
+function checkTitle(check: PreflightResult['checks'][number]) {
+  const labels: Record<string, string> = {
+    adapter: '读取来源', verification_mode: '设备来源', reachability: '管理连接', completeness: '输出完整性', observation: '接口采集',
+    mapping: '设备映射', protection: '保护项', protection_target: '保护目标', device: '设备登记', role: '角色', mgmt_ip: '管理地址',
+    vendor: '厂商', interface: '接口', interface_address: '接口地址', interface_state: '接口状态', lock: '设备占用', fact: '观察记录',
+  }
+  const device = check.device_id && (devices.value.find(item => item.id === check.device_id)?.hostname || `设备 #${check.device_id}`)
+  return [device, labels[check.check] || '其他检查'].filter(Boolean).join(' · ')
+}
+
+function preflightNextStep(status: string) {
+  if (status === 'ready') return '这次读取结果与登记的映射一致。可回到实训的实验步骤选择该环境。'
+  if (status === 'mismatch') return '先根据下方检查项修改设备、接口或保护项，保存后再预检。'
+  if (status === 'busy') return '设备正在被终端或变更任务占用。待操作结束后再预检。'
+  if (status === 'unreachable') return '先核对下方设备的管理地址、连接状态和登录配置，再重试预检。'
+  return '本次读取未能确认映射。请查看检查项并补齐信息后重试。'
 }
 function statusClass(status: string) {
-  if (status === 'ready') return 'ok'
+  if (status === 'ready' || status === 'ok') return 'ok'
   if (status === 'mismatch' || status === 'unreachable') return 'danger'
   if (status === 'busy') return 'warn'
   return 'info'
@@ -234,6 +277,7 @@ function openEdit(row: EnvironmentRecord) {
     }).join('\n'),
     devices: (row.devices || []).map((item) => ({
       ...item,
+      interfaces: (item.interfaces || []).map(iface => ({ ...iface })),
       interfacesText: (item.interfaces || []).map((iface) => `${iface.purpose ? `${iface.purpose}:` : ''}${iface.name}=${iface.address || ''}`).join(','),
       neighborsText: (item.expected_neighbors || []).join(','),
       routesText: (item.expected_routes || []).join(','),
@@ -250,9 +294,32 @@ function parseInterfaces(text: string) {
   })
 }
 
+function applyInterfaceText(item: DeviceMappingForm) {
+  const incoming = parseInterfaces(item.interfacesText)
+  if (!incoming.length || incoming.some(iface => !iface.name)) {
+    ElMessage.warning('请在文本中提供至少一个接口名，再填入表格。')
+    return
+  }
+  item.interfaces = incoming.map(iface => ({
+    ...item.interfaces.find(old => old.name === iface.name), ...iface,
+  }))
+}
+
+function updateMappedDevice(item: DeviceMappingForm) {
+  item.mgmt_ip = ''
+  item.vendor = ''
+  item.os_version = ''
+}
+
 async function save() {
   if (!form.value.name.trim()) {
     ElMessage.warning('请填写环境名称')
+    return
+  }
+  const incomplete = form.value.devices.find(item => !item.device_id || !item.role.trim() ||
+    item.interfaces.some(iface => !iface.name.trim()))
+  if (incomplete) {
+    ElMessage.warning('请为每行选设备、填角色，并填写已添加的接口名。')
     return
   }
   const payload = {
@@ -260,7 +327,9 @@ async function save() {
     devices: form.value.devices.filter((item) => item.device_id).map((item) => ({
       device_id: item.device_id, role: item.role.trim(), mgmt_ip: item.mgmt_ip || '',
       vendor: item.vendor || '', os_version: item.os_version || '',
-      interfaces: parseInterfaces(item.interfacesText).map((iface) => ({ ...item.interfaces.find((old) => old.name === iface.name), ...iface })),
+      interfaces: item.interfaces.map(iface => ({
+        ...iface, name: iface.name.trim(), address: iface.address?.trim() || '', purpose: iface.purpose?.trim(),
+      })),
       expected_neighbors: item.neighborsText.trim() ? item.neighborsText.split(',').map((v) => v.trim()).filter(Boolean) : null,
       expected_routes: item.routesText.trim() ? item.routesText.split(',').map((v) => v.trim()).filter(Boolean) : null,
     })),
@@ -294,12 +363,17 @@ async function save() {
 }
 
 async function runPreflight(row: EnvironmentRecord) {
+  if (preflighting.value !== null) return
+  preflighting.value = row.id
   try {
     preflight.value = await preflightEnvironment(row.id) as unknown as PreflightResult
+    preflightName.value = row.name
     showPreflight.value = true
     await load()
   } catch (error: any) {
     notifyRequestError(error, '预检失败')
+  } finally {
+    preflighting.value = null
   }
 }
 
@@ -316,11 +390,16 @@ onMounted(async () => {
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
 .mapping-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .mapping-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.interface-fields { width: 100%; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--v7b-line); border-radius: 6px; }
+.interface-fields legend { padding-inline: 5px; color: var(--v7b-muted); }
+.interface-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(110px, 1fr) minmax(140px, 1.3fr) auto; align-items: center; gap: 8px; margin-bottom: 8px; }
+.advanced-interfaces { margin-top: 8px; }
+.advanced-interfaces summary { color: var(--v7b-muted); cursor: pointer; }
 .role-expectations { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
 .role-expectations label { color: var(--v7b-muted); font-size: 12px; line-height: 1.7; }
 .muted { color: var(--v7b-faint); font-size: 11px; }
-.preflight-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.preflight-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .preflight ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
 .preflight li { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.5; }
-@media (max-width: 760px) { .form-grid, .role-expectations { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .form-grid, .role-expectations, .interface-row { grid-template-columns: 1fr; } }
 </style>

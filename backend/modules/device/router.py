@@ -1,4 +1,5 @@
 """设备管理模块路由"""
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Any
@@ -179,7 +180,7 @@ async def check_all_devices_health(
         "device_health_check", "topology", str(topology_id or ""),
         {"total": len(results)},
     )
-    return {"total": len(results), "results": results}
+    return {"total": len(results), "results": results, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
 @router.get("/topologies/{topology_id}/links", response_model=list[TopologyLinkResponse])

@@ -14,6 +14,8 @@ param(
   [string]$Mode = 'minimal',
   [switch]$NoStart,
   [switch]$RebuildFrontend,
+  [string]$MinimalDbPath,
+  [switch]$SkipDependencyInstall,
   [string]$BackupDir,
   [string]$BackupFile,
   [ValidateRange(1, 65535)][int]$BackendPort = 8000
@@ -32,6 +34,7 @@ $Venv = Join-Path $Backend ".venv"
 $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $EnvFile = Join-Path $Root ".env"
 $EnvExample = Join-Path $Root ".env.example"
+if ($MinimalDbPath -and $Mode -ne 'minimal') { throw 'MinimalDbPath 仅用于本地模拟工作台。' }
 
 function Info($msg) { Write-Host "[bootstrap] $msg" }
 function Warn($msg) { Write-Host "[bootstrap] WARN: $msg" -ForegroundColor Yellow }
@@ -85,10 +88,17 @@ if (-not (Test-Path $VenvPy)) {
 $lock = Join-Path $Backend "requirements.lock"
 $spec = $lock
 if (-not (Test-Path -LiteralPath $spec)) { throw "缺少 requirements.lock，不能进行可复核交付" }
-Info "安装后端依赖（$([System.IO.Path]::GetFileName($spec))）…"
-& $VenvPy -m pip install -r $spec --quiet
-if ($LASTEXITCODE -ne 0) { throw "pip install 失败，请检查网络或配置 PIP_INDEX_URL 镜像" }
-Info "后端依赖安装完成"
+if ($SkipDependencyInstall) {
+  & $VenvPy -m pip check
+  if ($LASTEXITCODE -ne 0) { throw '现有依赖环境不完整，请常规初始化。' }
+  & $VenvPy -c "import fastapi, uvicorn, sqlalchemy, alembic, aiosqlite"
+  if ($LASTEXITCODE -ne 0) { throw '现有环境缺少基本运行依赖，请常规初始化。' }
+} else {
+  Info "安装后端依赖（$([System.IO.Path]::GetFileName($spec))）…"
+  & $VenvPy -m pip install -r $spec --quiet
+  if ($LASTEXITCODE -ne 0) { throw "pip install 失败，请检查网络或配置 PIP_INDEX_URL 镜像" }
+  Info "后端依赖安装完成"
+}
 
 # ── 3) 生成 .env（不覆盖已有）────────────────────────────────────────
 function New-Secret([int]$bytes = 48) {
@@ -160,7 +170,12 @@ if ($Mode -eq 'minimal') {
   # 或从已有环境拷贝过来的目录），下面的初始化与播种会连上真实 MySQL 并写入演示数据。
   # 进程环境变量优先于 .env，子进程（python/uvicorn）会继承。
   $env:DB_BACKEND = 'sqlite'
-  $env:DB_URL = ''
+  if ($MinimalDbPath) {
+    $DbPath = [System.IO.Path]::GetFullPath($MinimalDbPath).Replace('\', '/')
+    $env:DB_URL = "sqlite+aiosqlite:///$DbPath"
+  } else {
+    $env:DB_URL = ''
+  }
   $env:DEVICE_MODE = 'sim'
   $env:KNOWLEDGE_PROVIDER = 'local'
   Info "已强制最小模式环境变量：DB_BACKEND=sqlite / DEVICE_MODE=sim / KNOWLEDGE_PROVIDER=local"

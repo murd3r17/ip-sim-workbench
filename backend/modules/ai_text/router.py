@@ -14,6 +14,7 @@ from core.config import get_settings
 from core.database import get_async_session
 from core.dependencies import get_current_user, require_role
 from core.logger import get_logger
+from core.redaction import redact_payload
 from core.time_utils import iso_utc
 from core.request_metrics import timed_stage
 from core.rate_limiter import rate_limit
@@ -180,17 +181,15 @@ def _copilot_context_docs(sources: list) -> list[str]:
 
 
 async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: dict | None = None) -> dict[str, Any]:
-    """AF-03：实验上下文统一环境防护。
-
-    未核验/缺映射时不仅禁止草稿，也停止让模型生成现场配置（``allow_model=False``），
-    只返回安全说明与只读核对；会话/内容来源不可信时同样保守处理。
-    """
+    """Authorize access to the lab and gate concrete configuration separately."""
+    from modules.training.environment_policy import requests_site_configuration
+    site_config = data.want_draft or requests_site_configuration(data.message)
     default = {
         "lab_scoped": False, "allow_draft": True, "allow_model": True,
         "reason": "", "note": "", "safe_text": "", "content_warning": "",
     }
     if not data.lab_id and not data.lab_session_id:
-        if data.lab_steps:
+        if data.lab_steps and site_config:
             return {
                 **default, "lab_scoped": True, "allow_draft": False, "allow_model": False,
                 "reason": "请求携带实验步骤但没有可核验的实验/会话身份，不能生成现场配置。",
@@ -230,7 +229,7 @@ async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: d
             "reason": "找不到对应的实验，不能生成现场配置。",
             "safe_text": "找不到对应的实验，已停止生成现场配置。",
         }
-    if session is not None and session.status != "in_progress":
+    if session is not None and session.status != "in_progress" and site_config:
         return {
             **default, "lab_scoped": True, "allow_draft": False, "allow_model": False,
             "reason": "该实训会话已结束，只能回看记录，不能生成现场配置。",
@@ -247,6 +246,30 @@ async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: d
         guard = lab_environment(SimpleNamespace(environment_spec=frozen_spec))
     else:
         guard = lab_environment(lab)
+    steps = [item for item in (resolved.get("objectives") or []) if isinstance(item, dict)][:30]
+    if not resolved.get("can_guide"):
+        steps = []
+    lab_content = {key: resolved.get(key) for key in ("source", "title", "version", "warning")}
+    if session is not None:
+        lab_content["session_status"] = session.status
+        workspace = session.workspace if isinstance(session.workspace, dict) else {}
+        marked = {str(item.get("id")) for item in (workspace.get("steps") or [])
+                  if isinstance(item, dict) and item.get("status") == "done"}
+        pending = next((item for item in steps if str(item.get("id")) not in marked), None)
+        lab_content["first_unmarked_step_id"] = pending.get("id") if pending else None
+    context = {
+        **default, "lab_scoped": True,
+        "lab_steps": steps, "lab_content": lab_content,
+    }
+    if not site_config:
+        reason = resolved.get("warning") or guard.get("reason") or ""
+        if session is not None and session.status != "in_progress":
+            reason = "会话已结束。可以解释已保存的内容；需要新操作请开启会话。"
+        return {
+            **context, "allow_draft": False,
+            "note": "本轮为解释或步骤指导。依据课程内容说明目标、应看字段、判断方法和记录方式。"
+                    "具体对象和参数须先核对。区分教材示例、历史观察与当前事实。" + reason,
+        }
     if not resolved.get("can_guide", True):
         answer = safe_environment_answer(
             title=resolved["title"] or lab.title,
@@ -264,16 +287,50 @@ async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: d
             reason=guard["reason"],
             content_warning=resolved.get("warning") or "",
         )
-        from modules.training.environment_policy import readonly_training_ui_help
-        help_text = readonly_training_ui_help(data.message) if not data.want_draft else ''
         return {
             **default, "lab_scoped": True, "allow_draft": False, "allow_model": False,
-            "reason": guard["reason"], "safe_text": help_text or answer["text"],
+            "reason": guard["reason"], "safe_text": answer["text"],
             "content_warning": resolved.get("warning") or "",
         }
-    return {**default, "lab_scoped": True,
-            'lab_steps':[item for item in (resolved.get('objectives') or []) if isinstance(item,dict)][:30],
-            'lab_content':{key:resolved.get(key) for key in ('source','title','version','warning')}}
+    return context
+
+
+async def _copilot_attachments(db: AsyncSession, data: CopilotChatRequest, actor: dict) -> list[dict]:
+    """Resolve a previous upload from the owner's saved conversation."""
+    if data.attachments or not data.attachment_message_id:
+        return [item.model_dump(exclude_none=True) for item in data.attachments]
+
+    from sqlalchemy import select
+    from modules.ai_text.models import CopilotConversation
+    from modules.ai_text.schemas import CopilotAttachment
+
+    query = select(CopilotConversation.messages).where(
+        CopilotConversation.id == data.conversation_id,
+        CopilotConversation.user_id == actor.get("user_id"),
+    )
+    messages = (await db.execute(query)).scalar_one_or_none()
+    matches = [
+        message for message in (messages or [])
+        if isinstance(message, dict) and message.get("role") == "user"
+        and message.get("id") == data.attachment_message_id
+    ]
+    if len(matches) == 1:
+        saved = matches[0].get("attachments")
+        if isinstance(saved, list):
+            attachments = []
+            for item in saved[:4]:
+                try:
+                    attachment = CopilotAttachment.model_validate(item)
+                except ValueError:
+                    continue
+                if attachment.contentString.strip():
+                    attachments.append(attachment.model_dump(exclude_none=True))
+            if attachments:
+                return attachments
+    raise HTTPException(status_code=409, detail={
+        "code": "attachment_unavailable",
+        "message": "暂时无法读取这份对话附件。请确认该会话已同步，或重新选取原文件。",
+    })
 
 
 def _apply_policy_note(ui: dict, policy: dict) -> dict:
@@ -288,13 +345,18 @@ def _apply_policy_note(ui: dict, policy: dict) -> dict:
 @timed_stage("retrieval")
 async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
     """向量召回 + 网络术语扩展 + 同 K 重排；词法/融合为实验通道。"""
-    expanded = expand_query(message)
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    frozen_local = edition is not None and service.provider.name in {"local", "anythingllm"}
+    expanded = message if frozen_local else expand_query(message)
     vector_hits: list[dict] = []
     retrieval_error = None
     try:
         # Candidate expansion occurs once; preserve the previously effective
         # pool size so cache repair does not silently change retrieval quality.
-        vector_hits = await cached_search(_get_knowledge_service(), expanded, max(top_k * 4, 20))
+        # The frozen edition already ranks original-language hypotheses and
+        # verified extracts. A second expansion here can dilute exact fields.
+        vector_hits = await cached_search(service, expanded, top_k if frozen_local else max(top_k * 4, 20))
         vector_hits = [{**h, "content": clean_chunk(str(h.get("content") or ""))} for h in vector_hits]
     except Exception as exc:  # noqa: BLE001
         logger.warning("vector_retrieval_failed", error=type(exc).__name__)
@@ -312,6 +374,8 @@ async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
         # A failed provider without a successful optional fallback is not an
         # empty corpus. Let both transports report the actual degraded state.
         raise RuntimeError("Knowledge retrieval unavailable") from retrieval_error
+    if frozen_local or (vector_hits and all(hit.get("retriever") == "reviewed_excerpt" for hit in vector_hits)):
+        return vector_hits[:top_k]
     # Historical reranking measurements are not current whole-stage acceptance.
     return rerank(vector_hits, expanded, top_k, original_query=message)
 
@@ -325,13 +389,13 @@ async def _resolve_page_data(db: Any, data: CopilotChatRequest, current_user: di
         try:
             if db is None:
                 raise ValueError("No database session")
-            summary = await DashboardService.get_summary(db, probe_services=False)
+            summary = await DashboardService.get_summary(db, actor=current_user, probe_services=False)
             topology = summary.get("topology")
             snapshot = {
                 "kind": "dashboard_summary", "source": "database_snapshot",
                 "collected_at": summary["generated_at"].isoformat(),
                 "devices": summary["devices"],
-                "tasks": {key: summary["tasks"][key] for key in ("active", "pending", "failed")},
+                "tasks": {"deploy_batches": summary["tasks"]["deploy_batches"]},
                 "alarms": {key: summary["alarms"][key] for key in ("active", "critical")},
                 "topology": {key: topology.get(key) for key in ("name", "device_count", "link_count")} if topology else None,
                 "topology_scope": "active_main_topology_only；null表示当前没有可用的活跃主拓扑，不代表没有其他实训拓扑，也不是零条链路。",
@@ -394,17 +458,17 @@ async def _generate_copilot_chat(
         page = await _resolve_page_data(db, data, current_user)
         policy = await _lab_draft_policy(db, data, current_user)
         lab_steps = policy.get('lab_steps',[])
-        attachments = [
-            {"contentString": a.contentString, "mime": a.mime}
-            for a in (data.attachments or [])
-        ]
+        attachments = await _copilot_attachments(db, data, current_user) if policy["allow_model"] else []
         try:
             # C-04：检索与生成解耦。ask 会触发 AnythingLLM 内部再生成一次（慢且重复计费），
             # 改为只做检索，把命中片段交给同一次模型生成，来源仍可逐条追溯。
             intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=data.history,
+                                  has_attachments=bool(attachments),
+                                  saved_observation=page.meta.get("record_origin") == "server_observation_record"
+                                  and "device_mismatch" not in page.meta.get("reasons", []),
                                   page_data=page.text, page_data_trusted=page.trusted,
                                   route=data.context.route if data.context else None)
-            hit_list = await _retrieve(data.message, data.top_k) if intent.needs_knowledge else []
+            hit_list = await _retrieve(data.message, data.top_k) if intent.needs_knowledge and policy["allow_model"] else []
             sources = prepare_sources((hit_list or [])[:data.top_k])
             knowledge = {"sources": sources, "status": ("not_requested" if not intent.needs_knowledge else "ok" if sources else "empty"), "provider": _kb_provider_label()}
         except Exception as exc:  # noqa: BLE001
@@ -464,6 +528,9 @@ async def _generate_copilot_chat(
             data.message,
             want_draft=data.want_draft and policy["allow_draft"],
             lab_steps=lab_steps, history=data.history,
+            has_attachments=bool(attachments),
+            saved_observation=page.meta.get("record_origin") == "server_observation_record"
+            and "device_mismatch" not in page.meta.get("reasons", []),
             page_data=page.text,
             page_data_trusted=page.trusted,
             route=(data.context.route if data.context else None),
@@ -621,10 +688,7 @@ async def _generate_copilot_stream(
 
     from modules.ai_text.cancel import RequestCancelled, run_cancellable
 
-    attachments = [
-        {"contentString": a.contentString, "mime": a.mime}
-        for a in (data.attachments or [])
-    ]
+    attachments = [item.model_dump(exclude_none=True) for item in data.attachments]
     user_id = current_user.get("user_id")
     request_id = (data.request_id or "").strip() or f"req-{uuid.uuid4().hex[:16]}"
     factory = get_session_factory()
@@ -652,6 +716,10 @@ async def _generate_copilot_stream(
                 async with factory() as setup_db:
                     policy = await run_cancellable(_lab_draft_policy(setup_db, data, current_user), cancel_event, release_registration)
                     page = await run_cancellable(_resolve_page_data(setup_db, data, current_user), cancel_event, release_registration)
+                    if policy["allow_model"]:
+                        attachments = await run_cancellable(
+                            _copilot_attachments(setup_db, data, current_user), cancel_event, release_registration
+                        )
                     if data.want_draft and policy['allow_model'] and policy['allow_draft']:
                         draft_target = await run_cancellable(resolve_draft_target(setup_db,data.message,data.context.selection if data.context else '',current_user),cancel_event)
                         draft_environment = await run_cancellable(resolve_draft_environment(setup_db,draft_target,page=page),cancel_event)
@@ -660,8 +728,14 @@ async def _generate_copilot_stream(
                             draft_target = None
             except RequestCancelled:
                 cancelled_during_setup = True
+            except HTTPException:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("copilot_policy_failed", error=str(exc))
+                if data.attachment_message_id and not data.attachments:
+                    raise HTTPException(status_code=503, detail={
+                        "code": "attachment_unavailable", "message": "暂时无法读取对话附件，请稍后重试。",
+                    }) from exc
                 if data.want_draft or data.lab_id or data.lab_session_id or data.lab_steps:
                     policy = blocked_draft_policy(policy,'环境核验暂不可用，不能生成具体设备配置。')
                     draft_target = None
@@ -671,10 +745,13 @@ async def _generate_copilot_stream(
         try:
             # CF-02：流式与同步统一走 search，来源/状态/provider 归一，避免 ask 的隐藏二次生成。
             intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=data.history,
+                                  has_attachments=bool(attachments),
+                                  saved_observation=page.meta.get("record_origin") == "server_observation_record"
+                                  and "device_mismatch" not in page.meta.get("reasons", []),
                                   page_data=page.text, page_data_trusted=page.trusted,
                                   route=data.context.route if data.context else None)
             hit_list = (await run_cancellable(_retrieve(data.message, data.top_k), cancel_event)
-                        if intent.needs_knowledge else [])
+                        if intent.needs_knowledge and policy["allow_model"] else [])
             stream_sources = prepare_sources((hit_list or [])[:data.top_k])
             knowledge = {
                 "sources": stream_sources,
@@ -755,6 +832,9 @@ async def _generate_copilot_stream(
         data.message,
         want_draft=data.want_draft and policy["allow_draft"],
         lab_steps=lab_steps, history=data.history,
+        has_attachments=bool(attachments),
+        saved_observation=page.meta.get("record_origin") == "server_observation_record"
+        and "device_mismatch" not in page.meta.get("reasons", []),
         page_data=page.text,
         page_data_trusted=page.trusted,
         route=(data.context.route if data.context else None),
@@ -1006,7 +1086,7 @@ async def inspection_summary(
     job = await db.get(MonitorJob, data.job_id)
     if not job:
         raise HTTPException(status_code=404, detail="巡检任务不存在，请先执行一次采集")
-    if job.status == "running":
+    if job.status in {"pending", "running"}:
         raise HTTPException(status_code=409, detail="任务仍在执行，完成后才能总结")
 
     def _load(raw: str | None) -> Any:
@@ -1019,6 +1099,34 @@ async def inspection_summary(
 
     report_payload = _load(job.report_json)
     summary_payload = _load(job.summary_json)
+    summary_values = summary_payload if isinstance(summary_payload, dict) else {}
+    coverage = {
+        "target": job.device_count,
+        "observed": job.success_count,
+        "failed": job.failure_count,
+        "skipped": summary_values.get("skipped"),
+        "finished_at": iso_utc(job.finished_at),
+    }
+    devices = summary_values.get("devices")
+    missing_devices = [
+        {"device_id": item.get("device_id"), "hostname": str(item.get("hostname") or "未标识设备")[:128],
+         "status": item["status"], "reason": str(item.get("reason") or "")[:180]}
+        for item in devices if isinstance(item, dict) and item.get("status") in ("failed", "skipped")
+    ] if isinstance(devices, list) else []
+    if job.success_count == 0:
+        reasons = summary_values.get("errors")
+        findings = [str(item)[:180] for item in reasons[:4]] if isinstance(reasons, list) else []
+        next_step = (
+            "先到设备页检查管理连接。修复失败或跳过的设备后，对同一拓扑重新巡检。"
+            if job.device_count else "先在拓扑中确认要巡检的设备，再运行巡检。"
+        )
+        return redact_payload({
+            "job_id": job.id, "coverage": coverage, "basis": "no_current_observations",
+            "missing_devices": missing_devices,
+            "summary": "本次未取得可用设备观察，当前健康情况未知。",
+            "key_findings": findings, "root_causes": [],
+            "recommendations": [next_step], "report_text": "",
+        })
     source_text = json.dumps(
         {
             "job_id": job.id,
@@ -1033,16 +1141,18 @@ async def inspection_summary(
             "summary": summary_payload,
         },
         ensure_ascii=False,
-        indent=2,
     )
     try:
         service = await _get_service(db, current_user)
         report = await service.generate_report(
             title=f"巡检任务 #{job.id} 异常归因与处置建议",
             source_text=source_text,
-            context="对象：华为 VRP 网络设备的指标采集/巡检结果。请给出异常归因、影响范围与处置建议。",
+            context=("只解读本任务实际采到的设备与指标。开头给出采集覆盖和最重要的事实，"
+                     "区分失败、跳过与无告警。没有证据时列出待验证方向，避免归因为已证实故障。"
+                     "建议最多三项，每项说明下一次要核对的对象和结果。"),
         )
-        return {"job_id": job.id, **report}
+        return {**report, "job_id": job.id, "coverage": coverage, "basis": "saved_job",
+                "missing_devices": redact_payload(missing_devices)}
     except Exception as e:
         logger.error("inspection_summary_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail="巡检总结生成失败，请稍后重试")
@@ -1256,6 +1366,33 @@ async def read_knowledge_document(
         raise HTTPException(503, detail={'message': '正文读取失败，请稍后重试。'}) from exc
 
 
+@router.get("/knowledge/original-figure", response_model=None)
+async def read_original_figure(
+    document_id: str = Query(..., min_length=1, max_length=128),
+    version: str = Query(..., min_length=64, max_length=64),
+    page: int = Query(..., ge=1, le=10000),
+    current_user: dict = Depends(get_current_user),
+) -> Response:
+    from modules.knowledge.reader import DocumentReadError
+    try:
+        image = await _get_knowledge_service().original_figure(document_id, version, page)
+    except DocumentReadError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(424, detail={"message": "原页图读取失败，请管理员核对资料目录。"}) from exc
+    return Response(image, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/knowledge/legacy-locator", response_model=None)
+async def locate_legacy_knowledge(
+    document_id: str = Query(..., min_length=1, max_length=256),
+    version: str = Query(..., min_length=64, max_length=64),
+    section_id: str | None = Query(None, max_length=80),
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    return await _get_knowledge_service().legacy_locator(document_id, version, section_id)
+
+
 @router.delete("/knowledge/documents/{doc_id:path}", response_model=None)
 async def delete_knowledge_document(
     doc_id: str,
@@ -1277,7 +1414,9 @@ async def search_knowledge(
 ) -> Any:
     """检索知识库"""
     try:
-        return await _get_knowledge_service().search(data.question, data.kb_id, data.top_k)
+        results = await _get_knowledge_service().search(data.question, data.kb_id, data.top_k)
+        return [{key: value for key, value in item.items() if key not in {"prompt_text", "prompt_sha256"}}
+                for item in prepare_sources(results, max_document_chars=1300, max_documents=data.top_k)]
     except Exception as e:
         logger.error("search_knowledge_failed", error=str(e), exc_info=True)
         raise HTTPException(
@@ -1339,6 +1478,16 @@ async def read_citation(
                          if s.get("source_id") == source_id and s.get("filename") == filename), None)
         if original is None:
             raise HTTPException(404, detail="原请求中没有此来源")
+        if original.get("document_id") and original.get("document_version"):
+            locator = await _get_knowledge_service().legacy_locator(
+                original["document_id"], original["document_version"], original.get("section_id"),
+            )
+            if locator.get("status") == "exact-page-locator":
+                return {key: original.get(key) for key in ("filename", "title", "source_id", "content", "version",
+                            "captured_at", "truncated", "reviewed_notes", "page")} | {
+                    "scope": "answer_excerpt", "available_now": True, "legacy_locator": locator,
+                    "message": locator["message"],
+                }
     try:
         docs = await _get_knowledge_service().list_documents()
     except Exception as exc:  # noqa: BLE001
@@ -1353,7 +1502,7 @@ async def read_citation(
             raise HTTPException(410, detail={"code": "citation_revoked"})
         if len(matches) != 1:
             raise HTTPException(409, detail={"code": "citation_ambiguous", "message": "同名来源不唯一，暂时不能核验"})
-        return {key: original.get(key) for key in ("filename", "title", "document_id", "source_id", "content", "version", "captured_at", "truncated", "reviewed_notes")} | {
+        return {key: original.get(key) for key in ("filename", "title", "document_id", "source_id", "content", "version", "captured_at", "truncated", "reviewed_notes", "document_version", "section_id", "page")} | {
             "scope": "answer_excerpt", "available_now": True,
             "message": "回答生成时使用的片段；当前仅核验资料仍可访问，不代表全文版本未变化。",
         }

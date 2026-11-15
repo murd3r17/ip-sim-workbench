@@ -239,12 +239,12 @@ class DeviceService:
         settings = get_settings()
         sem = asyncio.Semaphore(6)
 
-        async def probe(device: Device) -> tuple[Device, bool]:
+        async def probe(device: Device) -> tuple[Device, bool, str | None]:
             creds = await DeviceService.get_device_credentials(device)
             uname = username or creds.get("username") or ""
             pwd = password or creds.get("password") or ""
             if not uname or not pwd:
-                return device, False
+                return device, False, "missing_credentials"
             async with sem:
                 try:
                     alive = await loop.run_in_executor(
@@ -252,14 +252,14 @@ class DeviceService:
                         uname, pwd, settings.ssh_connect_timeout,
                     )
                 except Exception:  # noqa: BLE001
-                    alive = False
-                return device, alive
+                    return device, False, "check_failed"
+                return device, alive, None if alive else "ssh_unavailable"
 
         probed = await asyncio.gather(*(probe(d) for d in devices))
         # 串行更新状态与时间戳（共享请求 session 不能并发写）
         results: list[dict] = []
         now = datetime.now(timezone.utc)
-        for device, alive in probed:
+        for device, alive, reason in probed:
             new_status = DeviceStatus.ONLINE if alive else DeviceStatus.OFFLINE
             if device.status != new_status:
                 device.status = new_status
@@ -270,6 +270,8 @@ class DeviceService:
                 "device_id": device.id,
                 "hostname": device.hostname,
                 "status": device.status.value,
+                "mode": "ssh",
+                "reason": reason,
                 "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
             })
         await db.commit()

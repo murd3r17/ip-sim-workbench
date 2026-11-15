@@ -7,7 +7,7 @@ import hashlib
 from datetime import datetime, timezone
 
 from .retrieval import clean_chunk
-from core.markdown_blocks import complete_prefix
+from core.markdown_blocks import complete_prefix, unclosed_fence_start
 from modules.knowledge.reviewed_source_notes import notes_for_excerpt, notes_prompt
 
 MAX_DOCUMENTS = 8
@@ -58,18 +58,22 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
         body = clean_chunk(str(hit.get("text") or hit.get("content") or ""))
         if not body:
             continue
+        incomplete_fence = unclosed_fence_start(body)
+        usable = body[:incomplete_fence].rstrip() if incomplete_fence is not None else body
+        if not usable:
+            continue
         title = str(hit.get("filename") or hit.get("title") or "参考文档")
         prefix = f"[{title[:160]}]\n"
         limit = min(document_limit, remaining)
         if limit <= len(prefix):
             break
-        truncated = len(body) > limit - len(prefix)
+        truncated = incomplete_fence is not None or len(usable) > limit - len(prefix)
         if truncated:
             prefix += INCOMPLETE_NOTE
-        content = complete_prefix(body, max(0, limit - len(prefix)))
+        content = complete_prefix(usable, max(0, limit - len(prefix)))
         if not content:
             continue
-        notes = notes_for_excerpt(title, content)
+        notes = notes_for_excerpt(title, content, hit.get("document_version"))
         supplement = notes_prompt(notes)
         if supplement and len(prefix + content + supplement) > limit:
             # Never send a known inaccurate claim after dropping its correction.
@@ -78,8 +82,8 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
             if not truncated:
                 prefix += INCOMPLETE_NOTE
                 truncated = True
-            content = complete_prefix(body, max(0, limit - len(prefix) - len(supplement)))
-            notes = notes_for_excerpt(title, content)
+            content = complete_prefix(usable, max(0, limit - len(prefix) - len(supplement)))
+            notes = notes_for_excerpt(title, content, hit.get("document_version"))
             supplement = notes_prompt(notes)
         if not content:
             continue
@@ -92,7 +96,8 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
             "prompt_text": prompt_text, "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
             "truncated": truncated,
             **({"reviewed_notes": notes} if notes else {}),
-            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path") if hit.get(key)},
+            **({"page": hit["page"]} if isinstance(hit.get("page"), int) and hit["page"] > 0 else {}),
+            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path", "document_version", "section_id") if hit.get(key)},
         })
         remaining -= len(prompt_text)
         if len(sources) == document_count or not remaining:

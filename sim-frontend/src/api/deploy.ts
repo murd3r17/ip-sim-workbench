@@ -7,6 +7,8 @@ export interface DeployTaskItem {
   stage?: string
   config_content: string
   status: string
+  started_at?: string | null
+  completed_at?: string | null
 }
 
 export interface DeployBatchRecord {
@@ -18,6 +20,7 @@ export interface DeployBatchRecord {
   planned_at?: string
   created_at?: string
   items?: DeployTaskItem[]
+  summary?: Partial<Record<'total' | 'pending' | 'waiting' | 'running' | 'success' | 'failed' | 'execution_failed' | 'cancelled' | 'rolled_back', number>>
 }
 
 // 配置模板
@@ -84,7 +87,7 @@ export const createDeployBatch = (data: {
   planned_at?: string
   engine?: string
   items: DeployBatchItem[]
-}) => request.post('/deploy/batches', data)
+}, silent = false) => request.post<DeployBatchRecord, DeployBatchRecord>('/deploy/batches', data, { silent })
 
 export const getDeployBatches = () => request.get<DeployBatchRecord[], DeployBatchRecord[]>('/deploy/batches')
 

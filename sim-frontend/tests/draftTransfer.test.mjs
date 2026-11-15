@@ -4,24 +4,33 @@ import test from 'node:test'
 import ts from 'typescript'
 
 const vue = await readFile(new URL('../src/views/deploy/DeployCenterView.vue', import.meta.url), 'utf8')
-const source = vue.slice(vue.indexOf('function loadAiDraft()'), vue.indexOf('function maybeAutoLoadDraft()'))
+const source = vue.slice(vue.indexOf('async function loadAiDraft()'), vue.indexOf('function maybeAutoLoadDraft()'))
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-function load(text, metadata) {
+async function load(text, metadata, acceptReplacement = true) {
   const data = new Map([['deploy_ai_draft', text], ['deploy_ai_draft_context', metadata]])
   const form = { value: { device_ids: [3, 4], config_content: 'old' } }
   const tab = { value: 'tasks' }
-  const run = new Function('localStorage', 'deployForm', 'devices', 'activeTab', 'ElMessage', 'refreshDraftState', js + ';return loadAiDraft()')
-  const result = run({ getItem: key => data.get(key) }, form, { value: [{ id: 2 }, { id: 3 }] }, tab, { success() {} }, () => {})
-  return { result, form: form.value, tab: tab.value }
+  const deps = {
+    localStorage: { getItem: key => data.get(key) }, deployForm: form,
+    devices: { value: [{ id: 2 }, { id: 3 }] }, activeTab: tab, ElMessage: { success() {} },
+    refreshDraftState() {}, drafts: { deploy: { form: form.value, submitting: false } },
+    hasDraft: { value: true }, confirmDraftReplacement: async () => acceptReplacement, viewActive: true,
+  }
+  const run = new Function(...Object.keys(deps), js + ';return loadAiDraft()')
+  await run(...Object.values(deps))
+  return { form: form.value, tab: tab.value }
 }
-test('load replaces an unrelated multi-device target with the original device', () => {
-  assert.deepEqual(load('new', JSON.stringify({ text: 'new', target: { deviceId: 2, verifiedByServer: true } })), {
-    result: true, form: { device_ids: [2], config_content: 'new' }, tab: 'deploy',
+test('load replaces an unrelated multi-device target with the original device after confirmation', async () => {
+  assert.deepEqual(await load('new', JSON.stringify({ text: 'new', target: { deviceId: 2, verifiedByServer: true } })), {
+    form: { device_ids: [2], config_content: 'new' }, tab: 'deploy',
   })
+})
+test('declining replacement preserves the original text and devices', async () => {
+  assert.deepEqual(await load('new', undefined, false), { form: { device_ids: [3, 4], config_content: 'old' }, tab: 'tasks' })
 })
 for (const [label, metadata] of [
   ['legacy', undefined], ['corrupt', '{'], ['mismatched text', JSON.stringify({ text: 'old', target: { deviceId: 2 } })],
   ['deleted device', JSON.stringify({ text: 'new', target: { deviceId: 99 } })],
   ['string device', JSON.stringify({ text: 'new', target: { deviceId: '2' } })],
   ['unverified old metadata', JSON.stringify({ text: 'new', target: { deviceId: 2 } })],
-]) test(`${label} draft never inherits the previous target`, () => assert.deepEqual(load('new', metadata).form.device_ids, []))
+]) test(`${label} draft never inherits the previous target`, async () => assert.deepEqual((await load('new', metadata)).form.device_ids, []))

@@ -39,27 +39,19 @@ from modules.ai_text.models import AILog  # noqa: E402
 from modules.system.models import SystemConfig, BackgroundTask  # noqa: E402
 from modules.trust.models import EnvironmentProfile, ReadOnlyObservation  # noqa: E402
 from modules.training.models import LabStatus, TrainingLab  # noqa: E402
+from engines.sim_topology import DEMO_LINKS, DEMO_MANAGEMENT  # noqa: E402
 
 TOPOLOGY_NAME = "模拟实训拓扑"
 LAB_TITLE = "模拟网络巡检实训"
 
 DEVICE_PLAN = [
-    ("R-1", "192.168.100.11", DeviceType.ROUTER, "NE40E", "core"),
-    ("R-2", "192.168.100.12", DeviceType.ROUTER, "NE40E", "core"),
-    ("R-3", "192.168.100.13", DeviceType.ROUTER, "NE40E", "core"),
-    ("S-1", "192.168.100.14", DeviceType.SWITCH_L3, "CE6800", "access"),
-    ("S-2", "192.168.100.15", DeviceType.SWITCH_L3, "CE6800", "access"),
-    ("S-3", "192.168.100.16", DeviceType.SWITCH_L3, "CE6800", "access"),
+    (name, address, DeviceType.ROUTER, "NE40E", "core") if name.startswith("R-")
+    else (name, address, DeviceType.SWITCH_L3, "CE6800", "access")
+    for name, address in DEMO_MANAGEMENT.items()
 ]
 
 # (源设备, 源接口, 目标设备, 目标接口)
-LINK_PLAN = [
-    ("R-1", "GE3/0/0", "R-2", "GE3/0/1"),
-    ("R-2", "GE3/0/2", "R-3", "GE3/0/3"),
-    ("S-1", "GE0/0/1", "S-2", "GE0/0/2"),
-    ("S-2", "GE0/0/3", "S-3", "GE0/0/1"),
-    ("R-2", "GE0/0/4", "S-2", "GE0/0/4"),
-]
+LINK_PLAN = DEMO_LINKS
 
 
 async def main() -> int:

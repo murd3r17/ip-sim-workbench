@@ -30,9 +30,10 @@
           <el-descriptions-item label="数据库">
             <el-tag :type="info.database_status === 'healthy' ? 'success' : 'info'" size="small" :title="String(info.database_status || '未取得状态')">{{ healthLabel(info.database_status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="LLM">
+          <el-descriptions-item label="模型连通性">
             <el-tag :type="info.llm_status === 'healthy' ? 'success' : 'warning'" size="small" :title="String(info.llm_status || '未取得状态')">{{ healthLabel(info.llm_status) }}</el-tag>
           </el-descriptions-item>
+          <el-descriptions-item label="最近连通性探测">{{ typeof info.llm_checked_at === 'string' ? formatApiTime(info.llm_checked_at) : '暂无探测时间' }}</el-descriptions-item>
           <el-descriptions-item label="LLM提供商">{{ info.llm_provider }}</el-descriptions-item>
           <el-descriptions-item label="LLM模型">{{ info.llm_model }}</el-descriptions-item>
           <el-descriptions-item label="Fernet加密">
@@ -54,10 +55,10 @@
 
       <el-card shadow="never" class="info-card hint-card">
         <template #header><span>助手对接</span></template>
-        <p>右侧 AI 助手可结合本页解释系统模块用途。配置项请在「系统配置」中维护；密钥状态以本页组件状态为准。</p>
+        <p>本页探测模型服务能否连接。生成失败时，可在助手的「诊断详情」取请求编号，在日志文件的 app.log 最近记录中查找。</p>
         <div class="hint-actions">
           <el-button link type="primary" @click="$router.push('/system/config')">系统配置</el-button>
-          <el-button link type="primary" @click="$router.push('/system/audit')">审计日志</el-button>
+          <el-button link type="primary" @click="$router.push('/system/logs')">日志文件</el-button>
           <el-button link type="primary" @click="$router.push('/dashboard')">返回总览</el-button>
         </div>
       </el-card>
@@ -68,6 +69,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { notifyRequestError } from '../../utils/requestError'
+import { formatApiTime } from '../../utils/datetime'
 import { getSystemInfo } from '@/api/system'
 
 const info = ref<Record<string, unknown>>({

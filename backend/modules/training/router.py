@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 """实训模块路由"""
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -507,22 +507,37 @@ async def get_training_hint(
     elif not guard["allow_executable"]:
         blocked_reason = guard["reason"]
     if blocked_reason:
-        # AF-03：未核验/无映射/旧内容未知时不调用配置教练，只返回原因与只读核对。
+        # Even without a bound device, a saved course still describes what to
+        # learn and which evidence would support this step.
         safe = safe_environment_answer(
             title=content_lab.title,
             reason=blocked_reason,
             content_warning=resolved["warning"] if resolved["can_guide"] else "",
         )
+        saved_workspace = session.workspace if isinstance(session.workspace, dict) else {}
+        completed = {str(item.get("id")) for item in (saved_workspace.get("steps") or [])
+                     if isinstance(item, dict) and item.get("status") == "done"}
+        objectives = [item for item in (content_lab.objectives or []) if isinstance(item, dict)]
+        step = next((item for item in objectives if str(item.get("id")) not in completed), None)
+        study = []
+        if step:
+            study = [
+                f"当前步骤：{step.get('name') or '查看目标'}。",
+                f"先弄清：{step.get('goal') or '这一步需要观察的对象和字段'}。",
+                "能取得观察时，记录设备、时间、字段和实际值。设备不可用时，先保存疑问和待核对项。",
+            ]
+            if step.get("expected"):
+                study.append(f"核对依据：{step['expected']}")
         return {
             "session_id": snapshot["session"].id,
             "lab_id": snapshot["lab"].id,
             "goal": content_lab.title,
-            "summary": "当前环境未核验，已停止生成现场配置步骤；可先做只读核对或阅读教材原文。",
-            "next_steps": safe["next_steps"],
+            "summary": "可以先学习当前步骤并记录疑问。实际配置需要已核对的设备和环境。",
+            "next_steps": study or safe["next_steps"],
             "corrections": [],
             "explanations": [blocked_reason, "教材中的接口/地址是示例，未与现场映射核对前不要直接粘贴执行。"],
             "risk_notes": safe["risk_notes"],
-            "coach_text": safe["text"],
+            "coach_text": "\n".join(study) if study else safe["text"],
             "sources": knowledge_sources,
             "degraded": False,
             "knowledge_status": knowledge_status,
@@ -915,14 +930,19 @@ async def export_training_session(
     db: AsyncSession = Depends(get_async_session),
     current_user: dict = Depends(get_current_user),
     version: int | None = None,
+    format: Literal["json", "markdown"] = "json",
 ) -> Any:
     """Export saved notes/logs and the requested ready report; never generate."""
     await _require_session_owner(session_id, db, current_user)
     snapshot = await TrainingService.build_session_snapshot(db, session_id)
     workspace = await get_training_workspace(session_id, db, current_user)
     versions = await report_store.list_versions(db, session_id)
-    from modules.training.exports import build_export
-    return build_export(snapshot, workspace, versions, version)
+    from modules.training.exports import build_export, render_learning_record
+    data = build_export(snapshot, workspace, versions, version)
+    if format == "markdown":
+        return PlainTextResponse(render_learning_record(data), media_type="text/markdown",
+                                 headers={"Content-Disposition": f'attachment; filename="session_{session_id}_learning.md"'})
+    return data
 
 
 @router.post(

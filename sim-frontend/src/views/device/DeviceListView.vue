@@ -2,11 +2,11 @@
   <div class="device-page v7b-page">
     <PageHeader
       title="设备"
-      subtitle="先看对象、状态和最近一次只读事实，再决定是否进入终端或变更；这里的观察不会写设备。"
+      subtitle="列表显示已保存的连接状态。检查管理连接可更新状态；要判断接口、邻居或路由，请对具体设备做只读观察。"
     >
       <template #actions>
-        <el-button :loading="healthChecking" @click="handleHealthCheck">健康检查</el-button>
-        <el-button @click="openObservation()">只读观察</el-button>
+        <el-button :loading="healthChecking" @click="handleHealthCheck">检查管理连接</el-button>
+        <el-button :disabled="!filteredDevices.length" @click="openObservation()">只读观察</el-button>
         <AdminAction v-slot="{ disabled }">
           <el-button type="primary" :disabled="disabled" @click="openCreate">添加设备</el-button>
         </AdminAction>
@@ -15,19 +15,29 @@
     <div class="toolbar">
       <el-input v-model="search" placeholder="搜索设备..." clearable class="search" />
       <div class="v7b-actions">
+        <el-tag v-if="statusFilter" closable @close="clearDeviceFilters">只看{{ statusLabel(statusFilter) }}设备</el-tag>
         <el-button
           v-if="labCtx.hasLab && labCtx.sessionId"
           @click="router.push({ path: '/training', query: { session_id: String(labCtx.sessionId) } })"
         >返回实训</el-button>
-        <span class="table-hint">{{ deviceLoadError ? '设备列表暂不可用' : `共 ${filteredDevices.length} 台` }} · 观察只读，终端/下发另开</span>
+        <span class="table-hint">{{ deviceLoadError ? '设备列表暂不可用' : `显示 ${filteredDevices.length} / ${devices.length} 台` }}</span>
       </div>
     </div>
 
     <el-alert v-if="deviceLoadError" :title="deviceLoadError" type="error" :closable="false" show-icon><el-button @click="loadDevices">重试设备列表</el-button></el-alert>
-    <el-table :data="filteredDevices" border class="device-table" height="100%" v-loading="loading" @row-click="onRowClick">
+    <el-alert v-else-if="linkedDeviceMissing" title="指定设备已不在设备列表。请从下方选择要观察的设备。" type="warning" :closable="false" show-icon />
+    <el-alert v-if="healthResult" :type="healthProblems.length ? 'warning' : 'info'" :title="healthTitle" :closable="true" show-icon @close="healthResult = null">
+      <ul v-if="healthProblems.length" class="device-check-errors">
+        <li v-for="row in healthProblems" :key="row.device_id ?? row.hostname">
+          {{ row.hostname }} · {{ row.reason === 'missing_credentials' ? '缺少设备登录信息，请管理员配置。' : '未验证 SSH 登录，请检查设备管理连接或请管理员核对。' }}
+        </li>
+      </ul>
+    </el-alert>
+    <el-table :data="filteredDevices" border class="device-table" height="100%" v-loading="loading" highlight-current-row @row-click="onRowClick">
       <template #empty>
-        <el-empty :description="deviceLoadError || '暂无设备。可先去拓扑页新建拓扑并导入 Excel，或在此添加设备。'" :image-size="72">
-          <el-button v-if="!deviceLoadError" type="primary" @click="router.push('/topology')">去拓扑导入</el-button>
+        <el-empty :description="emptyDeviceText" :image-size="72">
+          <el-button v-if="!deviceLoadError && hasDeviceFilter" type="primary" @click="clearDeviceFilters">清除筛选</el-button>
+          <el-button v-else-if="!deviceLoadError" type="primary" @click="router.push('/topology')">查看拓扑</el-button>
         </el-empty>
       </template>
       <el-table-column label="设备" min-width="190">
@@ -38,9 +48,10 @@
       </el-table-column>
       <el-table-column prop="mgmt_ip" label="管理IP" width="132" />
       <el-table-column prop="device_type" label="类型" width="92" />
-      <el-table-column label="状态" width="92">
+      <el-table-column label="保存的连接状态" min-width="170">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+          <div class="device-sub">{{ row.last_seen_at ? '上次可达 ' + formatApiTime(row.last_seen_at) : '无可达时间记录' }}</div>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="230" fixed="right">
@@ -92,10 +103,10 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="showObservation" :title="observationDevice ? `只读观察 · ${observationDevice.hostname}` : '只读观察'" size="min(560px, 94vw)" destroy-on-close @close="invalidateObservation">
+    <el-drawer v-model="showObservation" :title="observationDevice ? `只读观察 · ${observationDevice.hostname}` : '只读观察'" size="min(560px, 94vw)" destroy-on-close @close="closeObservation">
       <el-alert v-if="environmentLoadError" :title="environmentLoadError" type="error" :closable="false" show-icon><el-button @click="loadEnvironments">重试环境列表</el-button></el-alert>
       <div class="obs-form">
-        <el-alert type="info" :closable="false" show-icon title="只允许目录内只读动作；命令由服务端固定，不接受任意命令/换行注入。记录来源为 server_observed。" />
+        <el-alert type="info" :closable="false" show-icon title="按要排查的问题选择接口、邻居或路由。采集结果会记录设备与时间，可回看或交给助手解读。" />
         <el-form label-width="86px">
           <el-form-item label="动作">
             <el-select v-model="observationAction" style="width: 100%" @change="resetObservation">
@@ -116,27 +127,27 @@
           </el-form-item>
         </el-form>
         <div class="v7b-actions" style="margin: 4px 0 10px">
-          <el-button type="primary" :loading="observing" @click="runObservation">采集只读事实</el-button>
+          <el-button type="primary" :disabled="!observationDevice" :loading="observing" @click="runObservation">采集只读事实</el-button>
           <el-button @click="loadRecentObservations">最近证据</el-button>
-          <el-button v-if="observationEnvironment" @click="runPreflight">环境预检</el-button>
+          <el-button v-if="observationEnvironment && isAdmin" @click="runPreflight">环境预检</el-button>
         </div>
-        <el-alert v-if="preflightText" :title="preflightText" type="warning" :closable="false" show-icon />
+        <el-alert v-if="preflightText" :title="preflightText" :type="preflightReady ? 'success' : 'warning'" :closable="false" show-icon />
         <el-alert v-if="observationError" :title="observationError" type="error" :closable="false" show-icon />
         <div v-if="observation" class="obs-result">
+          <h4>本次观察 · {{ observationActionLabel(observation.action_id) }}</h4>
           <div class="obs-meta">
             <span class="v7b-pill" :class="observation.status === 'ok' ? 'ok' : 'danger'">{{ observationStatusLabel(observation.status) }}</span>
             <span class="v7b-pill" :class="observation.completeness === 'complete' ? 'ok' : 'warn'">{{ observationCompletenessLabel(observation.completeness) }}</span>
             <span>采集 {{ formatApiTime(observation.collected_at) }}</span>
-            <span>来源 {{ observation.source === 'server_observed' ? '服务端观察' : observation.source || '未记录' }}</span>
+            <span>{{ observation.source === 'server_observed' ? '工作台采集' : '采集来源未确认' }}</span>
             <span>{{ observationModeLabel(observation.mode) }}</span>
-            <span>解析器 {{ observation.parser_version }}</span>
-            <span v-if="observation.environment_version">环境 {{ observation.environment_version }}</span>
           </div>
+          <p class="observation-help">{{ observationHelp(observation) }}</p>
           <div v-if="observation.facts.interfaces?.length" class="facts">
             <h4>接口</h4>
             <el-table :data="observation.facts.interfaces" size="small">
               <el-table-column prop="name" label="接口" min-width="150" />
-              <el-table-column prop="state" label="状态" width="80" />
+              <el-table-column label="状态" width="110"><template #default="{ row }">{{ interfaceStateLabel(row.state) }}</template></el-table-column>
               <el-table-column prop="address" label="地址" min-width="130" />
             </el-table>
           </div>
@@ -156,20 +167,21 @@
           </div>
           <div v-if="observation.error_message" class="obs-error">{{ observation.error_message }}</div>
           <details>
-            <summary>受控原文（前 2000 字）</summary>
+            <summary>查看命令输出（前 2000 字）</summary>
             <pre>{{ observation.raw_excerpt || '（无）' }}</pre>
           </details>
           <details><summary>原始记录字段</summary><pre>{{ JSON.stringify({status:observation.status,completeness:observation.completeness,collected_at:observation.collected_at,source:observation.source,mode:observation.mode,parser_version:observation.parser_version},null,2) }}</pre></details>
           <div class="v7b-actions">
-            <el-button size="small" @click="evaluateRule">与本环境预期比对</el-button>
-            <span v-if="ruleText" class="rule-text">{{ ruleText }}</span>
+            <el-button size="small" @click="askAboutObservation">请助手解读</el-button>
+            <el-button v-if="observationEnvironment && observation.action_id !== 'interface_brief'" size="small" @click="evaluateRule">比对环境预期</el-button>
           </div>
+          <el-alert v-if="ruleText" :title="ruleText" :type="ruleMatched ? 'success' : 'info'" :closable="false" show-icon />
         </div>
         <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" show-icon />
         <div v-if="recentObservations.length" class="recent">
           <h4>最近证据</h4>
           <button v-for="item in recentObservations" :key="item.id" class="recent-row" @click="useObservation(item)">
-            <span>#{{ item.id }} · {{ item.action_id }}</span>
+            <span>{{ observationActionLabel(item.action_id) }} · 记录 #{{ item.id }}</span>
             <small>{{ formatApiTime(item.collected_at) }} · {{ observationStatusLabel(item.status) }} / {{ observationCompletenessLabel(item.completeness) }}</small>
           </button>
         </div>
@@ -179,23 +191,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import type { FormInstance, FormRules } from 'element-plus'
-import { getDevices, getTopologies, createDevice, updateDevice, deleteDevice, checkDevicesHealth, type DeviceRecord } from '../../api/device'
+import { getDevices, getTopologies, createDevice, updateDevice, deleteDevice, checkDevicesHealth, type DeviceRecord, type DeviceHealthResult } from '../../api/device'
 import { useAutoRefresh } from '../../utils/autoRefresh'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
-import { deviceStatusLabel, deviceStatusTagType, observationStatusLabel, observationCompletenessLabel, observationModeLabel } from '../../utils/display'
+import { deviceStatusLabel, deviceStatusTagType, environmentStatusLabel, observationStatusLabel, observationCompletenessLabel, observationModeLabel } from '../../utils/display'
 import { formatApiTime } from '../../utils/datetime'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
 import { useLabContextStore } from '../../stores/labContext'
+import { useCurrentUser } from '../../composables/useCurrentUser'
+import { requestErrorMessage } from '../../utils/requestError'
 import AdminAction from '../../components/AdminAction.vue'
 import PageHeader from '../../components/v7b/PageHeader.vue'
-import { createObservation, getEnvironments, getObservations, preflightEnvironment, type EnvironmentRecord, type ObservationRecord } from '../../api/trust'
+import { createObservation, evaluateOspf, getEnvironments, getObservations, preflightEnvironment, type EnvironmentRecord, type ObservationRecord, type PreflightResult } from '../../api/trust'
 
 const router = useRouter()
+const route = useRoute()
+const { isAdmin } = useCurrentUser()
 const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const devices = ref<DeviceRecord[]>([])
@@ -208,7 +224,23 @@ const deviceRequest = useSnapshotRequest('设备列表')
 const loading = deviceRequest.loading
 const deviceLoadError = deviceRequest.error
 const healthChecking = ref(false)
+const healthResult = ref<DeviceHealthResult | null>(null)
+const healthProblems = computed(() => healthResult.value?.results.filter(row => row.status !== 'online') || [])
+const healthTitle = computed(() => {
+  const result = healthResult.value
+  if (!result?.total) return '没有设备可以检查。'
+  const online = result.total - healthProblems.value.length
+  const scope = result.results.every(row => row.mode === 'sim') ? '当前练习环境记录' : '本次管理连接检查'
+  return `${scope}：${online}/${result.total} 台可达 · ${formatApiTime(result.checked_at)}`
+})
 const search = ref('')
+const statusFilter = computed(() => route.query.status === 'online' || route.query.status === 'offline' ? route.query.status : '')
+const hasDeviceFilter = computed(() => Boolean(search.value.trim() || statusFilter.value))
+const requestedDeviceId = computed(() => Number(route.query.observe_device))
+const linkedDeviceMissing = computed(() => !loading.value && requestedDeviceId.value > 0 && !devices.value.some(device => device.id === requestedDeviceId.value))
+const emptyDeviceText = computed(() => deviceLoadError.value || (hasDeviceFilter.value
+  ? '当前筛选没有匹配设备。可清除筛选查看完整列表。'
+  : '设备列表为空。可查看现有拓扑，或请管理员添加设备。'))
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const adding = ref(false)
@@ -226,6 +258,8 @@ const observation = ref<ObservationRecord | null>(null)
 const observationError = ref('')
 const preflightText = ref('')
 const ruleText = ref('')
+const ruleMatched = ref(false)
+const preflightReady = ref(false)
 const environments = ref<EnvironmentRecord[]>([])
 const recentObservations = ref<ObservationRecord[]>([])
 const historyError = ref('')
@@ -253,16 +287,22 @@ const loadEnvironments = async () => {
 }
 
 const filteredDevices = computed(() => {
-  if (!search.value) return devices.value
-  const s = search.value.toLowerCase()
-  return devices.value.filter(d => d.hostname.toLowerCase().includes(s) || d.mgmt_ip.includes(s))
+  const s = search.value.trim().toLowerCase()
+  return devices.value.filter(device => (!statusFilter.value || device.status === statusFilter.value)
+    && (!s || device.hostname.toLowerCase().includes(s) || device.mgmt_ip.includes(s)))
 })
+
+function clearDeviceFilters() {
+  search.value = ''
+  const { status: _status, ...query } = route.query
+  void router.replace({ path: '/devices', query })
+}
 
 const statusType = deviceStatusTagType
 const statusLabel = deviceStatusLabel
 
 const loadDevices = async () => {
-  await deviceRequest.run(() => getDevices(), value => { devices.value = value })
+  if (await deviceRequest.run(() => getDevices(), value => { devices.value = value })) openLinkedObservation()
 }
 
 function handleRowCommand(command: string, row: DeviceRecord) {
@@ -273,12 +313,54 @@ function handleRowCommand(command: string, row: DeviceRecord) {
 }
 
 async function openObservation(row?: DeviceRecord) {
-  observationDeviceId.value = row?.id || devices.value[0]?.id || 0
+  observationDeviceId.value = row?.id || filteredDevices.value[0]?.id || 0
   showObservation.value = true
   selectObservationDevice()
   if (!environments.value.length) {
     await loadEnvironments()
   }
+}
+
+function openLinkedObservation() {
+  const id = requestedDeviceId.value
+  if (route.path !== '/devices' || !Number.isSafeInteger(id) || id < 1) return
+  if (showObservation.value && observationDeviceId.value === id) return
+  const device = devices.value.find(item => item.id === id)
+  if (device) void openObservation(device)
+}
+
+watch(() => route.query.observe_device, openLinkedObservation)
+
+function closeObservation() {
+  invalidateObservation()
+  if (route.path !== '/devices' || !route.query.observe_device) return
+  const { observe_device: _observe, ...query } = route.query
+  void router.replace({ path: '/devices', query })
+}
+
+function observationActionLabel(action: string) {
+  return ({ interface_brief: '接口状态与地址', ospf_peer: 'OSPF 邻居', ospf_route: 'OSPF 路由' } as Record<string, string>)[action] || '设备观察'
+}
+
+function interfaceStateLabel(state: string) {
+  if (state === 'up') return 'Up · 正常'
+  if (state === 'down') return 'Down · 待核对'
+  return '状态未确认'
+}
+
+function observationHelp(result: ObservationRecord) {
+  if (result.completeness !== 'complete') return '本次可用数据有限。先查看原因或重试采集，再判断状态。'
+  if (result.action_id === 'interface_brief') return 'Up 表示本次观察到物理和协议状态均为 Up。可结合邻居与路由进一步判断通信情况。'
+  if (result.action_id === 'ospf_peer') return '先对照预期的邻居及其状态。Full 表示这个邻接已建立。'
+  return '先核对预期的目的网段和下一跳，再判断是否需要检查邻居或接口。'
+}
+
+function askAboutObservation() {
+  if (!observation.value || !observationDevice.value) return
+  const prompt = `请解读 ${observationDevice.value.hostname} 的「${observationActionLabel(observation.value.action_id)}」观察（记录 #${observation.value.id}）。我能从结果判断什么，接下来应该核对什么？`
+  copilot.setEvidenceId(observation.value.id)
+  showObservation.value = false
+  window.dispatchEvent(new CustomEvent('copilot-prefill', { detail: { prompt } }))
 }
 
 // Responses belong to the selection that started them, including reopening the
@@ -295,6 +377,8 @@ function resetObservation() {
   observationError.value = ''
   preflightText.value = ''
   ruleText.value = ''
+  ruleMatched.value = false
+  preflightReady.value = false
   copilot.setEvidenceId(null)
 }
 
@@ -333,7 +417,7 @@ async function runObservation() {
       device_id: device.id,
       action_id: observationAction.value,
       environment_id: observationEnvironment.value || undefined,
-    }) as unknown as ObservationRecord
+    }, { silent: true })
     if (epoch !== observationEpoch || !showObservation.value) return
     if (result.device_id !== device.id) throw new Error('只读证据与当前设备不一致')
     observation.value = result
@@ -341,7 +425,7 @@ async function runObservation() {
     copilot.setEvidenceId(result.id)
     await loadRecentObservations()
   } catch (error: any) {
-    if (epoch === observationEpoch) observationError.value = error?.response?.data?.detail || error?.message || '只读采集失败'
+    if (epoch === observationEpoch) observationError.value = requestErrorMessage(error, '只读采集失败，请重试')
   } finally {
     if (epoch === observationEpoch) observing.value = false
   }
@@ -362,12 +446,16 @@ async function runPreflight() {
   if (!observationEnvironment.value) return
   const epoch = observationEpoch
   try {
-    const result = await preflightEnvironment(observationEnvironment.value) as unknown as { status: string; checks: Array<{ check: string; status: string; detail: string }> }
-    const failed = (result.checks || []).filter((check) => check.status !== 'ok')
+    const result = await preflightEnvironment(observationEnvironment.value) as unknown as PreflightResult
+    const firstProblem = result.checks.find(check => !['ok', 'simulated'].includes(check.status))
     if (epoch !== observationEpoch || !showObservation.value) return
-    preflightText.value = `环境预检：${result.status}${failed.length ? `；${failed.map((item) => item.detail).join('；')}` : ''}`
-  } catch (error: any) {
-    if (epoch === observationEpoch) preflightText.value = error?.response?.data?.detail || '预检失败'
+    preflightReady.value = result.status === 'ready'
+    preflightText.value = [environmentStatusLabel(result.status), observationModeLabel(result.verification_mode), firstProblem?.detail].filter(Boolean).join(' · ')
+  } catch (error) {
+    if (epoch === observationEpoch) {
+      preflightReady.value = false
+      preflightText.value = requestErrorMessage(error, '环境预检失败，请重试')
+    }
   }
 }
 
@@ -376,35 +464,44 @@ async function evaluateRule() {
   const epoch = observationEpoch
   if (!evidence) return
   const env = environments.value.find((item) => item.id === observationEnvironment.value)
+  ruleMatched.value = false
   if (!env) {
-    ruleText.value = '请先在“环境映射”选择或建立带预期邻居/路由的环境；不能用空数组冒充比对。'
+    ruleText.value = '请先选择要比对的环境。'
+    return
+  }
+  const hasNeighbors = Boolean(env.expected_neighbors?.length)
+  const hasRoutes = Boolean(env.expected_routes?.length)
+  if (hasNeighbors && hasRoutes) {
+    ruleText.value = '这个环境同时登记了邻居与路由预期。请在实训的「步骤核对」中按步骤采集对应证据。'
+    return
+  }
+  if ((hasNeighbors && evidence.action_id !== 'ospf_peer') || (hasRoutes && evidence.action_id !== 'ospf_route')) {
+    ruleText.value = `这个环境登记的是${hasNeighbors ? ' OSPF 邻居' : ' OSPF 路由'}预期。请选择对应动作再采集。`
     return
   }
   try {
-    const result = await import('../../api/trust').then((mod) => mod.evaluateOspf({
+    const result = await evaluateOspf({
       observation_ids: [evidence.id],
       environment_id: env.id,
       device_id: evidence.device_id,
-      expected_neighbors: env.expected_neighbors || [],
-      expected_routes: env.expected_routes || [],
-    })) as unknown as {
-      status: string; reason: string; expected: Record<string, unknown>; observed: Record<string, unknown>
-      evaluation_scope?: string; expected_source?: string; target_version?: string; verification_mode?: string
-      rejected_reason?: string
-    }
+    }) as unknown as { status: string; reason: string; rejected_reason?: string; missing?: string[]; unexpected?: string[] }
     if (epoch !== observationEpoch || !showObservation.value) return
-    ruleText.value = `规则：${result.status} · ${result.reason}；scope=${result.evaluation_scope || '—'}；预期来源=${result.expected_source || '—'}；目标版本=${result.target_version || '—'}；模式=${result.verification_mode || '—'}；拒绝原因=${result.rejected_reason || '—'}；预期=${JSON.stringify(result.expected)}；观察=${JSON.stringify(result.observed)}`
-  } catch (error: any) {
-    if (epoch === observationEpoch) ruleText.value = error?.response?.data?.detail || '规则比对失败'
+    ruleMatched.value = result.status === 'satisfied'
+    if (result.rejected_reason === 'untrusted_mode') ruleText.value = '正式比对需要当前真实设备的只读观察。可回看这份模拟记录并请助手解读。'
+    else if (result.rejected_reason === 'objects_mismatch') {
+      const missing = result.missing?.length ? `未观察到 ${result.missing.join('、')}` : ''
+      const unexpected = result.unexpected?.length ? `额外观察到 ${result.unexpected.join('、')}` : ''
+      ruleText.value = ['与登记预期有差异', missing, unexpected].filter(Boolean).join(' · ')
+    } else ruleText.value = ruleMatched.value ? '这份观察中的对象与当前环境预期一致。' : result.reason
+  } catch (error) {
+    if (epoch === observationEpoch) ruleText.value = requestErrorMessage(error, '比对失败，请重试')
   }
 }
 
 const handleHealthCheck = async () => {
   healthChecking.value = true
   try {
-    const res = await checkDevicesHealth()
-    const online = (res.results || []).filter(r => r.status === 'online').length
-    ElMessage.success(`健康检查完成：${online}/${res.total ?? 0} 台在线`)
+    healthResult.value = await checkDevicesHealth()
     await loadDevices()
   } catch {
     /* 拦截器已提示 */
@@ -428,7 +525,6 @@ const bindDevice = (row: any) => {
     model: row.model,
   })
   copilot.setEvidenceId(null)
-  if (!copilot.open) copilot.setOpen(true)
 }
 
 const onRowClick = (row: any) => {
@@ -538,6 +634,7 @@ onMounted(() => {
 
 .obs-form { display: flex; flex-direction: column; gap: 8px; }
 .obs-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--v7b-muted); font-size: 11px; margin: 8px 0; }
+.observation-help { color: var(--v7b-muted); font-size: 12px; line-height: 1.55; }
 .obs-result { border: 1px solid var(--v7b-line); border-radius: 9px; padding: 10px; background: rgba(16, 26, 36, .7); }
 .facts h4, .recent h4 { margin: 10px 0 6px; font-size: 12px; color: var(--v7b-text); }
 .obs-error { color: var(--v7b-danger); font-size: 12px; margin: 8px 0; }

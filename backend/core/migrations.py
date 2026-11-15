@@ -12,10 +12,11 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Index, MetaData, Table, create_engine, inspect, text
+from sqlalchemy import Index, MetaData, String, Table, create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 BACKEND = Path(__file__).resolve().parents[1]
+_SUPPORTED_UPGRADE_SOURCES = {None, "0001_initial", "0011_v7b_bf5_instance", "0012_copilot_request"}
 
 
 def migration_config(connection=None):
@@ -127,16 +128,16 @@ def _assert_unversioned_baseline(connection):
 def _assert_upgrade_source(connection, revision):
     if revision in {None, "0001_initial"}:
         return _assert_unversioned_baseline(connection)
-    if revision == "0011_v7b_bf5_instance" and _head() == "0012_copilot_request":
-        # This additive upgrade changes only copilot_request. Keep the check
-        # explicitly tied to this head; a future schema needs its own profile.
+    if revision in {"0011_v7b_bf5_instance", "0012_copilot_request"} and _head() == "0013_training_report_prompt":
+        # Compare against the saved revision's declarations before any DDL.
         from core.database import Base, _import_all_models
         from core.legacy_schema import matches_legacy_profile
         _import_all_models()
         previous = MetaData()
         for name, table in Base.metadata.tables.items():
-            if name != "copilot_request":
+            if revision != "0011_v7b_bf5_instance" or name != "copilot_request":
                 table.to_metadata(previous)
+        previous.tables["training_report"].c.prompt_version.type = String(32)
         differences = _schema_differences(connection, previous)
         if not differences or matches_legacy_profile(connection, previous, repaired=True):
             return "versioned"
@@ -156,7 +157,7 @@ def prepare_database(url: str, backup_dir: str | None = None, backup_file: str |
             if revision == _head():
                 assert_schema_ready(conn)
                 return None
-            if revision not in {None, "0001_initial", "0011_v7b_bf5_instance"}:
+            if revision not in _SUPPORTED_UPGRADE_SOURCES:
                 raise RuntimeError("未知数据库迁移版本，拒绝升级：" + str(revision))
             if tables:
                 _assert_upgrade_source(conn, revision)

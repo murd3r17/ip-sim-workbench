@@ -35,6 +35,7 @@ def _fingerprint(service) -> str:
                "api_key", "username", "password", "corpus_dir", "storage_dir")}
     fields["type"] = type(provider).__module__ + "." + type(provider).__qualname__
     fields["index_config"] = str(getattr(s, "knowledge_index_config", ""))
+    fields["edition_dir"] = str(getattr(s, "knowledge_edition_dir", ""))
     if hasattr(service, "resolve_workspace_id"):
         fields["resolved_workspace"] = service.resolve_workspace_id(None)
     if hasattr(provider, "_scan_files") and hasattr(provider, "_compute_signature"):

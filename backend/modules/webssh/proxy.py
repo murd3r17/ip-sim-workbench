@@ -2,6 +2,8 @@
 import asyncio
 import paramiko
 import json
+import re
+import socket
 from contextlib import suppress
 from typing import Awaitable, Callable
 from datetime import datetime
@@ -10,6 +12,8 @@ from core.logger import get_logger
 from core.config import get_settings
 
 logger = get_logger("webssh")
+_SIM_NAVIGATION_KEYS = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~])")
+_SIM_MAX_COMMAND_LENGTH = 4096
 
 
 class SSHProxySession:
@@ -52,18 +56,22 @@ class SSHProxySession:
 
     def _connect_keyboard_interactive(self, timeout: int):
         """使用keyboard-interactive认证连接（适用于华为路由器）"""
-        import socket
         sock = socket.create_connection((self.device_ip, self.ssh_port), timeout=timeout)
         transport = paramiko.Transport(sock)
-        transport.connect()
+        transport.banner_timeout = timeout
+        transport.auth_timeout = timeout
 
         def handler(title, instructions, prompt_list):
             return [self.password] * len(prompt_list)
 
-        transport.auth_interactive(self.username, handler)
-        if not transport.is_authenticated():
+        try:
+            transport.connect()
+            transport.auth_interactive(self.username, handler)
+            if not transport.is_authenticated():
+                raise paramiko.AuthenticationException("keyboard-interactive认证失败")
+        except Exception:
             transport.close()
-            raise paramiko.AuthenticationException("keyboard-interactive认证失败")
+            raise
         # 用transport替换client的底层连接
         self._ssh_client._transport = transport
 
@@ -80,11 +88,8 @@ class SSHProxySession:
             else:
                 async with acquire_device_lock(self.device_ip, self.ssh_port):
                     await self._start_ssh_session()
-        except DeviceBusyError as e:
-            try:
-                await self.websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
-            except Exception:
-                pass
+        except DeviceBusyError:
+            await self._connection_error("busy", "设备正被其他任务使用。等当前操作结束后可重新连接。")
             await self.stop()
         finally:
             if watchdog:
@@ -102,23 +107,27 @@ class SSHProxySession:
             self._ssh_client = new_ssh_client()
             settings = get_settings()
             loop = asyncio.get_running_loop()
+            timeout = settings.ssh_connect_timeout
             
             # SSH连接 - 先尝试password，失败后用keyboard-interactive
             try:
                 await loop.run_in_executor(None, lambda: self._ssh_client.connect(
                     hostname=self.device_ip, port=self.ssh_port,
                     username=self.username, password=self.password,
-                    timeout=settings.ssh_connect_timeout,
+                    timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+                    channel_timeout=timeout,
                     allow_agent=False, look_for_keys=False
                 ))
             except paramiko.AuthenticationException:
                 # 路由器使用keyboard-interactive认证
                 logger.info("webssh_kbi_fallback", device_ip=self.device_ip)
-                await loop.run_in_executor(None, self._connect_keyboard_interactive, settings.ssh_connect_timeout)
+                await loop.run_in_executor(None, self._connect_keyboard_interactive, timeout)
             logger.info("webssh_ssh_connected", device_ip=self.device_ip)
 
             # 创建交互式终端
-            self._channel = self._ssh_client.invoke_shell(term="xterm-256color", width=120, height=40)
+            self._channel = await asyncio.to_thread(
+                self._ssh_client.invoke_shell, term="xterm-256color", width=120, height=40,
+            )
             self._channel.setblocking(0)
             self._running = True
 
@@ -137,33 +146,28 @@ class SSHProxySession:
             await asyncio.gather(self._ws_to_ssh(), self._ssh_to_ws())
             
         except paramiko.AuthenticationException as e:
-            error_msg = f"SSH认证失败: {e}"
             logger.error("webssh_auth_failed", device_ip=self.device_ip, error=str(e))
-            try:
-                await self.websocket.send_text(json.dumps({"type": "error", "message": error_msg}))
-            except Exception:
-                pass
+            await self._connection_error("authentication", "设备拒绝了 SSH 登录。请管理员检查这台设备的 SSH 账号、密码和登录权限。")
+        except (TimeoutError, socket.timeout, paramiko.ssh_exception.NoValidConnectionsError) as e:
+            logger.error("webssh_unreachable", device_ip=self.device_ip, error=str(e))
+            await self._connection_error("unreachable", "未能连接设备的 SSH 端口。请确认设备已启动、管理地址可达，再检查 SSH 服务和端口。")
         except paramiko.SSHException as e:
-            error_msg = f"SSH连接错误: {e}"
             logger.error("webssh_ssh_error", device_ip=self.device_ip, error=str(e))
-            try:
-                await self.websocket.send_text(json.dumps({"type": "error", "message": error_msg}))
-            except Exception:
-                pass
+            await self._connection_error("handshake", "SSH 握手或终端初始化失败。请管理员检查设备 SSH 服务，并按本次时间查看终端日志。")
         except Exception as e:
-            error_msg = f"连接失败: {e}"
             logger.error("webssh_start_failed", device_ip=self.device_ip, error=str(e))
-            try:
-                await self.websocket.send_text(json.dumps({"type": "error", "message": error_msg}))
-            except Exception:
-                pass
+            await self._connection_error("connection", "终端连接失败。请重新连接，若仍失败请管理员按本次时间查看终端日志。")
         finally:
             await self.stop()
+
+    async def _connection_error(self, code: str, message: str):
+        with suppress(Exception):
+            await self.websocket.send_text(json.dumps({"type": "error", "code": code, "message": message}))
 
     async def _start_sim_shell(self):
         """模拟模式交互终端：脚本化 VRP 回显，不做任何网络连接。"""
         from engines.device_adapter import SimDeviceAdapter
-        sim = SimDeviceAdapter(hostname=self.device_hostname)
+        sim = SimDeviceAdapter(hostname=self.device_hostname, management_ip=self.device_ip)
         try:
             await self.websocket.send_text(json.dumps({
                 "type": "connected",
@@ -172,26 +176,59 @@ class SSHProxySession:
         except Exception:
             return
         self._running = True
-        await self.websocket.send_text(json.dumps({"type": "output", "data": f"<{sim.hostname}>"}))
+        prompt = f"<{sim.hostname}>"
+        pending_line = ""
+        after_cr = False
+        line_too_long = False
+        await self.websocket.send_text(json.dumps({"type": "output", "data": prompt}))
         try:
             while self._running:
                 data = await self.websocket.receive_text()
                 msg = json.loads(data)
                 if not await self._check_authorization():
                     break
-                if msg.get("type") == "input":
-                    line = (msg.get("data") or "").strip()
-                    if self.session_logger:
-                        self.session_logger.log_input(line)
-                    if not line:
-                        await self.websocket.send_text(json.dumps({"type": "output", "data": f"<{sim.hostname}>"}))
+                if msg.get("type") != "input" or not isinstance(msg.get("data"), str):
+                    continue
+                output = []
+                for char in _SIM_NAVIGATION_KEYS.sub("", msg["data"]):
+                    paired_lf = after_cr and char == "\n"
+                    after_cr = char == "\r"
+                    if paired_lf:
                         continue
-                    resp = await sim.run_command(line)
-                    if self.session_logger:
-                        self.session_logger.log_output(resp + "\n")
-                    await self.websocket.send_text(json.dumps({"type": "output", "data": resp + "\n" + f"<{sim.hostname}>"}))
-                elif msg.get("type") == "resize":
-                    pass  # 模拟终端忽略尺寸
+                    if char in "\r\n":
+                        output.append("\r\n")
+                        if line_too_long:
+                            output.append("输入过长，命令未执行。请缩短后重试。\r\n")
+                        elif pending_line.strip():
+                            line = pending_line.strip()
+                            response = await sim.run_command(line)
+                            if response.startswith(prompt):
+                                response = response.partition("\n")[2]
+                            response = response.rstrip("\r\n")
+                            if self.session_logger:
+                                self.session_logger.log_input(line + "\n")
+                                self.session_logger.log_output(response + "\n")
+                            if response:
+                                output.append(response + "\r\n")
+                        output.append(prompt)
+                        pending_line = ""
+                        line_too_long = False
+                    elif char == "\x03":
+                        output.append("^C\r\n" + prompt)
+                        pending_line = ""
+                        line_too_long = False
+                    elif char in "\x08\x7f":
+                        if pending_line and not line_too_long:
+                            pending_line = pending_line[:-1]
+                            output.append("\b \b")
+                    elif char.isprintable() and not line_too_long:
+                        if len(pending_line) >= _SIM_MAX_COMMAND_LENGTH:
+                            line_too_long = True
+                        else:
+                            pending_line += char
+                            output.append(char)
+                if output:
+                    await self.websocket.send_text(json.dumps({"type": "output", "data": "".join(output)}))
         except WebSocketDisconnect:
             self._running = False
         except Exception as exc:

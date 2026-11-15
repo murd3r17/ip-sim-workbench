@@ -154,7 +154,7 @@ class TrainingReport(Base):
     input_hash = Column(String(64), nullable=True)
     input_summary = Column(JSON, nullable=True)
     model = Column(String(64), nullable=True)
-    prompt_version = Column(String(32), nullable=True)
+    prompt_version = Column(String(64), nullable=True)
     error = Column(Text, nullable=True)
     idempotency_key = Column(String(64), nullable=True)
     generated_at = Column(DateTime, nullable=True)

@@ -10,12 +10,10 @@ import 'xterm/css/xterm.css'
 
 const props = defineProps<{ deviceId: number; autoConnect?: boolean }>()
 const emit = defineEmits<{
-  status: [connected: boolean]
+  phase: [value: 'idle' | 'connecting' | 'handshake' | 'ready' | 'retrying' | 'failed']
   output: [value: string]
-  ready: [ready: boolean]
   error: [message: string]
   command: [payload: { command: string; success: boolean; result: string }]
-  reconnectExhausted: []
 }>()
 
 const terminalEl = ref<HTMLElement>()
@@ -23,9 +21,10 @@ let ws: WebSocket | null = null
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
-let connected = false
 let sshReady = false
 let manualClose = false
+let connectEpoch = 0
+let opening = false
 let reconnectTimer: number | null = null
 let reconnectAttempts = 0
 const MAX_RECONNECT_DELAY_MS = 15000
@@ -41,16 +40,6 @@ let echoBuf = ''
 
 const VRP_ERROR = /Error:|Unrecognized command|Incomplete command|Too many parameters|\^\s*$/im
 const PAGE_KEYS = new Set([' ', 'f', 'q', 'n'])
-
-const setStatus = (value: boolean) => {
-  connected = value
-  emit('status', value)
-}
-
-const setReady = (value: boolean) => {
-  sshReady = value
-  emit('ready', value)
-}
 
 function resetCommandCapture() {
   lineBuffer = ''
@@ -149,12 +138,14 @@ const initTerminal = async () => {
   resizeObserver = new ResizeObserver(() => {
     if (!fitAddon || !terminal) return
     fitAddon.fit()
-    if (ws && connected) ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+    if (ws?.readyState === WebSocket.OPEN && sshReady) {
+      ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+    }
   })
   resizeObserver.observe(terminalEl.value)
 
   terminal.onData((data: string) => {
-    if (ws && connected && sshReady) {
+    if (ws?.readyState === WebSocket.OPEN && sshReady) {
       handleLocalInput(data)
       ws.send(JSON.stringify({ type: 'input', data }))
     }
@@ -220,7 +211,7 @@ const handlePaste = (event: ClipboardEvent) => {
   // 捕获阶段截断：避免 xterm 自己再发一遍原文（见 bindPasteListener 注释）
   event.stopPropagation()
   const lineCount = text.replace(/\r\n?/g, '\n').split('\n').filter((line) => line.trim()).length
-  if (!ws || !connected || !sshReady) {
+  if (ws?.readyState !== WebSocket.OPEN || !sshReady) {
     // 未连接时终端可能还没创建，写进 xterm 会看不到；用页面提示通道告知
     emit('error', `SSH 未就绪，粘贴的 ${lineCount} 行未发送（请先点「连接」）`)
     return
@@ -232,12 +223,15 @@ const handlePaste = (event: ClipboardEvent) => {
 const scheduleReconnect = () => {
   if (manualClose || reconnectTimer !== null) return
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    terminal?.writeln('\x1b[33m已停止自动重连。请检查设备连通后点「重新连接」。\x1b[0m')
-    emit('reconnectExhausted')
+    const message = '重连已停止。请检查服务与设备连接后再重试。'
+    terminal?.writeln(`\x1b[33m${message}\x1b[0m`)
+    emit('error', message)
+    emit('phase', 'failed')
     return
   }
   const delay = Math.min(2000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY_MS)
   reconnectAttempts += 1
+  emit('phase', 'retrying')
   terminal?.writeln(`\x1b[33m连接断开，${Math.round(delay / 1000)} 秒后重试（${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}）...\x1b[0m`)
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null
@@ -247,6 +241,9 @@ const scheduleReconnect = () => {
 
 const disconnect = () => {
   manualClose = true
+  connectEpoch++
+  opening = false
+  reconnectAttempts = 0
   resetCommandCapture()
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer)
@@ -259,26 +256,31 @@ const disconnect = () => {
   terminal?.dispose()
   terminal = null
   fitAddon = null
-  setReady(false)
-  setStatus(false)
+  sshReady = false
+  emit('phase', 'idle')
 }
 
 const connect = async () => {
-  if (connected || ws) return
+  if (opening || ws) return
+  opening = true
+  const epoch = ++connectEpoch
+  const deviceId = props.deviceId
   manualClose = false
   resetCommandCapture()
+  emit('phase', 'connecting')
   await initTerminal()
+  if (epoch !== connectEpoch) return
+  opening = false
   const token = localStorage.getItem('token') || ''
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${protocol}://${window.location.host}/api/v1/ws/ssh/${props.deviceId}`
+  const url = `${protocol}://${window.location.host}/api/v1/ws/ssh/${deviceId}`
   const connection = token ? new WebSocket(url, [token]) : new WebSocket(url)
   ws = connection
   let reportedConnectionError = ''
 
   connection.onopen = () => {
     if (ws !== connection) return
-    setStatus(true)
-    setReady(false)
+    emit('phase', 'handshake')
     terminal?.writeln('正在连接设备，请稍候...')
   }
   connection.onmessage = (event) => {
@@ -291,12 +293,16 @@ const connect = async () => {
         emit('output', message.data)
       } else if (message.type === 'connected') {
         reconnectAttempts = 0
-        setReady(true)
+        sshReady = true
+        emit('phase', 'ready')
+        if (terminal) {
+          connection.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+        }
         terminal?.writeln(message.message)
         terminal?.writeln('\x1b[32mSSH 已就绪，可以输入命令\x1b[0m')
       } else if (message.type === 'error') {
-        setReady(false)
-        reportedConnectionError = message.message || '设备未接入或凭据为空'
+        sshReady = false
+        reportedConnectionError = message.message || '连接未完成。请检查设备接入状态后重试。'
         terminal?.writeln(`\x1b[31m${reportedConnectionError}\x1b[0m`)
         emit('error', reportedConnectionError)
       }
@@ -309,34 +315,35 @@ const connect = async () => {
   connection.onclose = (event) => {
     if (ws !== connection) return
     ws = null
-    setReady(false)
-    setStatus(false)
+    sshReady = false
     // 服务端"拒绝类"关闭码带了明确原因（并发上限 4006 / 设备有写任务 4009 / 认证 4001 等）。
     // 这类断开重连也不会成功，必须把原因显示给用户并停止重连（设计 §16"超过上限需明确提示"）。
-    if (REJECT_CLOSE_CODES.has(event.code)) {
+    if (REJECT_CLOSE_CODES.has(event.code) || reportedConnectionError) {
       const reason = (event.reason || '').trim() || reportedConnectionError || '连接被服务端拒绝'
       // The server sends an error frame before closing; keep one visible copy of the same reason.
       if (reason !== reportedConnectionError) {
         terminal?.writeln(`\x1b[31m${reason}\x1b[0m`)
         emit('error', reason)
       }
+      emit('phase', 'failed')
       return
     }
     if (event.code !== 1000) {
       terminal?.writeln('\x1b[33m连接已断开\x1b[0m')
       scheduleReconnect()
+    } else {
+      emit('phase', 'idle')
     }
   }
   connection.onerror = () => {
     if (ws !== connection) return
-    setReady(false)
-    setStatus(false)
+    sshReady = false
     terminal?.writeln('\x1b[31m连接错误\x1b[0m')
   }
 }
 
 const send = (content: string) => {
-  if (!ws || !connected || !sshReady || !content) return false
+  if (ws?.readyState !== WebSocket.OPEN || !sshReady || !content) return false
   ws.send(JSON.stringify({ type: 'input', data: content }))
   const lines = content.split(/\r?\n/).map((line) => line.replace(/\r/g, '').trim()).filter(Boolean)
   for (const line of lines) submitCommand(line)

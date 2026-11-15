@@ -2,21 +2,19 @@
   <div class="webssh-page v7b-page">
     <el-alert v-if="deviceListError" :title="deviceListError" type="error" :closable="false" show-icon><el-button @click="loadDevices">重试设备列表</el-button></el-alert>
     <div style="margin-bottom: 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap">
-      <el-select v-model="selectedDeviceId" placeholder="选择设备" style="width: 300px">
+      <el-select v-model="selectedDeviceId" :disabled="connectionActive" placeholder="选择设备" style="width: min(300px, 100%)" @change="syncSelection()">
         <el-option v-for="d in devices" :key="d.id" :label="`${d.hostname} (${d.mgmt_ip})`" :value="d.id" />
       </el-select>
-      <el-button type="primary" :disabled="!selectedDeviceId || connected" @click="connect">连接</el-button>
-      <el-button type="danger" :disabled="!connected && !reconnectNeeded" @click="disconnect">断开</el-button>
-      <el-button v-if="reconnectNeeded" type="warning" :disabled="!selectedDeviceId" @click="reconnect">重新连接</el-button>
-      <el-tag v-if="connected" type="success">已连接</el-tag>
-      <el-tag v-else-if="reconnectNeeded" type="warning">已停止自动重连</el-tag>
-      <el-tag v-else type="info">未连接</el-tag>
+      <el-button v-if="!connectionActive" type="primary" :disabled="!selectedDeviceId" @click="connect">{{ phase === 'failed' ? '重新连接' : '连接' }}</el-button>
+      <el-button v-else @click="disconnect">{{ phase === 'ready' ? '断开' : '取消连接' }}</el-button>
+      <el-tag :type="phase === 'ready' ? 'success' : phase === 'failed' ? 'danger' : 'info'" role="status">{{ phaseLabel }}</el-tag>
       <el-button @click="router.push('/devices')">返回设备</el-button>
       <el-button
         v-if="labCtx.hasLab && labCtx.sessionId"
         @click="router.push({ path: '/training', query: { session_id: String(labCtx.sessionId) } })"
       >返回实训</el-button>
     </div>
+    <el-alert v-if="connectionError" :title="connectionError" type="error" :closable="false" show-icon class="terminal-feedback" />
     <el-alert
       v-if="labCtx.isActive"
       :type="labModeAlertType"
@@ -34,31 +32,29 @@
       title="该实训会话已结束：终端仍可查看设备，但不再把命令写入会话记录，也不会绑定教练上下文。"
     />
     <el-alert
-      v-if="!loading && selectedDeviceId && !connected && !connectRequested && !reconnectNeeded && !route.params.deviceId"
+      v-if="!loading && selectedDeviceId && phase === 'idle' && !route.params.deviceId"
       type="info"
       :closable="false"
       show-icon
       style="margin-bottom: 12px"
-      title="已预选设备，请点「连接」建立 SSH。从设备页点「终端」会自动连上对应设备。"
+      title="已选择设备。点击「连接」，等到显示「终端已就绪」后再输入命令。"
     />
     <WebSSHConsole
       v-if="selectedDeviceId"
       :device-id="selectedDeviceId"
       :auto-connect="connectRequested"
       style="width: 100%; height: calc(100vh - 260px)"
-      @status="onStatus"
-      @error="onConnectError"
+      @phase="onPhase"
+      @error="connectionError = $event"
       @command="onTerminalCommand"
-      @reconnect-exhausted="reconnectNeeded = true"
     />
     <el-empty v-if="!loading && !devices.length" :description="deviceListError ? '设备列表暂不可用，请从上方重试读取。' : '暂无设备，请先导入拓扑基线或到设备管理添加设备'" :image-size="80" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, nextTick, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus/es/components/message/index'
 import { getDevices, type DeviceRecord } from '../../api/device'
 import { notifyRequestError } from '../../utils/requestError'
 import { useAutoRefresh } from '../../utils/autoRefresh'
@@ -78,9 +74,19 @@ const deviceListError = ref('')
 let deviceListEpoch = 0
 onBeforeUnmount(() => { deviceListEpoch++ })
 const selectedDeviceId = ref<number | null>(null)
-const connected = ref(false)
+const phases = {
+  idle: '未连接',
+  connecting: '正在打开终端通道',
+  handshake: '正在等待设备握手与认证',
+  ready: '终端已就绪',
+  retrying: '连接已断，正在等待重试',
+  failed: '连接未完成',
+}
+const phase = ref<keyof typeof phases>('idle')
+const phaseLabel = computed(() => phases[phase.value])
+const connectionActive = computed(() => phase.value !== 'idle' && phase.value !== 'failed')
 const connectRequested = ref(false)
-const reconnectNeeded = ref(false)
+const connectionError = ref('')
 // AF-04：终端横幅按会话开始时的服务端事实显示，不把“模拟下发”当成 SSH 只读保证
 const labModeTitle = computed(() => {
   const facts = (labCtx.modeFacts || {}) as Record<string, string>
@@ -109,11 +115,15 @@ const syncSelection = () => {
     hostname: d.hostname,
     mgmt_ip: d.mgmt_ip,
   })
+  updateSelectionDetail(d)
+}
+
+const updateSelectionDetail = (d: DeviceRecord) => {
   copilot.setSelection({
     kind: 'device',
     id: d.id,
     label: d.hostname,
-    detail: `${d.mgmt_ip || ''} · WebSSH${connected.value ? '已连接' : '未连接'}`,
+    detail: `${d.mgmt_ip || ''} · ${phaseLabel.value}`,
   })
 }
 
@@ -132,8 +142,8 @@ const loadDevices = async () => {
       else if (devices.value.length) selectedDeviceId.value = devices.value[0].id
       connectRequested.value = !!route.params.deviceId
       autoConnectHandled = true
+      if (route.params.deviceId) syncSelection()
     }
-    syncSelection()
   } catch (err) {
     if (epoch === deviceListEpoch) {
       deviceListError.value = '设备列表读取失败，原选择与已显示设备保留；请重试。'
@@ -144,13 +154,13 @@ const loadDevices = async () => {
   }
 }
 
-const onConnectError = (message: string) => {
-  ElMessage.error(message || '设备未接入或凭据为空')
-}
-
-const onStatus = (value: boolean) => {
-  connected.value = value
-  if (value) reconnectNeeded.value = false
+const onPhase = (value: keyof typeof phases) => {
+  phase.value = value
+  if (value === 'ready') connectionError.value = ''
+  const selection = copilot.selection
+  if (selection?.kind !== 'device' || selection.id !== selectedDeviceId.value) return
+  const device = devices.value.find(row => row.id === selection.id)
+  if (device) updateSelectionDetail(device)
 }
 
 const onTerminalCommand = (payload: { command: string; success: boolean; result: string }) => {
@@ -158,35 +168,30 @@ const onTerminalCommand = (payload: { command: string; success: boolean; result:
   logTerminalCommand({ ...payload, hostname: d?.hostname })
 }
 
-const connect = () => {
-  if (!selectedDeviceId.value || connected.value) return
-  reconnectNeeded.value = false
+const connect = async () => {
+  const target = selectedDeviceId.value
+  if (!target || connectionActive.value) return
+  connectionError.value = ''
+  if (connectRequested.value) {
+    connectRequested.value = false
+    await nextTick()
+    if (target !== selectedDeviceId.value) return
+  }
   connectRequested.value = true
   syncSelection()
 }
 
-const reconnect = () => {
-  connectRequested.value = false
-  reconnectNeeded.value = false
-  requestAnimationFrame(() => {
-    connectRequested.value = true
-  })
-}
-
 const disconnect = () => {
-  reconnectNeeded.value = false
+  connectionError.value = ''
   connectRequested.value = false
 }
-
-watch(selectedDeviceId, syncSelection)
-watch(connected, syncSelection)
 
 // 路由参数变化（如从设备列表跳转 /webssh/:id）时重新装载目标设备
 watch(
   () => route.params.deviceId,
   (newId) => {
-    if (!newId) return
-    autoConnectHandled = true
+    if (!newId || !autoConnectHandled) return
+    connectionError.value = ''
     selectedDeviceId.value = Number(newId)
     connectRequested.value = true
     syncSelection()
@@ -198,3 +203,7 @@ onMounted(() => {
   useAutoRefresh(loadDevices, 15000)
 })
 </script>
+
+<style scoped>
+.terminal-feedback { margin-bottom: 12px; }
+</style>

@@ -1,6 +1,7 @@
 """Transport adapters for a single durable request/result contract."""
 import asyncio
 import json
+import re
 import uuid
 import time
 from contextlib import suppress
@@ -133,8 +134,13 @@ async def execute(data, actor, factory, invoke, *, streaming):
         metrics.finish()
         result["trace"] = {**current_trace(result), **result.get("trace", {}),
                            "timings": metrics.snapshot()}
-        await store.finish(lease, result, status=terminal_state(result), http_status=http_status)
+        state = terminal_state(result)
+        await store.finish(lease, result, status=state, http_status=http_status)
         finalized = True
+        # Correlate product-generated IDs only. Do not copy prompts, answers or
+        # arbitrary user-supplied request identifiers into the server log.
+        if re.fullmatch(r"copilot-(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|\d{13}-[0-9a-f]{1,8})|req-[0-9a-f]{32}", rid):
+            logger.info("copilot_request_saved", request_id=rid, state=state, http_status=http_status)
 
     async def interrupted(result=None):
         if lease and not lease.replay and not finalized:

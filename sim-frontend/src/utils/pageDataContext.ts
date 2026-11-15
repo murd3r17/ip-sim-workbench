@@ -109,7 +109,7 @@ export async function buildPageDataContext(path: string, ctx: PageDataCtx = {}):
     if (path === '/config-versions') {
       const versions = (await getConfigVersions().catch(() => [])) as any[]
       const lines = versions.slice(0, 10).map((v: any) => `- v${v.version_number} device=${v.device_id} ${v.source || ''} ${fmtTime(v.created_at)}`)
-      return `【配置管理】最近版本:\n${(lines.join('\n') || '无')}`
+      return `【配置版本】最近版本:\n${(lines.join('\n') || '无')}`
     }
     if (path === '/training') {
       return await buildTrainingSnapshot(ctx)

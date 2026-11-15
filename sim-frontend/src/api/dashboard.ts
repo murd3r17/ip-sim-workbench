@@ -23,6 +23,7 @@ export interface DashboardTask {
   name: string
   status: string
   progress: number
+  batch_id?: number | null
   device_name?: string
   high_risk: boolean
   has_diff: boolean
@@ -44,7 +45,7 @@ export interface DashboardSummary {
     links: DashboardLink[]
     published_positions: Record<string, { x: number; y: number }>
   }
-  tasks: { active: number; pending: number; failed: number; with_diff: number; items: DashboardTask[] }
+  tasks: { active: number; pending: number; failed: number; with_diff: number; deploy_batches?: number; items: DashboardTask[] }
   alarms: {
     active: number
     critical: number
@@ -52,8 +53,11 @@ export interface DashboardSummary {
       id: number
       device_id: number
       device_name: string
+      alarm_type?: string | null
       severity: string
       message: string
+      metric_value?: number | null
+      threshold?: number | null
       status: string
       fired_at: string
     }>
@@ -61,7 +65,7 @@ export interface DashboardSummary {
   }
   services: {
     database: { status: string }
-    llm: { status: string; provider?: string; model?: string; config_source?: string }
+    llm: { status: string; provider?: string; model?: string; config_source?: string; checked_at?: string | null }
     knowledge: { status: string; provider?: string; available?: boolean; document_count?: number; workspace?: string }
   }
   risks: {
@@ -70,6 +74,7 @@ export interface DashboardSummary {
   }
   approvals?: Array<{
     id: number
+    name?: string | null
     device_name: string
     status: string
     high_risk: boolean
@@ -78,12 +83,14 @@ export interface DashboardSummary {
   }>
   reports?: Array<{
     id: number
+    topology_id?: number | null
     job_type: string
     status: string
     trigger_mode: string
     device_count: number
     success_count: number
     failure_count: number
+    skipped_count?: number | null
     alarm_count?: number | null
     created_at: string
   }>
@@ -92,4 +99,5 @@ export interface DashboardSummary {
   training?: { active: number; total: number }
 }
 
-export const getDashboardSummary = () => request.get<DashboardSummary, DashboardSummary>('/dashboard/summary')
+export const getDashboardSummary = () => request.get<DashboardSummary, DashboardSummary>('/dashboard/summary', { params: { include_service_health: false } })
+export const getDashboardServices = () => request.get<DashboardSummary['services'], DashboardSummary['services']>('/dashboard/services', { silent: true })

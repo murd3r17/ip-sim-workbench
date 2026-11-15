@@ -122,8 +122,8 @@ export function getTrainingReport(sessionId: number, version?: number) {
 }
 
 /** Export only saved state; no model or retrieval request. */
-export function exportTrainingSession(sessionId: number, version?: number) {
-  return request.get(`/training/sessions/${sessionId}/export`, { silent: true, params: { version } })
+export function exportTrainingSession(sessionId: number, version?: number, format: 'json' | 'markdown' = 'json') {
+  return request.get(`/training/sessions/${sessionId}/export`, { silent: true, params: { version, format } })
 }
 
 /** 显式生成复盘报告；regenerate=true 才新增版本。 */

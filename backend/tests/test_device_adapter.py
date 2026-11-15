@@ -48,9 +48,20 @@ async def test_sim_ospf_output_parses():
 @pytest.mark.asyncio
 async def test_sim_lldp_output_parses_and_uses_neighbor_context():
     from modules.device.lldp_parser import parse_lldp_neighbor_brief
-    out = await _sim(neighbors=["R-2", "S-1"]).run_command("display lldp neighbor brief")
+    out = await _sim("R-7", neighbors=["R-2", "S-1"]).run_command("display lldp neighbor brief")
     neighbors = parse_lldp_neighbor_brief(out)
     assert [n["neighbor_device"] for n in neighbors] == ["R-2", "S-1"]
+
+
+def test_builtin_demo_ports_and_ospf_peers_share_the_baseline():
+    from engines.sim_topology import DEMO_LINKS, interfaces_of, ospf_peers_of
+
+    for left, left_port, right, right_port in DEMO_LINKS:
+        assert left_port in {port for port, _, _ in interfaces_of(left)}
+        assert right_port in {port for port, _, _ in interfaces_of(right)}
+    for host in ("R-1", "R-2", "R-3"):
+        addresses = {port: address for port, _, address in interfaces_of(host)}
+        assert all(addresses[port] for port, _, _ in ospf_peers_of(host))
 
 
 @pytest.mark.asyncio

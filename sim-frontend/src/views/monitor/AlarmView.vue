@@ -25,15 +25,19 @@
 
       <el-alert v-if="deviceLoadError" :title="deviceLoadError" type="warning" :closable="false" show-icon><el-button @click="loadDevices">重试设备列表</el-button></el-alert>
       <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" show-icon />
+      <el-alert v-if="linkedAlarmError" :title="linkedAlarmError" type="warning" :closable="false" show-icon>
+        <el-button link type="primary" @click="loadLinkedAlarm">重新打开指定告警</el-button>
+      </el-alert>
       <p class="alarm-help">确认表示已接手；关闭表示结束记录。处理状态不等于设备或业务恢复；请核对监控中的最近采样。</p>
       <el-table :data="pagedAlarms" v-loading="loading" @row-click="onAlarmRowClick">
         <template #empty>
-          <el-empty :description="loadError || '暂无告警记录'" :image-size="72">
-            <el-button type="primary" @click="$router.push('/monitor')">去监控大盘</el-button>
+          <el-empty :description="loadError || (filterStatus || filterDevice ? '当前筛选没有匹配告警。' : '暂无告警记录')" :image-size="72">
+            <el-button v-if="filterStatus || filterDevice" type="primary" @click="clearFilters">查看全部告警</el-button>
+            <el-button v-else type="primary" @click="$router.push('/monitor')">去监控大盘</el-button>
           </el-empty>
         </template>
         <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="device_id" label="设备ID" width="80" />
+        <el-table-column label="设备" min-width="110"><template #default="{ row }">{{ row.device_name || `设备 #${row.device_id}` }}</template></el-table-column>
         <el-table-column label="告警类型" min-width="160"><template #default="{ row }">{{ alarmTypeLabel(row.alarm_type) }}</template></el-table-column>
         <el-table-column prop="severity" label="严重程度" width="100">
           <template #default="{ row }">
@@ -41,8 +45,8 @@
           </template>
         </el-table-column>
         <el-table-column prop="message" label="告警信息" min-width="230" show-overflow-tooltip />
-        <el-table-column prop="metric_value" label="指标值" width="100" />
-        <el-table-column prop="threshold" label="阈值" width="80" />
+        <el-table-column label="采样值" width="100"><template #default="{ row }">{{ alarmMeasurementLabel(row.metric_value, row.alarm_type) }}</template></el-table-column>
+        <el-table-column label="阈值" width="90"><template #default="{ row }">{{ alarmMeasurementLabel(row.threshold, row.alarm_type) }}</template></el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</el-tag>
@@ -84,8 +88,8 @@
         <el-descriptions-item label="状态">
           <el-tag :type="getStatusType(currentAlarm?.status)">{{ getStatusLabel(currentAlarm?.status) }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="指标值">{{ currentAlarm?.metric_value }}</el-descriptions-item>
-        <el-descriptions-item label="阈值">{{ currentAlarm?.threshold }}</el-descriptions-item>
+        <el-descriptions-item label="采样值">{{ alarmMeasurementLabel(currentAlarm?.metric_value, currentAlarm?.alarm_type) }}</el-descriptions-item>
+        <el-descriptions-item label="阈值">{{ alarmMeasurementLabel(currentAlarm?.threshold, currentAlarm?.alarm_type) }}</el-descriptions-item>
         <el-descriptions-item label="触发时间">{{ formatApiTime(currentAlarm?.fired_at) }}</el-descriptions-item>
         <el-descriptions-item label="确认时间">{{ formatApiTime(currentAlarm?.acknowledged_at) }}</el-descriptions-item>
         <el-descriptions-item label="解决时间">{{ formatApiTime(currentAlarm?.resolved_at) }}</el-descriptions-item>
@@ -98,8 +102,9 @@
         <p>{{ currentAlarm?.message }}</p>
         <details><summary>原始动作类型</summary>{{ currentAlarm?.alarm_type }}</details>
       </div>
-      <div v-if="currentAlarm?.device_id" style="margin-top: 12px">
-        <el-button type="primary" @click="openWebSSH(currentAlarm)">打开 WebSSH</el-button>
+      <div v-if="currentAlarm?.device_id" class="v7b-actions" style="margin-top: 12px">
+        <el-button type="primary" @click="openDeviceObservation(currentAlarm)">观察该设备</el-button>
+        <el-button @click="openWebSSH(currentAlarm)">打开 WebSSH</el-button>
         <el-button @click="$router.push('/monitor')">去监控大盘</el-button>
       </div>
     </el-dialog>
@@ -121,7 +126,7 @@ import {
   alarmStatusTagType as getStatusType,
   severityLabel as getSeverityLabel,
   severityTagType as getSeverityType,
-  alarmTypeLabel, alarmMeaning,
+  alarmTypeLabel, alarmMeaning, alarmMeasurementLabel,
 } from '../../utils/display'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
 import { useLabContextStore } from '../../stores/labContext'
@@ -149,6 +154,8 @@ const pagedAlarms = computed(() => {
 // 详情对话框
 const detailDialogVisible = ref(false)
 const currentAlarm = ref<any>(null)
+const linkedAlarmError = ref('')
+let linkedAlarmEpoch = 0
 
 const bindAlarmSelection = (alarm: any) => {
   labCtx.setAlarm({
@@ -169,7 +176,6 @@ const bindAlarmSelection = (alarm: any) => {
     label: alarm.alarm_type || `告警#${alarm.id}`,
     detail: `${alarm.severity || ''} ${alarm.message || ''}`.trim().slice(0, 120),
   })
-  if (!copilot.open) copilot.setOpen(true)
 }
 
 const onAlarmRowClick = (row: any) => {
@@ -180,6 +186,18 @@ const openWebSSH = (alarm: any) => {
   bindAlarmSelection(alarm)
   if (alarm.device_id) router.push(`/webssh/${alarm.device_id}`)
   else router.push('/webssh')
+}
+
+function openDeviceObservation(alarm: AlarmRecord) {
+  bindAlarmSelection(alarm)
+  detailDialogVisible.value = false
+  void router.push({ path: '/devices', query: { observe_device: alarm.device_id } })
+}
+
+function clearFilters() {
+  filterStatus.value = null
+  filterDevice.value = null
+  void router.replace({ path: '/alarms' })
 }
 
 // 加载设备列表
@@ -224,12 +242,31 @@ const handleClose = async (alarm: AlarmRecord) => {
 }
 
 // 查看详情
-const handleViewDetail = (alarm: any) => {
+const handleViewDetail = (alarm: AlarmRecord) => {
+  linkedAlarmEpoch++
+  linkedAlarmError.value = ''
   currentAlarm.value = alarm
   detailDialogVisible.value = true
   bindAlarmSelection(alarm)
 }
 
+async function loadLinkedAlarm() {
+  const epoch = ++linkedAlarmEpoch
+  linkedAlarmError.value = ''
+  const id = Number(route.query.alarm_id)
+  if (route.path !== '/alarms' || !Number.isSafeInteger(id) || id < 1) return
+  const stillCurrent = () => epoch === linkedAlarmEpoch && route.path === '/alarms' && Number(route.query.alarm_id) === id
+  try {
+    const [alarm] = await getAlarms({ alarm_id: id, limit: 1 }, { silent: true })
+    if (!stillCurrent()) return
+    if (alarm?.id === id) handleViewDetail(alarm)
+    else linkedAlarmError.value = '找不到这条告警。可查看列表中的其他记录。'
+  } catch {
+    if (stillCurrent()) linkedAlarmError.value = '暂时无法读取这条告警，请重试。'
+  }
+}
+
+watch(() => route.query.alarm_id, loadLinkedAlarm)
 
 onMounted(() => {
   const qid = Number(route.query.device_id || 0)
@@ -239,6 +276,7 @@ onMounted(() => {
   if (qstatus) filterStatus.value = qstatus
   loadDevices()
   loadAlarms()
+  void loadLinkedAlarm()
   // 轮询静默：失败不弹 toast（页面顶部仍有数据提示），否则后端一挂每 15s 弹一条
   useAutoRefresh(() => loadAlarms({ silent: true }), 15000)
 })

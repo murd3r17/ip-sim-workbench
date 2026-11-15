@@ -3,6 +3,7 @@ import json
 import uuid
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
@@ -47,6 +48,27 @@ async def api_case(client, test_session_factory, monkeypatch):
 
 def events(response):
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+
+
+@pytest.mark.asyncio
+async def test_model_connection_failure_keeps_partial_output_and_explains_next_step(api_case, monkeypatch):
+    client, headers, provider, _ = api_case
+
+    async def disconnected(*args, **kwargs):
+        yield {"kind": "content", "text": "先核对接口。"}
+        raise httpx.ConnectError("private-provider-detail")
+
+    monkeypatch.setattr(provider, "stream_parts", disconnected)
+    response = await client.post("/api/v1/ai/copilot/chat/stream", headers=headers, json={
+        "message": "请解释接口", "request_id": uuid.uuid4().hex,
+    })
+    stream = events(response)
+    error = next(event for event in stream if event["type"] == "error")
+    assert error["code"] == "provider_unavailable"
+    assert "模型服务当前不可用" in error["message"] and "知识库" in error["message"]
+    assert "先核对接口。" in "".join(event["text"] for event in stream if event["type"] == "token")
+    assert stream[-1]["status"] == "failed"
+    assert "private-provider-detail" not in response.text
 
 
 @pytest.mark.asyncio

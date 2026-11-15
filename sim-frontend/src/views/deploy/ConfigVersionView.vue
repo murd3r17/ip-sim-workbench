@@ -4,8 +4,10 @@
     <el-card>
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center">
-          <span>配置管理</span>
-          <el-button @click="$router.push({ path: '/deploy', query: { tab: 'tasks' } })">返回下发</el-button>
+          <span>配置版本</span>
+          <el-button @click="returnToChange">
+            {{ fromDraft ? '返回配置草稿' : fromApproval ? '返回审批记录' : '返回配置批次' }}
+          </el-button>
         </div>
       </template>
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
@@ -19,11 +21,16 @@
             <el-button :disabled="!snapshotSelection.length" @click="handleExportSnapshots">导出已选快照</el-button>
           </div>
           <el-alert title="采集只执行 display current-configuration，不会下发任何配置。" type="info" :closable="false" show-icon />
+          <div v-if="targetDevice" class="toolbar">
+            <span>正在查看 {{ deviceName(targetDevice) }} 的配置版本</span>
+            <el-button link type="primary" @click="clearTargetDevice">查看所有设备版本</el-button>
+          </div>
           <RecordOriginFilter v-model="originFilter" :records="versions" :unavailable="!!versionLoadError" />
           <el-table ref="snapshotTable" :data="visibleVersions" v-loading="loading" class="table" @selection-change="snapshotSelection = $event">
             <template #empty>
-              <el-empty :description="versionLoadError || (versions.length?'当前来源筛选没有匹配快照，可恢复全部来源。':'暂无配置快照。请先选择采集设备，再点「采集并保存配置」。')" :image-size="72">
-                <el-button v-if="!versions.length && !versionLoadError" type="primary" @click="openDeviceSelector">选择采集设备</el-button>
+              <el-empty :description="versionEmptyText" :image-size="72">
+                <el-button v-if="!versionLoadError && targetDevice" type="primary" @click="clearTargetDevice">查看所有设备版本</el-button>
+                <el-button v-else-if="!versions.length && !versionLoadError" type="primary" @click="openDeviceSelector">选择采集设备</el-button>
               </el-empty>
             </template>
             <el-table-column type="selection" width="48" />
@@ -84,6 +91,7 @@
             <el-button class="local-compare-action" :disabled="!localLeftName || !localRightName" @click="compareLocalFiles">比对本地文件</el-button>
           </el-card>
           </details>
+          <p v-if="comparisonOrder" class="selection-tip">{{ comparisonOrder }}</p>
           <ConfigTextDiff v-if="diffResult?.version1 && diffResult?.version2" :left="diffResult.version1.config_snapshot || ''" :right="diffResult.version2.config_snapshot || ''" :left-label="comparisonLabel(diffResult.version1)" :right-label="comparisonLabel(diffResult.version2)" :different-devices="diffResult.same_device === false" :legacy="diffResult.diff" />
           <ConfigTextDiff v-if="localDiff" :left="localDiff.left" :right="localDiff.right" :left-label="localDiff.leftName" :right-label="localDiff.rightName" />
         </el-tab-pane>
@@ -157,22 +165,33 @@ import { notifyRequestError } from '../../utils/requestError'
 import ConfigTextDiff from '../../components/ConfigTextDiff.vue'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
-import { formatApiTime } from '../../utils/datetime'
+import { formatApiTime, parseApiTime } from '../../utils/datetime'
 import { taskStatusLabel, configSourceLabel, auditActionLabel, executionModeLabel } from '../../utils/display'
 import { buildConfigDiff } from '../../utils/configTextDiff'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 
 const route = useRoute()
 const router = useRouter()
+const fromDraft = computed(() => route.query.from === 'draft')
+const fromApproval = computed(() => route.query.from === 'approval' && Number(route.query.task_id) > 0)
+function returnToChange() {
+  if (fromApproval.value) void router.push({ path: '/approvals', query: { task_id: route.query.task_id } })
+  else void router.push({ path: '/deploy', query: { tab: fromDraft.value ? 'deploy' : 'tasks' } })
+}
+const targetDevice = computed(() => {
+  const id = Number(route.query.device_id)
+  return Number.isSafeInteger(id) && id > 0 ? id : 0
+})
 const activeTab = ref(String(route.query.tab || 'snapshots'))
 const devices = ref<DeviceRecord[]>([])
 const deviceRequest = useSnapshotRequest('设备列表')
 const deviceLoadError = deviceRequest.error
 const versions = ref<ConfigVersionRecord[]>([])
 const originFilter=ref('all')
-const visibleVersions=computed(()=>filterByRecordOrigin(versions.value,originFilter.value))
+const visibleVersions = computed(() => filterByRecordOrigin(versions.value, originFilter.value)
+  .filter(version => !targetDevice.value || version.device_id === targetDevice.value))
 const snapshotTable=ref<any>(null)
-watch(originFilter,()=>{snapshotSelection.value=[];snapshotTable.value?.clearSelection()})
+watch([originFilter, targetDevice], () => { snapshotSelection.value = []; snapshotTable.value?.clearSelection() })
 const logs = ref<any[]>([])
 const selectedDeviceIds = ref<number[]>([])
 const pendingDeviceIds = ref<number[]>([])
@@ -209,7 +228,27 @@ const changeTask = ref<any>(null)
 
 const snapshotLabel = (v: ConfigVersionRecord) => `${deviceName(v.device_id)} · V${v.version_number} · ${formatApiTime(v.created_at)}`
 const deviceName = (deviceId?: number) => devices.value.find(device => device.id === deviceId)?.hostname || `设备 ${deviceId || '未知'}`
-const comparisonLabel = (v: any) => `${deviceName(v.device_id)} · V${v.version_number} · 快照 #${v.id}`
+const versionEmptyText = computed(() => {
+  if (versionLoadError.value) return versionLoadError.value
+  if (targetDevice.value) return `${deviceName(targetDevice.value)} 在当前筛选条件下没有配置快照。`
+  if (versions.value.length) return '当前来源筛选没有匹配快照，可恢复全部来源。'
+  return '暂无配置快照。请先选择采集设备，再点「采集并保存配置」。'
+})
+function clearTargetDevice() {
+  const { device_id: _deviceId, ...query } = route.query
+  void router.replace({ path: '/config-versions', query })
+}
+const comparisonLabel = (v: ConfigVersionRecord) =>
+  `${deviceName(v.device_id)} · V${v.version_number} · ${configSourceLabel(v.source)} · ${formatApiTime(v.created_at)}`
+const comparisonOrder = computed(() => {
+  const result = diffResult.value
+  if (!result?.version1 || !result.version2) return ''
+  if (result.same_device === false) return 'A、B 来自不同设备，当前显示两份文本差异。'
+  const a = parseApiTime(result.version1.created_at)
+  const b = parseApiTime(result.version2.created_at)
+  if (!a || !b || +a === +b) return '现有时间记录无法区分 A、B 的先后顺序。'
+  return a < b ? 'A 较早，B 较晚。' : 'B 较早，A 较晚。差异按当前 A → B 的选取顺序展示。'
+})
 const downloadText = (filename: string, content: string) => { const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' })); link.download = filename; link.click(); URL.revokeObjectURL(link.href) }
 const loadDevices = async () => { await deviceRequest.run(() => getDevices(), value => { devices.value = value }) }
 const loadVersions = async () => { await versionRequest.run(() => getConfigVersions(), value => { versions.value = value }) }

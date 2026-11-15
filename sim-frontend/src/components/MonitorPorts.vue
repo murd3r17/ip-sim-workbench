@@ -15,7 +15,7 @@
     <div v-loading="loading" class="port-body">
       <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
       <template v-if="state">
-        <p class="port-help">读取已保存的监控结果。管理员在监控页「触发采集」后产生新观察；此处刷新与登记用途均不向设备写配置。</p>
+        <p class="port-help">这里读取已保存的监控结果。管理员可在监控页点击「采集指标」获取新观察。登记用途只更新工作台的记录。</p>
         <el-alert v-if="!state.policy.valid" :title="state.policy.reason || '端口期望格式无效'" type="error" :closable="false" />
         <div class="port-snapshot">
           <span>采样：{{ formatApiTime(state.observation?.observed_at) }}</span>

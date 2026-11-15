@@ -9,15 +9,54 @@ const statements=ast.statements.filter(n=>ts.isVariableStatement(n)&&n.declarati
 assert.equal(statements.length,2)
 const code=ts.transpileModule(statements.map(s=>s.getText(ast)).join('\n')+'\nexports={loadInspectionTasks,loadChartData};',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return{resolve,reject,promise}}
-function harness(){
- const chart=[],task=[];const h={exports:{},chartReqSeq:0,inspectReqSeq:0,selectedTopology:{value:1},inspectionTasks:{value:['saved']},inspectionError:{value:''},chartError:{value:''},trendData:{value:{metrics:{cpu_usage:['saved']}}},getMonitorTasks(){const d=deferred();task.push(d);return d.promise},getMonitorTrends(){const d=deferred();chart.push(d);return d.promise},updateCpuChart(){},updateMemoryChart(){},updateInterfaceChart(){},updateOspfChart(){},latestMetricValue(){return 0},notifyRequestError(){}}
- vm.runInNewContext(code,h);return{h,chart,task}
+function harness() {
+ const chart = [], task = []
+ const h = {
+  exports: {}, chartReqSeq: 0, inspectReqSeq: 0,
+  selectedTopology: { value: 1 }, linkedInspection: { value: undefined },
+  inspectionTasks: { value: ['saved'] }, inspectionError: { value: '' }, chartError: { value: '' },
+  trendData: { value: { metrics: { cpu_usage: ['saved'] } } },
+  getMonitorTasks(params) {
+   const next = deferred()
+   task.push({ ...next, params })
+   return next.promise
+  },
+  getMonitorTrends() {
+   const next = deferred()
+   chart.push(next)
+   return next.promise
+  },
+  updateCpuChart() {}, updateMemoryChart() {}, updateInterfaceChart() {}, updateOspfChart() {},
+  latestMetricValue() { return 0 },
+  notifyRequestError() {},
+ }
+ vm.runInNewContext(code, h)
+ return { h, chart, task }
 }
 test('failed same-target chart and inspection refresh preserve successful saved snapshots',async()=>{
  const{h,chart,task}=harness();const a=h.exports.loadChartData(),b=h.exports.loadInspectionTasks();chart[0].reject(Error('offline'));task[0].reject(Error('offline'));await Promise.all([a,b]);assert.equal(h.trendData.value.metrics.cpu_usage[0],'saved');assert.equal(h.inspectionTasks.value[0],'saved');assert.match(h.chartError.value,/陈旧/);assert.match(h.inspectionError.value,/陈旧/)
 })
-test('late previous-target charts and tasks cannot replace the new target',async()=>{
- const{h,chart,task}=harness();const a=h.exports.loadChartData(),b=h.exports.loadInspectionTasks();h.selectedTopology.value=2;const c=h.exports.loadChartData(),d=h.exports.loadInspectionTasks();const next={metrics:{cpu_usage:['new']}};chart[1].resolve(next);task[1].resolve(['new']);await Promise.all([c,d]);chart[0].resolve({metrics:{cpu_usage:['old']}});task[0].reject(Error('old failure'));await Promise.all([a,b]);assert.equal(h.trendData.value,next);assert.equal(h.inspectionTasks.value[0],'new');assert.equal(h.inspectionError.value,'')
+test('late previous-target charts and tasks cannot replace the linked report', async () => {
+ const { h, chart, task } = harness()
+ const previousChart = h.exports.loadChartData()
+ const previousTask = h.exports.loadInspectionTasks()
+ h.selectedTopology.value = 2
+ h.linkedInspection.value = 17
+ const nextChart = h.exports.loadChartData()
+ const nextTask = h.exports.loadInspectionTasks()
+ assert.equal(task[0].params.job_id, undefined)
+ assert.equal(task[1].params.topology_id, 2)
+ assert.equal(task[1].params.job_id, 17)
+ const next = { metrics: { cpu_usage: ['new'] } }
+ chart[1].resolve(next)
+ task[1].resolve(['new'])
+ await Promise.all([nextChart, nextTask])
+ chart[0].resolve({ metrics: { cpu_usage: ['old'] } })
+ task[0].reject(Error('old failure'))
+ await Promise.all([previousChart, previousTask])
+ assert.equal(h.trendData.value, next)
+ assert.equal(h.inspectionTasks.value[0], 'new')
+ assert.equal(h.inspectionError.value, '')
 })
 test('no target does not issue unscoped trend or task requests',async()=>{
  const{h,chart,task}=harness();h.selectedTopology.value=null;await h.exports.loadChartData();await h.exports.loadInspectionTasks();assert.equal(chart.length,0);assert.equal(task.length,0)

@@ -6,7 +6,7 @@ import ts from 'typescript'
 // Execute the actual <script setup> with mocked UI/network dependencies, on Node >= 20.
 const vue = await readFile(new URL('../src/components/AiCopilotPanel.vue', import.meta.url), 'utf8')
 const script = vue.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
-const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation };', {
+const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation, priorUpload };', {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 })
 const deferred = () => {
@@ -46,7 +46,14 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     newChat() { this.activeId = 'chat-' + (++sequence); this.messages = [] },
   }
   const stubs = {
-    vue: { ref: value => ({ value }), computed: get => ({ get value() { return get() } }), nextTick: async () => {}, watch() {}, onMounted() {}, onUnmounted() {} },
+    vue: {
+      ref: value => ({ value }), reactive: value => value,
+      computed: source => ({
+        get value() { return typeof source === 'function' ? source() : source.get() },
+        set value(value) { source.set(value) },
+      }),
+      nextTick: async () => {}, watch() {}, onMounted() {}, onUnmounted() {},
+    },
     'vue-router': { useRoute: () => ({ path: '/devices' }), useRouter: () => ({ push: async value => navigations.push(value) }) },
     'element-plus/es/components/message/index': { ElMessage: { info() {}, warning() {}, success() {} } },
     '../api/ai': {
@@ -58,6 +65,7 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     '../stores/aiCopilot': { useAiCopilotStore: () => store },
     '../stores/labContext': { useLabContextStore: () => labCtx },
     '../utils/markdownLite': { renderMarkdown: value => value },
+    './KnowledgeDocumentReader.vue': {},
     '../utils/copilotContext': { resolvePageMeta: () => ({ title: 'Devices' }) },
     '../utils/pageDataContext': { buildPageDataContext: snapshot },
     '../utils/deviceModel': { resolveWorkbenchDeviceModel: () => 'NE40E' },
@@ -89,6 +97,32 @@ test('a delayed page snapshot cannot combine the old evidence with a newly selec
   h.requests[0].onEvent({ type: 'meta', draft_target: { device_id: 2, hostname: 'R2' } })
   assert.equal(h.store.messages.at(-1).draftTarget.deviceId, 2)
   h.requests[0].onEvent({ type: 'done', status: 'ok' }); h.requests[0].resolve(); await pending
+})
+
+test('a cleared device stays out of the snapshot even when the same lab is linked', async () => {
+  let context
+  const h = harness(async (_route, snapshot) => { context = snapshot; return '' })
+  Object.assign(h.labCtx, { isActive: true, sessionId: 12, labId: 5, device: { id: 3, hostname: 'R3' } })
+  Object.assign(h.store, { linkedLabSession: 12, selection: null })
+  const pending = h.send('这一步要观察什么？', true)
+  await until(() => h.requests.length === 1)
+  assert.equal(context.sessionId, 12)
+  assert.equal(context.device, null)
+  h.requests[0].onEvent({ type: 'done', status: 'ok' })
+  h.requests[0].resolve()
+  await pending
+})
+
+test('an implicit attachment follow-up matches the exact port and respects a current-state question', () => {
+  const h = harness()
+  h.store.messages.push({ id: 'upload', role: 'user', content: '分析接口表',
+    attachments: [{ name: 'ports.txt', mime: 'text/plain', contentString: 'GigabitEthernet1/0/20 up\nGE1/0/3.10 up' }] })
+  assert.equal(h.priorUpload('GE1/0/20 是什么状态？')?.id, 'upload')
+  assert.equal(h.priorUpload('GE1/0/2 是什么状态？'), undefined)
+  assert.equal(h.priorUpload('GE1/0/3 是什么状态？'), undefined)
+  assert.equal(h.priorUpload('当前设备 GE1/0/20 是什么状态？'), undefined)
+  assert.equal(h.priorUpload('GE1/0/20 代表什么？不用结合当前实验。'), undefined)
+  assert.equal(h.priorUpload('对照 ports.txt，当前设备 GE1/0/20 的记录是什么？')?.id, 'upload')
 })
 
 test('applying an old draft keeps its original device and does not adopt the current selection', async () => {

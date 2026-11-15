@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
 from core.health import _app_start_time, get_health_status
 from core.logger import get_logger
-from core.llm_provider import cached_llm_health_check, create_llm_provider
+from core.llm_provider import cached_llm_health_check, create_llm_provider, llm_health_checked_at
 from modules.system.models import SystemConfig, BackgroundTask, TaskStatus
 from modules.auth.models import User, AuditLog
 from modules.device.models import Device
@@ -137,6 +137,7 @@ class SystemService:
 
         # LLM状态
         llm_status = "unavailable"
+        llm_checked_at = None
         runtime_llm_config = {
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
@@ -145,6 +146,7 @@ class SystemService:
             runtime_llm_config = await SystemService.get_llm_runtime_config(db)
             provider = create_llm_provider(runtime_llm_config)
             is_healthy = await cached_llm_health_check(provider)
+            llm_checked_at = llm_health_checked_at(provider)
             llm_status = "healthy" if is_healthy else "unavailable"
         except Exception:
             llm_status = "unavailable"
@@ -163,6 +165,7 @@ class SystemService:
             "platform": platform.platform(),
             "database_status": db_status,
             "llm_status": llm_status,
+            "llm_checked_at": llm_checked_at,
             "llm_provider": runtime_llm_config["llm_provider"],
             "llm_model": runtime_llm_config["llm_model"],
             "device_count": device_count,

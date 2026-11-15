@@ -67,6 +67,7 @@ class DeviceResponse(BaseModel):
     topology_id: int
     network_role: str
     last_seen_at: Optional[datetime]
+    status_changed_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

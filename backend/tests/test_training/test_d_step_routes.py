@@ -94,7 +94,7 @@ def test_content_snapshot_is_detached_including_requirements_and_rules():
 
 
 @pytest.mark.asyncio
-async def test_unverified_session_can_explain_new_controls_without_enabling_model_or_drafts(client,test_session_factory,monkeypatch):
+async def test_unverified_session_allows_explanation_and_keeps_draft_protection(client,test_session_factory,monkeypatch):
     from modules.ai_text.router import _lab_draft_policy
     from modules.ai_text.schemas import CopilotChatRequest
     token,lab_id,_,_=await setup(client,test_session_factory,monkeypatch)
@@ -105,9 +105,9 @@ async def test_unverified_session_can_explain_new_controls_without_enabling_mode
         actor={'user_id':session.trainee_id,'role':'user'}
         request=CopilotChatRequest(message='步骤核对里的核对本步怎么用？',lab_id=lab_id,lab_session_id=sid)
         policy=await _lab_draft_policy(db,request,actor)
-        assert policy['allow_model'] is False and policy['allow_draft'] is False
-        assert '选择步骤' in policy['safe_text'] and '不调用模型' in policy['safe_text']
+        assert policy['allow_model'] is True and policy['allow_draft'] is False
         request.want_draft=True
-        assert '选择步骤' not in (await _lab_draft_policy(db,request,actor))['safe_text']
+        denied_draft=await _lab_draft_policy(db,request,actor)
+        assert denied_draft['allow_model'] is False and denied_draft['allow_draft'] is False
         denied=await _lab_draft_policy(db,request,{'user_id':9999,'role':'user'})
-        assert '选择步骤' not in denied['safe_text']
+        assert denied['allow_model'] is False and denied['allow_draft'] is False

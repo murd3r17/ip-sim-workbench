@@ -1,7 +1,7 @@
 """监控模块路由"""
 import asyncio
 import json
-from typing import Any
+from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,16 +78,25 @@ async def list_monitor_tasks(
     topology_id: int | None = None,
     job_type: str | None = None,
     limit: int = Query(50, le=200),
+    job_id: Annotated[int | None, Query(gt=0)] = None,
     db: AsyncSession = Depends(get_async_session),
     current_user: dict = Depends(get_current_user),
 ) -> Any:
     """获取监控任务列表"""
     parsed_job_type = parse_enum(MonitorJobType, job_type, "job_type") if job_type else None
-    return await MonitorService.list_jobs(db, topology_id=topology_id, job_type=parsed_job_type, limit=limit)
+    return await MonitorService.list_jobs(db, topology_id=topology_id, job_type=parsed_job_type, limit=limit, job_id=job_id)
 
 
 @router.get("/alarms", response_model=None)
-async def list_alarms(status: str = None, device_id: int = None, limit: int = Query(100, le=1000), offset: int = Query(0, ge=0), db: AsyncSession = Depends(get_async_session), current_user: dict = Depends(get_current_user)) -> list[Any]:
+async def list_alarms(
+    status: str | None = None,
+    device_id: int | None = None,
+    limit: Annotated[int, Query(le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: dict = Depends(get_current_user),
+    alarm_id: Annotated[int | None, Query(gt=0)] = None,
+) -> list[Any]:
     """获取告警列表"""
     query = select(Alarm, Device.hostname).join(Device, Device.id == Alarm.device_id)
     if status == "active":
@@ -96,6 +105,8 @@ async def list_alarms(status: str = None, device_id: int = None, limit: int = Qu
         query = query.where(Alarm.status == parse_enum(AlarmStatus, status, "status"))
     if device_id:
         query = query.where(Alarm.device_id == device_id)
+    if alarm_id is not None:
+        query = query.where(Alarm.id == alarm_id)
     query = query.order_by(Alarm.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     return [

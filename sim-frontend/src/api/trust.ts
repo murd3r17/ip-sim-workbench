@@ -71,8 +71,8 @@ export const createEnvironment = (data: Record<string, unknown>) => request.post
 export const updateEnvironment = (id: number, data: Record<string, unknown>) => request.put<EnvironmentRecord>(`/trust/environments/${id}`, data)
 export const preflightEnvironment = (id: number) => request.post<PreflightResult>(`/trust/environments/${id}/preflight`, {})
 export const getObservations = (params?: Record<string, unknown>) => request.get<ObservationRecord[]>('/trust/observations', { params })
-export const createObservation = (data: { device_id: number; action_id: string; environment_id?: number | null }) =>
-  request.post<ObservationRecord>('/trust/observations', data)
+export const createObservation = (data: { device_id: number; action_id: string; environment_id?: number | null }, options?: { silent?: boolean }) =>
+  request.post<ObservationRecord, ObservationRecord>('/trust/observations', data, { silent: options?.silent })
 export const evaluateOspf = (data: Record<string, unknown>) => request.post<Record<string, unknown>>('/trust/rules/ospf/evaluate', data)
 export const getLocks = () => request.get<Array<Record<string, unknown>>>('/trust/locks')
 export const recoverLock = (deviceId: number, options?: { silent?: boolean }) =>

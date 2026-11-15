@@ -10,6 +10,7 @@ function component(routeId = '1') {
     .match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
   const route = { params: { deviceId: routeId } }
   const context = { device: null, setDevice(value) { this.device = value } }
+  const copilot = { selection: null, setSelection(value) { this.selection = value } }
   const watchers = []
   const vue = {
     ref: value => ({ value }), computed: getter => ({ get value() { return getter() } }),
@@ -23,16 +24,16 @@ function component(routeId = '1') {
     '../../utils/requestError': { notifyRequestError: error => { throw error } },
     '../../utils/autoRefresh': { useAutoRefresh() {} },
     '../../components/WebSSHConsole.vue': {},
-    '../../stores/aiCopilot': { useAiCopilotStore: () => ({ setSelection() {} }) },
+    '../../stores/aiCopilot': { useAiCopilotStore: () => copilot },
     '../../stores/labContext': { useLabContextStore: () => context },
     '../../composables/useTrainingCommandLog': { useTrainingCommandLog: () => ({ logTerminalCommand() {} }) },
   }
-  const code = ts.transpileModule(source + '\nexport { loadDevices, selectedDeviceId, connectRequested, disconnect, syncSelection };', {
+  const code = ts.transpileModule(source + '\nexport { loadDevices, selectedDeviceId, connectRequested, disconnect, onPhase, syncSelection };', {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText
   const sandbox = { exports: {}, require: name => modules[name], requestAnimationFrame: fn => fn() }
   vm.runInNewContext(code, sandbox)
-  return { ...sandbox.exports, route, watchers }
+  return { ...sandbox.exports, route, watchers, copilot }
 }
 
 test('device refresh preserves an explicitly selected terminal target', async () => {
@@ -62,4 +63,16 @@ test('an explicit route change selects the requested target and connects', async
   routeWatcher[1]('2')
   assert.equal(view.selectedDeviceId.value, 2)
   assert.equal(view.connectRequested.value, true)
+})
+
+test('refresh and terminal status updates respect a cleared assistant selection', async () => {
+  const view = component()
+  await view.loadDevices()
+  assert.equal(view.copilot.selection.id, 1)
+  view.onPhase('ready')
+  assert.match(view.copilot.selection.detail, /终端已就绪/)
+  view.copilot.setSelection(null)
+  view.onPhase('idle')
+  await view.loadDevices()
+  assert.equal(view.copilot.selection, null)
 })

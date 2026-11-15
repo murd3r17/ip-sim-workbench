@@ -9,7 +9,7 @@ from copy import deepcopy
 
 from .lab_content import ENVIRONMENT_SPEC, lab_seed_payloads, site_device
 
-CATALOG_VERSION = 'v7d.2026-11-07'
+CATALOG_VERSION = 'v7ux.2026-11-13'
 CORPUS = 'knowledge/corpus/huawei-ip/'
 OSPF_SOURCE = CORPUS + 'HCIP-Datacom-Core-Lab/01-11-ospf-单区域.md'
 IGP_SOURCE = CORPUS + 'HCIP-Datacom-Advanced-RS-Lab/01-1-igp-高级特性实验.md'
@@ -33,8 +33,8 @@ def _step(number, name, goal, hint, command, expected, kind='manual_review', **e
             'verification': _verification(kind, **extra)}
 
 
-def _interfaces():
-    return '；'.join(f"{role}：{site_device(role)['link_interface']}" for role in ('R1', 'R2', 'R3'))
+def _interfaces(roles=('R1', 'R2', 'R3')):
+    return '；'.join(f"{role}：{site_device(role)['link_interface']}" for role in roles)
 
 
 def _requirements(roles, prerequisites, sources, **extra):
@@ -81,6 +81,7 @@ def builtin_labs() -> list[dict]:
         if full:
             lab['objectives'][0]['config_hint'] = lab['objectives'][0]['config_hint'].replace('现场已配好', '参考环境曾配好，当前状态需重新核对')
             lab['objectives'][0]['verification'] = _verification('interface_expectations')
+            lab['objectives'][0]['expected'] = '按 R1、R2、R3 分别记下互联接口名、地址、掩码和状态。任一角色缺少记录时，先保留缺项并向管理员核对映射。'
             lab['objectives'][2]['verification'] = _verification('ospf_expectations')
             lab['objectives'][2]['expected'] = '按角色预期核对Full邻居与对端路由；ping与业务转发另行取证，不能由Full代替。'
             lab['objectives'][2]['goal'] = '核对指定邻居、对端路由与环回探测，分别记录证据'
@@ -99,6 +100,7 @@ def builtin_labs() -> list[dict]:
             lab['objectives'][6]['config_hint'] = ('先记录目标业务接口与LoopBack的原silent设置，按已批准角色逐项比较Hello/邻居与路由；' + _interfaces() +
                                                    '。未改变其他条件时LoopBack silent通常不撤销其通告；实际路由仍要观察。结束恢复所有本次改变的silent设置并核对，不只恢复业务口。')
         else:
+            process['start_guidance'] = '先查看已绑定角色和区域计划。打开拓扑确认角色后，使用本步骤列出的只读命令查看现有 OSPF 进程。记录进程号、区域与 Router ID，再进入邻居观察。'
             lab['objectives'][1]['verification'] = _verification('ospf_expectations', components=['neighbors'])
             lab['objectives'][2]['verification'] = _verification('ospf_expectations', components=['routes'])
             lab['objectives'][1].update(config_hint='先核对两端进程、区域、地址/掩码、认证、网络类型与定时器等前提，再观察指定邻居；同一广播域不保证自动Full。',
@@ -134,7 +136,7 @@ def builtin_labs() -> list[dict]:
     labs.append(_finish('BGP 邻居建立与路由发布实验',
         '在R1/R2独立绑定环境核对eBGP、精确发布前缀及邻居变化；所有变更结束按基线恢复。', [
         _step(1,'基础地址与路由前提','核对互联与LoopBack0 /32及本地精确路由',
-              'R1/R2使用本实验独立/32地址计划；现有OSPF参考/24不可直接当作本步骤通过。' + _interfaces(),
+              '打开设备页，分别选择已绑定的 R1 和 R2。用「只读观察」读取接口状态与地址，再到终端查看两台设备的本地精确路由。记录各自的 LoopBack0 /32 地址和下一跳。参考互联接口 ' + _interfaces(('R1', 'R2')) + '。',
               'display ip interface brief','绑定接口与地址正确；IP转发/本地路由另查。','interface_expectations'),
         _step(2,'配置并核对eBGP邻居','核对R1 AS100、R2 AS200及两端对等体地址',
               '在确认的独立环境按设备版本配置对应AS和peer，检查对等体及Established状态；不要用其他邻居的状态代替目标。',
@@ -143,7 +145,7 @@ def builtin_labs() -> list[dict]:
               '仅发布本实验已绑定且本地精确存在的环回前缀；分别核对本地发布、对端接收、最优状态与下一跳，不能只匹配10.0.0。',
               'display bgp routing-table','指定对端前缀与路径属性有依据；BGP表存在不单独证明业务可达。'),
         _step(4,'中断观察与恢复','对照基线观察目标邻居与路由变化并恢复',
-              '只对批准的业务接口操作：' + _interfaces() + '。保存原管理状态；结束恢复并分别核对邻居、路由和业务探测，不固定等待30秒。',
+              '只对批准的业务接口操作。参考互联接口 ' + _interfaces(('R1', 'R2')) + '。保存原管理状态；结束恢复并分别核对邻居、路由和业务探测。',
               'display bgp peer','同一目标的中断与恢复有前后证据；Idle/Active/Connect属于可能状态而不是都必须出现。'),
         ],60,bgp_env))
     labs.append(_finish('MPLS LDP 基础实验',
@@ -152,7 +154,7 @@ def builtin_labs() -> list[dict]:
               '先绑定两端LoopBack/LSR-ID与实际路由，按目标版本核对全局MPLS/LDP；不把可见LDP字样当成进程或对端正常。',
               'display mpls ldp','LSR-ID、可达路由与所需能力有实际依据。'),
         _step(2,'接口与LDP会话','核对指定业务接口及目标LDP对等体',
-              '按绑定角色选择业务接口使能；' + _interfaces() + '。先保存原值，保护管理口。',
+              '按绑定角色选择业务接口。参考互联接口 ' + _interfaces(('R1', 'R2')) + '。先保存原值，保护管理口。',
               'display mpls ldp session','指定对等体会话达到预期Operational；其他会话不能代替。'),
         _step(3,'目标前缀与标签','核对指定FEC前缀、下一跳和标签映射',
               '读取目标LSP与标签，结合底层路由和转发探测；不只匹配10.0.0字样。',

@@ -71,6 +71,21 @@ def _task_stage(task: DeployTask) -> str:
     return "pending"
 
 
+def _batch_summary(tasks: list[DeployTask]) -> dict[str, int]:
+    stages = [_task_stage(task) for task in tasks]
+    return {
+        "total": len(tasks),
+        "pending": stages.count("pending"),
+        "waiting": stages.count("waiting"),
+        "running": stages.count("deploying") + stages.count("readback"),
+        "success": stages.count("success"),
+        "failed": stages.count("failed"),  # aggregate retained for older clients
+        "execution_failed": sum(task.status == DeployStatus.FAILED for task in tasks),
+        "cancelled": sum(task.status == DeployStatus.CANCELLED for task in tasks),
+        "rolled_back": sum(task.status == DeployStatus.ROLLED_BACK for task in tasks),
+    }
+
+
 @router.get("/deploy/batches", response_model=None)
 async def list_deploy_batches(
     db: AsyncSession = Depends(get_async_session),
@@ -94,7 +109,6 @@ async def list_deploy_batches(
     result = []
     for batch in batches:
         items = by_batch.get(batch.id, [])
-        stages = [_task_stage(task) for task in items]
         result.append({
             "id": batch.id,
             "name": batch.name,
@@ -114,13 +128,7 @@ async def list_deploy_batches(
                 }
                 for task in items
             ],
-            "summary": {
-                "total": len(items),
-                "pending": sum(s == "pending" for s in stages),
-                "running": sum(s in {"deploying", "readback"} for s in stages),
-                "success": sum(s == "success" for s in stages),
-                "failed": sum(s == "failed" for s in stages),
-            },
+            "summary": _batch_summary(items),
         })
     return redact_payload(result)
 
@@ -139,7 +147,6 @@ async def get_deploy_batch(
     tasks = (await db.execute(
         select(DeployTask).where(DeployTask.batch_id == batch.id).order_by(DeployTask.id)
     )).scalars().all()
-    stages = [_task_stage(task) for task in tasks]
     from modules.device.models import Device as _Device
     device_rows = (await db.execute(select(_Device.id, _Device.hostname))).all()
     device_names = {row[0]: row[1] for row in device_rows}
@@ -151,11 +158,7 @@ async def get_deploy_batch(
         "record_origin": declared_origin(batch.source),
         "planned_at": iso_utc(batch.planned_at),
         "created_at": batch.created_at,
-        "summary": {
-            "total": len(tasks), "pending": sum(stage == "pending" for stage in stages),
-            "running": sum(stage in {"deploying", "readback"} for stage in stages),
-            "success": sum(stage == "success" for stage in stages), "failed": sum(stage == "failed" for stage in stages),
-        },
+        "summary": _batch_summary(tasks),
         "items": [
             {
                 "id": task.id, "device_id": task.device_id, "config_content": task.config_content,
@@ -165,6 +168,8 @@ async def get_deploy_batch(
                 "error_message": task.error_message,
                 "status": task.status.value, "stage": _task_stage(task),
                 "execution_mode": task.execution_mode,
+                "started_at": iso_utc(task.started_at),
+                "completed_at": iso_utc(task.completed_at),
                 "links": {
                     "change_log": f"/config-versions?tab=logs&task_id={task.id}",
                     "snapshot": f"/config-versions?tab=snapshots&task_id={task.id}",
@@ -265,7 +270,12 @@ async def list_deploy_tasks(status: str = None, db: AsyncSession = Depends(get_a
     tasks = list(result.scalars().all())
 
     batch_ids={t.batch_id for t in tasks if t.batch_id is not None}
-    sources=dict((await db.execute(select(DeployBatch.id,DeployBatch.source).where(DeployBatch.id.in_(batch_ids)))).all()) if batch_ids else {}
+    batch_rows = (await db.execute(
+        select(DeployBatch.id, DeployBatch.source, DeployBatch.name, DeployBatch.operator_id)
+        .where(DeployBatch.id.in_(batch_ids))
+    )).all() if batch_ids else []
+    sources = {row.id: row.source for row in batch_rows}
+    names = {(row.id, row.operator_id): row.name for row in batch_rows}
 
     from modules.deploy.models import DeviceWriteLock
     lock_rows = (await db.execute(select(DeviceWriteLock.device_id, DeviceWriteLock.task_id))).all()
@@ -275,6 +285,7 @@ async def list_deploy_tasks(status: str = None, db: AsyncSession = Depends(get_a
         {
             "id": t.id,
             "transaction_id": t.transaction_id,
+            "batch_name": names.get((t.batch_id, t.operator_id)),
             "source": sources.get(t.batch_id),
             "record_origin": declared_origin(sources.get(t.batch_id)),
             "device_id": t.device_id,
@@ -304,6 +315,7 @@ async def get_deploy_task(task_id: int, db: AsyncSession = Depends(get_async_ses
     return redact_payload({
         "id": task.id, "transaction_id": task.transaction_id, "device_id": task.device_id,
         "batch_id": task.batch_id,
+        "batch_name": batch.name if batch and batch.operator_id == task.operator_id else None,
         "source": batch.source if batch else None,
         "record_origin": declared_origin(batch.source if batch else None),
         # change_level/has_lock：审批详情要显示风险级别与是否持锁（此前详情恒显 "-"，与列表标签矛盾）

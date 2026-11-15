@@ -10,10 +10,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import update
 
-from modules.deploy.models import ChangeLevel, DeployStatus, DeployTask
+from core.security import create_access_token
+from modules.deploy.models import ChangeLevel, DeployBatch, DeployStatus, DeployTask
 from modules.device.models import Device, DeviceStatus, DeviceType, DeviceVendor, Topology, TopologyType
 from modules.monitor.models import Alarm, AlarmStatus, MonitorJob, MonitorJobStatus, MonitorJobType, MonitorTriggerMode
 from modules.auth.models import User, UserRole
+from modules.training.models import TrainingLab, TrainingSession
 
 
 async def _seed_operator(db) -> User:
@@ -73,6 +75,8 @@ async def test_dashboard_summary_exposes_trend_approvals_and_reports(client, tes
     assert sum(p["count"] for p in trend) == 1
     dates = [p["date"] for p in trend]
     assert dates == sorted(dates)
+    alarm = body["alarms"]["items"][0]
+    assert (alarm["alarm_type"], alarm["metric_value"], alarm["threshold"]) == ("cpu_usage_high", 80, 70)
 
     # 2) 审批：待确认任务带设备名与高风险标记
     approvals = body["approvals"]
@@ -84,9 +88,49 @@ async def test_dashboard_summary_exposes_trend_approvals_and_reports(client, tes
     assert reports[0]["alarm_count"] == 1
 
 
-async def _login(client, session_factory) -> dict:
-    from core.security import create_access_token
+@pytest.mark.asyncio
+async def test_learner_home_matches_their_approval_batch_and_training_lists(client, test_session_factory):
+    async with test_session_factory() as db:
+        operator = await _seed_operator(db)
+        learner = User(username="schema-learner", hashed_password="x", role=UserRole.USER)
+        topology = Topology(name="Learner summary topology", topology_type=TopologyType.LAB)
+        db.add_all([learner, topology])
+        await db.flush()
+        device = Device(hostname="summary-target", mgmt_ip="192.0.2.205", device_type=DeviceType.ROUTER,
+                        status=DeviceStatus.ONLINE, topology_id=topology.id)
+        lab = TrainingLab(title="Summary lab", topology_id=topology.id, instructor_id=operator.id)
+        db.add_all([device, lab])
+        await db.flush()
+        own_batch = DeployBatch(name="Learner batch", operator_id=learner.id)
+        admin_batch = DeployBatch(name="Admin batch", operator_id=operator.id)
+        db.add_all([own_batch, admin_batch])
+        await db.flush()
+        own = DeployTask(batch_id=own_batch.id, device_id=device.id, config_content="description learner",
+                         status=DeployStatus.AWAITING_CONFIRMATION, change_level=ChangeLevel.DAILY, operator_id=learner.id)
+        admin = DeployTask(batch_id=admin_batch.id, device_id=device.id, config_content="description admin",
+                           status=DeployStatus.AWAITING_CONFIRMATION, change_level=ChangeLevel.HIGH_RISK, operator_id=operator.id)
+        own_session = TrainingSession(lab_id=lab.id, trainee_id=learner.id, status="in_progress")
+        admin_session = TrainingSession(lab_id=lab.id, trainee_id=operator.id, status="in_progress")
+        db.add_all([own, admin, own_session, admin_session])
+        await db.commit()
+        own_batch_id, own_id, own_session_id = own_batch.id, own.id, own_session.id
+        token = create_access_token(learner.id, learner.username, learner.role.value)
 
+    response = await client.get("/api/v1/dashboard/summary", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["tasks"]["deploy_batches"] == 1
+    assert summary["risks"]["pending_approval"] == 1
+    assert summary["training"]["active"] == 1
+    assert summary["activity"] == []
+    assert [(item["id"], item["name"]) for item in summary["approvals"]] == [(own_id, "Learner batch")]
+    assert {(item["kind"], item["id"], item["name"]) for item in summary["tasks"]["items"]} == {
+        ("deploy", own_id, "Learner batch"), ("training", own_session_id, "Summary lab"),
+    }
+    assert next(item for item in summary["tasks"]["items"] if item["kind"] == "deploy")["batch_id"] == own_batch_id
+
+
+async def _login(client, session_factory) -> dict:
     async with session_factory() as db:
         user = User(username="schema-viewer", hashed_password="x", role=UserRole.ADMIN)
         db.add(user)

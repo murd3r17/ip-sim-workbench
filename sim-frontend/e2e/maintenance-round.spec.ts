@@ -115,7 +115,7 @@ test.describe('维护轮界面验收', () => {
     test.setTimeout(120000)
     const guards = attachGuards(page)
     await loginAsAdmin(page)
-    await openMenu(page, '配置管理')
+    await openMenu(page, '配置版本')
 
     // 等快照表渲染完（count() 不会等待，表格加载中会误判为"没有快照"）
     await page.locator('.el-table__row').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
@@ -135,7 +135,7 @@ test.describe('维护轮界面验收', () => {
   test('配置管理：AI 差异说明入口存在', async ({ page }) => {
     const guards = attachGuards(page)
     await loginAsAdmin(page)
-    await openMenu(page, '配置管理')
+    await openMenu(page, '配置版本')
     await page.getByRole('tab', { name: '配置差异比对' }).click()
     await expect(page.getByRole('button', { name: 'AI 说明差异' })).toBeVisible()
     guards.assertClean()
@@ -146,7 +146,7 @@ test.describe('维护轮界面验收', () => {
     const guards = attachGuards(page)
     await loginAsAdmin(page)
     await openMenu(page, '配置下发')
-    await page.getByRole('tab', { name: '任务管理' }).click()
+    await page.getByRole('tab', { name: '配置批次' }).click()
 
     // 任务列表本身要有「下一步」列
     await expect(page.getByRole('columnheader', { name: '下一步' })).toBeVisible({ timeout: 20000 })
@@ -160,7 +160,7 @@ test.describe('维护轮界面验收', () => {
     await expect(dialog).toBeVisible({ timeout: 20000 })
 
     // 5 步流程名 + 「下一步：点…」提示
-    for (const step of ['创建任务', '确认下发', '执行', '验证', '完成']) {
+    for (const step of ['提交变更', '确认变更', '执行', '验证', '完成']) {
       await expect(dialog.getByText(step, { exact: true }).first()).toBeVisible()
     }
     await expect(dialog.getByText(/下一步：点|已完成：|已失败：|正在回读|已取消|已回滚/).first()).toBeVisible()

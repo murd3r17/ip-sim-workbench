@@ -9,25 +9,20 @@ from __future__ import annotations
 import re
 
 
-def readonly_training_ui_help(message: str) -> str:
-    """Known UI guidance is useful even while executable lab advice is blocked.
-
-    This never enables a model/tool/draft or reads another session. Call only
-    after the usual session owner and content-source checks.
-    """
-    if re.search(r'步骤核对|核对本步|采集当前观察', message or ''):
-        return ('在实训会话中展开「步骤核对」→选择步骤→「采集当前观察」→选择记录→「核对本步」。'
-                '采集只发固定只读命令；核对只比较已选记录，不发设备命令、不调用模型、不出技能成绩。'
-                '观察需属于本会话冻结角色/环境，采集时间不早于会话开始且距核对不超过五分钟。'
-                '未支持的步骤显示需人工复核；手动勾选、Full和本步事实匹配都不代表整项技能通过。')
-    if re.search(r'保存环境绑定|实训.{0,12}绑定|实验.{0,12}绑定', message or ''):
-        return ('管理员在实训实验行点步骤数量链接，打开「实验步骤」，选择已有环境后点「保存环境绑定」。'
-                '环境映射需先预检，协议先修另行核对。绑定只影响之后的新会话，旧会话保留当时版本；'
-                '环境改版后重新预检并新开会话。普通用户请管理员处理绑定。')
-    if re.search(r'笔记.{0,12}(?:保存|在哪|哪里)|(?:保存|哪里).{0,12}笔记', message or ''):
-        return ('在会话内展开「连续任务 · 笔记与步骤」，填写结论并点「保存笔记/步骤」。'
-                '已保存复盘报告不能直接编辑；「查看复盘」只读版本，显式「生成复盘报告」才调用模型生成新版本。')
-    return ''
+def requests_site_configuration(message: str) -> bool:
+    """Recognize explicit requests for runnable site config even without the UI toggle."""
+    segments = re.split(r"[。；;！!?？\n]|[，,](?=\s*(?:但|只要|请|改为))", message or "")
+    for part in segments:
+        if re.search(r"(?:不要|不用|不必|无需|不)(?:再)?(?:生成|提供|写|输出|给)|只(?:讲|说明|解释)|怎么理解", part):
+            continue
+        part = re.sub(r"(?:不要|不用|无需|不)(?:实际|真的)?(?:下发|执行)", "", part)
+        if re.search(r"只读|display\s", part, re.I) and not re.search(r"配置草稿|下发|修改配置|改写", part):
+            continue
+        if (re.search(r"生成|给我|写一份|输出|准备|下发", part)
+                and re.search(r"现场|实机|真实设备|(?:当前|我的|这台|该台)设备|直接(?:粘贴|执行|下发|用)|可执行", part)
+                and re.search(r"配置|命令|脚本|草稿", part)):
+            return True
+    return False
 
 READ_ONLY_CHECKS = [
     "只读核对接口：display ip interface brief",
@@ -55,23 +50,24 @@ def lab_environment(lab) -> dict:
         return {
             "allow_executable": False,
             "status": "unverified",
-            "reason": "当前实验环境尚未绑定并核验（binding_status=unverified），不能生成现场可执行配置。",
+            "reason": "管理员尚未核对本实验使用的设备、接口和地址。",
         }
     return {
         "allow_executable": False,
         "status": "unknown",
-        "reason": "当前实验没有可信的环境绑定信息，不能生成现场可执行配置。",
+            "reason": "当前会话没有可核对的设备与接口映射。",
     }
 
 
 def safe_environment_answer(*, title: str, reason: str, content_warning: str = "") -> dict:
     """不调用模型的安全回答（Copilot 与训练提示共用）。"""
     lines = [
-        f"关于「{title}」的现场配置建议已暂停：{reason}",
-        "现在可以做的事：",
+        f"「{title}」暂时不能生成面向设备的配置草稿。{reason}",
+        "你可以继续阅读实验步骤，或在设备页选择对象做只读观察。",
         *[f"- {item}" for item in READ_ONLY_CHECKS],
-        "- 阅读右侧教材/知识库原文；教材中的接口、地址是示例，未与现场映射核对前不要直接粘贴执行。",
-        "需要生成可执行配置时，请先由管理员完成环境绑定与只读核验（V7-B 提供正式绑定）。",
+        "- 可以打开知识库查看教材。教材的地址与接口需要按实际环境核对。",
+        "请管理员到「环境映射」核对设备与接口并运行预检，再在该实训的步骤页选择环境。新的会话会使用该环境。",
+        "确认环境后，可在「配置下发」准备和校验草稿。提交后到「变更审批」核对目标和差异，由有权限的人员确认、执行并查看验证结果。",
     ]
     if content_warning:
         lines.insert(1, content_warning)

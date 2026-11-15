@@ -14,7 +14,7 @@ _ENV_CANDIDATES = (
 class Settings(BaseSettings):
     """全局配置"""
     # 应用基础
-    app_name: str = "IP仿真运维管理工作站"
+    app_name: str = "IP仿真运维管理工作台"
     # Product version for new installations; existing explicit settings are preserved.
     app_version: str = "v7.0"
     debug: bool = False
@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     knowledge_workspace_id: str = ""  # legacy alias
     knowledge_dataset_id: str = ""  # RAGFlow dataset id（仅 ragflow 路径）
     knowledge_corpus_dir: str = ""  # absolute or relative path to corpus; empty = default
+    knowledge_edition_dir: str = ""  # local frozen edition with reader, provenance and import manifests
+    knowledge_local_storage: str = ""  # local provider uploads, independent of bundled textbooks
     knowledge_top_k: int = 8
     knowledge_similarity_threshold: float = 0.2
     knowledge_max_upload_mb: int = 20

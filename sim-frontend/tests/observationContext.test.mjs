@@ -27,10 +27,11 @@ function harness() {
   const lab = { setDevice() {} }
   const stubs = {
     '../../composables/useSnapshotRequest': snapshotModule.exports,
-    vue: { ref: value => ({ value }), computed: get => ({ get value() { return get() } }), onMounted() {}, onBeforeUnmount(fn) { hooks.push(fn) } },
-    'vue-router': { useRouter: () => ({}) },
+    vue: { ref: value => ({ value }), computed: get => ({ get value() { return get() } }), watch() {}, onMounted() {}, onBeforeUnmount(fn) { hooks.push(fn) } },
+    'vue-router': { useRouter: () => ({}), useRoute: () => ({ query: {} }) },
     '../../stores/aiCopilot': { useAiCopilotStore: () => copilot },
     '../../stores/labContext': { useLabContextStore: () => lab },
+    '../../composables/useCurrentUser': { useCurrentUser: () => ({ isAdmin: { value: true } }) },
     '../../api/trust': {
       getEnvironments: async () => [],
       getObservations(args) { const d = deferred(); histories.push({ ...d, args }); return d.promise },

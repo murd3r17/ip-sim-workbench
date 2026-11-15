@@ -9,6 +9,7 @@ export interface CopilotAttachment {
   contentString: string
   mime?: string
   name?: string
+  remoteOnly?: boolean
 }
 
 export interface CopilotMessage {
@@ -24,6 +25,7 @@ export interface CopilotMessage {
   draftRefused?: string
   cancelled?: boolean
   attachments?: CopilotAttachment[]
+  attachmentMessageId?: string
   streaming?: boolean
   requestId?: string
   requestState?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unconfirmed'
@@ -49,6 +51,9 @@ export interface CopilotConversation {
   pendingSync?: boolean
   conflicted?: boolean
   syncError?: string
+  labSessionId?: number | null
+  selection?: CopilotSelection | null
+  evidenceId?: number | null
 }
 
 const STORAGE_KEY = 'ai_copilot_sessions_v1'
@@ -66,11 +71,6 @@ function titleFromMessages(msgs: CopilotMessage[]) {
   return text.length > 28 ? `${text.slice(0, 28)}…` : text
 }
 
-// 持久化前压缩附件：图片降采样（canvas 缩至宽 300px、JPEG 0.7），文本截断，
-// 每会话最多保留 MAX_STORED_ATTACH 个附件——防止 localStorage 5MB 撑爆。
-const MAX_STORED_ATTACH = 3
-const MAX_TEXT_ATTACH_CHARS = 5000
-
 function compressAttachmentForStorage(att: CopilotAttachment): CopilotAttachment {
   if (!att || !att.contentString) return att
   if (att.contentString.startsWith('data:image/')) {
@@ -87,14 +87,12 @@ function compressAttachmentForStorage(att: CopilotAttachment): CopilotAttachment
     } catch {
       /* 压缩失败则保留原样 */
     }
-  } else if (att.contentString.length > MAX_TEXT_ATTACH_CHARS) {
-    return { ...att, contentString: att.contentString.slice(0, MAX_TEXT_ATTACH_CHARS) + '\n[附件内容已截断(历史)]' }
   }
   return att
 }
 
 function drawScaled(img: HTMLImageElement, att: CopilotAttachment): CopilotAttachment | null {
-  const scale = Math.min(1, 300 / img.naturalWidth)
+  const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight))
   const w = Math.max(1, Math.round(img.naturalWidth * scale))
   const h = Math.max(1, Math.round(img.naturalHeight * scale))
   const cnv = document.createElement('canvas')
@@ -149,17 +147,24 @@ function storedMessagesEqual(left: CopilotMessage[], right: CopilotMessage[]): b
 }
 
 function shrinkForStorage(msgs: CopilotMessage[]): CopilotMessage[] {
-  let nth = 0
   return msgs.map((m) => {
     if (!m.attachments?.length) return m
-    nth++
-    // 同步压缩只处理"已经解码完成"的图片（同步路径）；
-    // 真正的降采样由 persist() 里的 compressAttachmentAsync 异步补齐。
-    const atts = m.attachments.map(compressAttachmentForStorage)
+    return { ...m, attachments: m.attachments.map(compressAttachmentForStorage) }
+  })
+}
+
+function restoreAttachments(messages: CopilotMessage[], remote: CopilotMessage[]): CopilotMessage[] {
+  const byId = new Map(remote.map((message) => [message.id, message]))
+  return messages.map((message) => {
+    if (!message.attachments?.some((item) => item.remoteOnly)) return message
+    const original = byId.get(message.id)?.attachments
     return {
-      ...m,
-      attachments: nth <= MAX_STORED_ATTACH ? atts : [],
-      // 第 4+ 个带附件消息：占位提示，只存文字
+      ...message,
+      attachments: message.attachments.map((item, index) => {
+        const saved = original?.[index]
+        return item.remoteOnly && saved?.contentString && item.name === saved.name && item.mime === saved.mime
+          ? saved : item
+      }),
     }
   })
 }
@@ -217,9 +222,12 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
 
   const routePath = ref('')
   const pageName = ref('')
-  const evidenceId = ref<number | null>(null)
-  const selection = ref<CopilotSelection | null>(null)
+  const initialConversation = boot.conversations.find((c) => c.id === boot.activeId)
+  const evidenceId = ref<number | null>(initialConversation?.evidenceId ?? null)
+  const selection = ref<CopilotSelection | null>(initialConversation?.selection ?? null)
   const notes = ref('')
+  const linkedLabSession = computed(() =>
+    conversations.value.find((c) => c.id === activeId.value)?.labSessionId ?? null)
 
   const contextLabel = computed(() => {
     const page = pageName.value || routePath.value || '工作台'
@@ -281,25 +289,28 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     if (!conversation || conversation.conflicted) return
     const epoch = sessionEpoch
     const sentVersion = dirtyVersions.get(id)
-    const payload = { title: conversation.title || '新对话', messages: shrinkForStorage(conversation.messages) }
+    const payload = { title: conversation.title || '新对话', messages: sanitizeMessages(conversation.messages) }
     let revision = conversation.serverRevision
     const stillCurrent = () => epoch === sessionEpoch && conversations.value.some((c) => c.id === id)
     const task = (async () => {
       try {
         const { saveCopilotSession, getCopilotSession } = await import('../api/ai')
         if (!stillCurrent()) return
-        if (revision === undefined) {
+        if (revision === undefined || payload.messages.some((m) => m.attachments?.some((a) => a.remoteOnly))) {
           const remote = await getCopilotSession(id, { silent: true })
           if (!stillCurrent()) return
+          if (remote.exists) payload.messages = restoreAttachments(payload.messages, remote.messages)
           // Older local caches have no server revision. Only adopt one if the
           // content matches; guessing it would silently overwrite remote edits.
-          if (remote.exists && (remote.title !== payload.title ||
-              !storedMessagesEqual(shrinkForStorage(sanitizeMessages(remote.messages)), payload.messages))) {
+          if (revision === undefined && remote.exists && (remote.title !== payload.title ||
+              !storedMessagesEqual(sanitizeMessages(remote.messages), payload.messages))) {
             markSyncError(id, true)
             return
           }
-          revision = remote.exists ? remote.revision : undefined
+          if (revision === undefined && remote.exists) revision = remote.revision
         }
+        payload.messages = await shrinkForStorageAsync(payload.messages)
+        if (!stillCurrent()) return
         const saved = await saveCopilotSession(id, { ...payload, revision }, { silent: true })
         if (!stillCurrent()) return
         const current = conversations.value.find((c) => c.id === id)!
@@ -420,14 +431,18 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       // 只有压得更小才覆盖（避免原图长期占用 localStorage 配额）。
       void compressStoredAttachments(trimmed, generation, snapshot)
     } catch {
-      // 配额超限时降级：丢弃全部附件再存一次（保住文字历史）
+      // Preserve the message/attachment identity when the browser cache fills.
       try {
         const trimmed = conversations.value.slice(0, MAX_SESSIONS)
         const bare = trimmed.map((c) => ({
           ...c,
-          messages: c.messages.map((m) => ({ ...m, attachments: undefined })),
+          messages: c.messages.map((m) => ({
+            ...m,
+            attachments: m.attachments?.map((a) => ({ ...a, contentString: '', remoteOnly: true })),
+          })),
         }))
         localStorage.setItem(STORAGE_KEY, JSON.stringify(bare))
+        if (activeId.value) localStorage.setItem(ACTIVE_KEY, activeId.value)
       } catch {
         /* 彻底失败则忽略 */
       }
@@ -458,6 +473,8 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       createdAt: idx >= 0 ? conversations.value[idx].createdAt : now,
       updatedAt: now,
       messages: sanitizeMessages(messages.value),
+      selection: selection.value,
+      evidenceId: evidenceId.value,
       pendingSync: true,
     }
     if (idx >= 0) conversations.value[idx] = payload
@@ -494,6 +511,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     activeId.value = null
     messages.value = []
     selection.value = null
+    evidenceId.value = null
     notes.value = ''
     historyOpen.value = false
     localStorage.removeItem(STORAGE_KEY)
@@ -526,13 +544,41 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   }
 
   function setPageContext(path: string, name: string) {
+    if (routePath.value !== path) notes.value = ''
     routePath.value = path
     pageName.value = name
   }
 
-  function setEvidenceId(v: number | null) { evidenceId.value = v }
+  function saveSelection() {
+    const conversation = conversations.value.find((c) => c.id === activeId.value)
+    if (!conversation || (conversation.selection === selection.value && conversation.evidenceId === evidenceId.value)) return
+    conversation.selection = selection.value
+    conversation.evidenceId = evidenceId.value
+    persist()
+  }
+
+  function setEvidenceId(v: number | null) {
+    evidenceId.value = v
+    saveSelection()
+  }
+
   function setSelection(sel: CopilotSelection | null) {
+    const previous = selection.value
+    if (sel && previous?.kind === sel.kind && previous.id === sel.id && previous.label === sel.label &&
+        previous.detail === sel.detail && previous.model === sel.model) return
+    if (!sel || sel.kind !== selection.value?.kind || sel.id !== selection.value?.id) {
+      evidenceId.value = null
+    }
     selection.value = sel
+    saveSelection()
+  }
+
+  function linkLab(sessionId: number | null) {
+    if (sessionId !== null) ensureActiveConversation()
+    const conversation = conversations.value.find((c) => c.id === activeId.value)
+    if (!conversation) return
+    conversation.labSessionId = sessionId
+    persist()
   }
 
   function setNotes(text: string) {
@@ -540,11 +586,10 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   }
 
   /** Archive current (if any messages) and start a blank chat. */
-  function newChat() {
+  function newChat(keepEmpty = false) {
     if (messages.value.some((m) => m.content.trim())) {
       syncActiveToList()
-    } else if (activeId.value) {
-      // drop empty current from list
+    } else if (activeId.value && !keepEmpty) {
       conversations.value = conversations.value.filter((c) => c.id !== activeId.value)
     }
     const id = newId()
@@ -558,6 +603,8 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     })
     activeId.value = id
     messages.value = []
+    setSelection(null)
+    notes.value = ''
     persist()
     historyOpen.value = false
   }
@@ -577,6 +624,9 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     if (!target) return
     activeId.value = id
     messages.value = sanitizeMessages(target.messages)
+    selection.value = target.selection ?? null
+    evidenceId.value = target.evidenceId ?? null
+    notes.value = ''
     persist()
     historyOpen.value = false
   }
@@ -603,9 +653,12 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       if (next) {
         activeId.value = next.id
         messages.value = sanitizeMessages(next.messages)
+        selection.value = next.selection ?? null
+        evidenceId.value = next.evidenceId ?? null
       } else {
         activeId.value = null
         messages.value = []
+        setSelection(null)
         ensureActiveConversation()
       }
     }
@@ -626,6 +679,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       draftCommands: msg.draftCommands,
       draftTarget: msg.draftTarget,
       attachments: msg.attachments,
+      attachmentMessageId: msg.attachmentMessageId,
       streaming: msg.streaming,
       requestId: msg.requestId,
       requestState: msg.requestState,
@@ -687,6 +741,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     activeTitle,
     activeSyncError,
     activeSyncConflict,
+    linkedLabSession,
     routePath,
     pageName,
     selection,
@@ -701,6 +756,8 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     setPageContext,
     setSelection,
     setNotes,
+    linkLab,
+    ensureActiveConversation,
     newChat,
     clearChat,
     switchConversation,

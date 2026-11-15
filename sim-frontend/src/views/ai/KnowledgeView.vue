@@ -19,37 +19,44 @@
             <el-option v-for="group in books" :key="group.key" :label="`${group.label}（${group.count}）`" :value="group.key" />
           </el-select>
           <span>{{ catalog ? `${filteredDocuments.length} / ${catalog.count} 篇` : '数量未知' }}</span>
+          <el-button plain @click="searchBody">按正文检索</el-button>
         </div>
         <el-table :data="filteredDocuments" v-loading="docsLoading" row-key="id" class="catalog-table">
           <template #empty><el-empty :description="docsError || (filter || book ? '没有符合筛选条件的资料' : '当前没有资料，请管理员核对同步。')" :image-size="72" /></template>
           <el-table-column label="章节 / 资料" min-width="250">
-            <template #default="{ row }"><el-button link type="primary" class="document-title" @click="openDocument(row)">{{ row.title || row.filename }}</el-button><div class="document-secondary">{{ row.filename }}</div><div class="document-secondary">{{ row.source_path || row.doc_id || row.id }}</div></template>
+            <template #default="{ row }"><el-button link type="primary" class="document-title" @click="openDocument(row)">{{ row.title || row.filename }}</el-button><div class="document-secondary" v-if="row.page_start">PDF 第 {{ row.page_start }}–{{ row.page_end }} 页</div><div class="document-secondary" v-else-if="row.readable">{{ row.section_count ?? 0 }} 节</div></template>
           </el-table-column>
           <el-table-column label="教材" min-width="210"><template #default="{ row }">{{ row.book_title || row.book || '其他资料' }}</template></el-table-column>
-          <el-table-column label="源文件" min-width="160"><template #default="{ row }"><div>{{ row.readable ? `全文 · ${row.section_count ?? 0} 节` : '全文待核对' }}</div><div class="document-secondary">{{ formatSize(row.size) }} · 页码{{ row.page == null ? '未知' : row.page }}</div></template></el-table-column>
-          <el-table-column label="版本 / 源更新时间" min-width="170"><template #default="{ row }"><code>{{ row.version?.slice(0, 12) || '版本未知' }}</code><div class="document-secondary">{{ localTime(row.modified_at) }}</div></template></el-table-column>
           <el-table-column label="操作" width="125"><template #default="{ row }">
             <el-button link type="primary" @click="openDocument(row)">{{ row.readable ? '阅读全文' : '查看原因' }}</el-button>
-            <AdminAction v-if="!String(row.id).startsWith('corpus-')" v-slot="{ disabled }"><el-dropdown trigger="click"><el-button link :disabled="disabled" aria-label="资料更多操作">更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="disabled" @click="handleDelete(row)">删除文档</el-dropdown-item></el-dropdown-menu></template></el-dropdown></AdminAction>
+            <AdminAction v-if="!row.bundled && !String(row.id).startsWith('corpus-')" v-slot="{ disabled }"><el-dropdown trigger="click"><el-button link :disabled="disabled" aria-label="资料更多操作">更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="disabled" @click="handleDelete(row)">删除文档</el-dropdown-item></el-dropdown-menu></template></el-dropdown></AdminAction>
           </template></el-table-column>
         </el-table>
-        <p class="knowledge-tip">章节来自当前知识工作区；大小与版本取自可核验的持久源文件。“源更新时间”不是入库时间。教材同步由管理员维护，临时文件请用助手的「文件」。</p>
+        <p class="knowledge-tip">目录筛选用于找章节。查询概念或命令时可按正文检索，来源和版本可在全文中查看。</p>
       </el-tab-pane>
       <el-tab-pane label="检索资料" name="search">
         <div class="search-form"><el-input v-model="searchQuery" type="textarea" :rows="2" placeholder="输入关键词（Ctrl+Enter 检索）" aria-label="检索关键词" @keydown.ctrl.enter.prevent="handleSearch" @keydown.meta.enter.prevent="handleSearch" /><el-button type="primary" :loading="searchLoading" @click="handleSearch">检索</el-button></div>
         <el-alert v-if="searchError" :title="searchError" type="error" show-icon :closable="false" />
         <el-empty v-if="searched && !searchResults.length && !searchLoading && !searchError" description="未检索到相关片段，可换关键词或查看资料目录。" :image-size="72" />
         <el-card v-for="(result, i) in searchResults" :key="i" shadow="never" class="search-result">
-          <header><strong>{{ result.title || result.filename || '检索片段' }}</strong><span>相关度 {{ ((result.score || 0) * 100).toFixed(1) }}%</span><el-button link type="primary" @click="openCitation(result)">片段详情</el-button></header>
+          <header><strong>{{ result.title || result.filename || '检索片段' }}</strong><el-button link type="primary" @click="openCitation(result)">片段详情</el-button></header>
+          <p v-for="note in result.reviewed_notes" :key="note.id"><strong>{{ note.title }}</strong> · {{ note.content }}</p>
           <pre>{{ result.text || result.content || '未附片段' }}</pre>
         </el-card>
       </el-tab-pane>
     </el-tabs>
     <el-drawer v-model="citationVisible" title="检索片段" size="min(620px, 96vw)" @closed="citation = null">
-      <template v-if="citation"><h3>{{ citation.title || citation.filename || '知识资料' }}</h3><p>{{ citation.filename || '未提供文件名' }} · 页码{{ citation.page || '未知' }}</p><pre class="citation-text">{{ citation.text || citation.content || '未附正文' }}</pre><p class="knowledge-tip">这是本次检索返回的片段。下方另行读取当前源文件全文，不视为原回答采用的版本。</p><el-button type="primary" @click="openSearchDocument">阅读当前全文</el-button></template>
+      <template v-if="citation">
+        <h3>{{ citation.title || citation.filename || '知识资料' }}</h3>
+        <p v-if="citation.page">原教材 PDF 第 {{ citation.page }} 页</p>
+        <pre class="citation-text">{{ citation.text || citation.content || '未附正文' }}</pre>
+        <p v-if="!citation.document_version" class="knowledge-tip">该片段暂未定位到同版正文。</p>
+        <el-button type="primary" @click="openSearchDocument">{{ citation.document_version ? '阅读同版正文' : '查阅当前全文' }}</el-button>
+      </template>
       <template #footer><el-button @click="citationVisible = false">返回检索结果</el-button></template>
     </el-drawer>
-    <KnowledgeDocumentReader v-model="readerVisible" :document-id="readerId" :filename="readerFilename" :version="readerVersion" />
+    <KnowledgeDocumentReader v-model="readerVisible" :document-id="readerId" :filename="readerFilename" :version="readerVersion"
+      :excerpt="readerExcerpt" :section-id="readerSection" />
   </div>
 </template>
 
@@ -68,6 +75,7 @@ const catalog = ref<KnowledgeCatalog | null>(null), knowledgeHealth = ref<Knowle
 const docsLoading = ref(false), healthLoading = ref(false), docsError = ref('')
 const citationVisible = ref(false), citation = ref<KnowledgeSearchResult | null>(null)
 const readerVisible = ref(false), readerId = ref(''), readerFilename = ref(''), readerVersion = ref('')
+const readerExcerpt = ref(''), readerSection = ref('')
 let alive = true, docsEpoch = 0, searchEpoch = 0
 const books = computed(() => {
   const groups = new Map<string, { key: string; label: string; count: number }>()
@@ -79,16 +87,21 @@ const books = computed(() => {
 })
 const filteredDocuments = computed(() => (catalog.value?.documents || []).filter(d => (!book.value || (d.book || 'other') === book.value)
   && (!filter.value.trim() || [d.title, d.filename, d.book_title, d.book].join(' ').toLowerCase().includes(filter.value.trim().toLowerCase()))))
-function formatSize(bytes?: number) { return bytes == null ? '大小未知' : bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB` }
 function localTime(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '时间未知' }
-function openDocument(doc: KnowledgeDocument) { readerId.value = doc.id; readerFilename.value = ''; readerVersion.value = doc.version || ''; readerVisible.value = true }
+function openDocument(doc: KnowledgeDocument) {
+  readerId.value = doc.id; readerFilename.value = ''; readerVersion.value = doc.version || ''
+  readerExcerpt.value = ''; readerSection.value = ''; readerVisible.value = true
+}
 function openCitation(result: KnowledgeSearchResult) { citation.value = result; citationVisible.value = true }
 function openSearchDocument() {
   const source = citation.value
   if (!source) return
   readerId.value = typeof source.document_id === 'string' ? source.document_id : ''
   readerFilename.value = String(source.filename || source.title || '')
-  readerVersion.value = ''; readerVisible.value = true
+  readerVersion.value = String(source.document_version || '')
+  readerSection.value = String(source.section_id || '')
+  readerExcerpt.value = String(source.text || source.content || '')
+  readerVisible.value = true
 }
 async function loadDocuments() {
   const current = ++docsEpoch; docsLoading.value = true
@@ -112,6 +125,11 @@ async function handleDelete(doc: KnowledgeDocument) {
   } catch { /* 取消或请求拦截器已提示 */ }
 }
 const searchQuery = ref(''), searchResults = ref<KnowledgeSearchResult[]>([]), searchLoading = ref(false), searched = ref(false), searchError = ref('')
+function searchBody() {
+  if (filter.value.trim()) searchQuery.value = filter.value.trim()
+  activeTab.value = 'search'
+  if (filter.value.trim()) void handleSearch()
+}
 async function handleSearch() {
   if (!searchQuery.value.trim() || searchLoading.value) return
   const current = ++searchEpoch; searchLoading.value = true; searched.value = true; searchError.value = ''; searchResults.value = []

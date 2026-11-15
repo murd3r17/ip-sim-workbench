@@ -1,4 +1,4 @@
-import type { TopologyLayoutPosition as Point } from '../api/device'
+import type { DeviceRecord, TopologyLayoutPosition as Point, TopologyLinkRecord } from '../api/device'
 
 export interface GraphNode {
   id: string
@@ -25,6 +25,35 @@ export interface GraphEdge {
   discovery_source: string
   source_type?: string
   runtime_diff?: 'missing' | 'unexpected'
+}
+
+export function toTopologyGraph(devices: DeviceRecord[], links: TopologyLinkRecord[]) {
+  const nodes: GraphNode[] = devices.map(device => ({
+    id: String(device.id),
+    label: device.hostname,
+    status: device.status,
+    type: device.device_type,
+    model: device.model || '',
+    mgmt_ip: device.mgmt_ip,
+    network_role: device.network_role,
+  }))
+  const names = new Map(devices.map(device => [device.id, device.hostname]))
+  const edges: GraphEdge[] = links.map(link => ({
+    source: String(link.source_device_id),
+    target: String(link.target_device_id),
+    source_name: names.get(link.source_device_id) || String(link.source_device_id),
+    target_name: names.get(link.target_device_id) || String(link.target_device_id),
+    source_interface: link.source_interface,
+    target_interface: link.target_interface,
+    source_ip: link.source_ip,
+    target_ip: link.target_ip,
+    link_type: link.link_type || 'physical',
+    status: link.status,
+    bandwidth: link.bandwidth || '',
+    discovery_source: link.discovery_source || '',
+    source_type: link.source_type,
+  }))
+  return { nodes, edges }
 }
 
 export const NODE_WIDTH = 170

@@ -542,7 +542,17 @@ class TestDeploy:
         response = await client.get(f"/api/v1/deploy/batches/{batch_id}", headers=auth_header(token))
         assert response.status_code == 200
         body = response.json()
-        assert body["summary"] == {"total": 1, "pending": 0, "running": 0, "success": 1, "failed": 0}
+        assert body["summary"] == {
+            "total": 1,
+            "pending": 0,
+            "waiting": 0,
+            "running": 0,
+            "success": 1,
+            "failed": 0,
+            "execution_failed": 0,
+            "cancelled": 0,
+            "rolled_back": 0,
+        }
         assert body["items"][0]["stage"] == "success"
         assert body["items"][0]["links"]["change_log"].endswith(f"task_id={body['items'][0]['id']}")
 
@@ -1730,9 +1740,17 @@ class TestWebSSH:
                         connected = json.loads(ws.receive_text())
                         assert connected['type'] == 'connected' and '模拟终端' in connected['message']
                         assert json.loads(ws.receive_text())['type'] == 'output'  # prompt
-                        ws.send_text(json.dumps({'type': 'input', 'data': 'display version\n'}))
+                        ws.send_text(json.dumps({'type': 'input', 'data': 'display versionx'}))
+                        assert json.loads(ws.receive_text())['data'] == 'display versionx'
+                        ws.send_text(json.dumps({'type': 'input', 'data': '\x7f\r'}))
                         output = json.loads(ws.receive_text())
                         assert output['type'] == 'output' and 'VRP' in output['data']
+                        assert output['data'].startswith('\b \b\r\n')
+                        assert '已执行 display versionx' not in output['data']
+                        ws.send_text(json.dumps({'type': 'input', 'data': '\ndisplay ip interface brief\r\ndisplay version\n'}))
+                        output = json.loads(ws.receive_text())['data']
+                        assert output.startswith('display ip interface brief')
+                        assert 'GigabitEthernet0/0/0' in output and output.count('VRP') == 1
 
     @pytest.mark.asyncio
     async def test_websocket_rejects_device_with_write_lock(self, client, webssh_session_factory):

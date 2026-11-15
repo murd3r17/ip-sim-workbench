@@ -10,9 +10,9 @@ const ast = ts.createSourceFile('topology.ts', source, ts.ScriptTarget.Latest, t
 const statements = ast.statements.filter(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => ['loadTopology', 'clearTopologyView'].includes(d.name.getText(ast))))
 assert.equal(statements.length, 2)
 const code = ts.transpileModule(statements.map(s => s.getText(ast)).join('\n') + '\nexports.load=loadTopology;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-function harness(topologies, readFails) {
+function harness(catalog, readFails) {
   const ref = value => ({ value })
-  const h = { exports: {}, topologyLoadEpoch: 0, layoutRevision: 0, topologyId: ref(1), nodes: ref([{ id: 'old' }]), edges: ref([{ source: 'old' }]), selectedNode: ref({ id: 'old' }), runtimeCheck: ref({ id: 1 }), draftPositions: ref({ old: { x: 1, y: 1 } }), layoutDirty: ref(true), versionsVisible: ref(true), versionsTarget: ref(1), loading: ref(false), topologyLoadError: ref(''), route: { query: { topology_id: '2' } }, labCtx: { setTopology() {} }, getTopologies: async () => topologies, getDevices: async () => { if (readFails) throw new Error('new target unavailable'); return [] }, getTopologyLinks: async () => [], getLatestRuntimeCheck: async () => null, getTopologyLayout: async () => ({ draft_positions: {} }), notifyRequestError() {} }
+  const h = { exports: {}, topologyLoadEpoch: 0, layoutRevision: 0, topologyId: ref(1), topologies: ref([]), nodes: ref([{ id: 'old' }]), edges: ref([{ source: 'old' }]), selectedNode: ref({ id: 'old' }), runtimeCheck: ref({ id: 1 }), draftPositions: ref({ old: { x: 1, y: 1 } }), layoutDirty: ref(true), versionsVisible: ref(true), versionsTarget: ref(1), loading: ref(false), topologyLoadError: ref(''), route: { query: { topology_id: '2' } }, labCtx: { setTopology() {} }, getTopologies: async () => catalog, getDevices: async () => { if (readFails) throw new Error('new target unavailable'); return [] }, getTopologyLinks: async () => [], getLatestRuntimeCheck: async () => null, getTopologyLayout: async () => ({ draft_positions: {} }), notifyRequestError() {} }
   vm.runInNewContext(code, h)
   return h
 }
@@ -32,6 +32,7 @@ test('switching targets removes previous SVG and selected actions even if new da
   await h.exports.load()
   assertOldTargetGone(h)
   assert.equal(h.topologyId.value, 2)
+  assert.equal(h.topologies.value[0].id, 2)
   assert.match(h.topologyLoadError.value, /读取失败/)
 })
 test('an empty topology catalog clears the old SVG rather than leaving a false network behind', async () => {

@@ -56,7 +56,7 @@ async def test_runtime_sqlite_enforces_foreign_keys_and_records_revision(tmp_pat
     try:
         async with engine.connect() as conn:
             assert (await conn.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
-            assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "0012_copilot_request"
+            assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "0013_training_report_prompt"
     finally:
         await database.close_db()
 
@@ -95,6 +95,29 @@ def test_unrecognized_unversioned_schema_is_not_stamped(tmp_path, monkeypatch):
     assert inspect(engine).get_table_names() == ["user"]
     with engine.connect() as conn:
         assert conn.execute(text("SELECT note FROM user")).scalar_one() == "preserved"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("revision", ["0011_v7b_bf5_instance", "0012_copilot_request"])
+def test_explicit_upgrade_of_recent_report_schema_requires_backup(tmp_path, monkeypatch, revision):
+    from core.migrations import prepare_database
+
+    path = tmp_path / "previous.db"
+    command.upgrade(config_for(path, monkeypatch), revision)
+    url = f"sqlite:///{path.as_posix()}"
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO user (username, hashed_password, role) VALUES ('kept', 'hash-kept', 'user')"))
+    with pytest.raises(RuntimeError, match="backup-dir"):
+        prepare_database(url)
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == revision
+    backup = prepare_database(url, backup_dir=str(tmp_path / "backups"))
+    assert backup and backup.is_file()
+    report_columns = {column["name"]: column["type"] for column in inspect(engine).get_columns("training_report")}
+    assert report_columns["prompt_version"].length == 64
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT username FROM user")).scalar_one() == "kept"
     engine.dispose()
 
 
@@ -189,7 +212,7 @@ def test_sync_bootstrap_uses_migrations_and_revokes_tokens_on_explicit_reset(tmp
     assert bootstrap.main() == 0
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     with engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0012_copilot_request"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0013_training_report_prompt"
         assert conn.execute(text("SELECT token_version FROM user WHERE username='isolated-admin'")).scalar_one() == 0
     assert bootstrap.main() == 0
     monkeypatch.setattr(sys, "argv", ["bootstrap_local_sync.py", "--reset-password"])

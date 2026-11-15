@@ -9,6 +9,7 @@
 接入 eNSP 时把 DEVICE_MODE 改回 "ssh" 并配置设备凭据即可，业务代码无需改动。
 """
 import hashlib
+from ipaddress import ip_interface
 import random
 import re
 import time
@@ -17,6 +18,7 @@ from typing import Any
 
 from core.config import get_settings
 from core.logger import get_logger
+from engines.sim_topology import DEMO_MANAGEMENT, interfaces_of, links_of, ospf_peers_of, router_id
 
 logger = get_logger("device")
 
@@ -221,16 +223,17 @@ class SimDeviceAdapter(BaseDeviceAdapter):
     """离线模拟适配：返回脚本化 VRP 回显，不做任何网络连接。
 
     - 数值由 hostname 哈希派生（同一设备每次稳定，不同设备有差异）
-    - LLDP 邻居从上下文 neighbors（同拓扑其它设备）中确定性选取，
-      使 LLDP 拓扑发现能在模拟环境下产出真实链路
+    - 内置拓扑的 LLDP、接口和路由使用同一份样本；其他模拟设备沿用邻居候选回显
     - 配置下发在内存中记录，display current-configuration 会包含已下发内容
     """
 
     name = "sim"
 
-    def __init__(self, hostname: str, neighbors: list[str] | None = None):
+    def __init__(self, hostname: str, neighbors: list[str] | None = None, *, management_ip: str | None = None):
         self.hostname = hostname
         self.neighbors = [n for n in (neighbors or []) if n != hostname]
+        self._demo = hostname in DEMO_MANAGEMENT and management_ip in (None, DEMO_MANAGEMENT[hostname])
+        self._demo_links = [link for link in links_of(hostname) if neighbors is None or link[1] in self.neighbors] if self._demo else []
         self._applied: list[str] = []
         digest = hashlib.sha256(hostname.encode("utf-8")).hexdigest()
         seed = int(digest[:8], 16)
@@ -248,16 +251,65 @@ class SimDeviceAdapter(BaseDeviceAdapter):
         return self.neighbors[index % len(self.neighbors)]
 
     def _current_config(self) -> str:
-        ip_last = (self._seed % 240) + 10
-        body = _SIM_CONFIG_TEMPLATE.format(hostname=self.hostname, ip_last=ip_last)
+        if self._demo:
+            lines = [f"<{self.hostname}>display current-configuration", f"sysname {self.hostname}"]
+            for name, state, address in interfaces_of(self.hostname):
+                lines.extend(["#", f"interface {name}", " undo shutdown" if state == "up" else " shutdown"])
+                if address:
+                    interface = ip_interface(address)
+                    lines.append(f" ip address {interface.ip} {interface.netmask}")
+            body = "\n".join([*lines, "#", "return", ""])
+        else:
+            ip_last = (self._seed % 240) + 10
+            body = _SIM_CONFIG_TEMPLATE.format(hostname=self.hostname, ip_last=ip_last)
         if self._applied:
             applied = "\n".join(f" {line}" for line in self._applied)
             body += f"#  [sim-applied]\n{applied}\n#\n"
         return body
 
+    def _demo_observation(self, command: str) -> str | None:
+        prefix = f"<{self.hostname}>{command}\n"
+        if command == "display lldp neighbor brief":
+            header = "Local Intf    Neighbor Dev    Neighbor Intf    Neighbor TTL    Exptime(s)"
+            rows = [f"{local:<13} {peer:<15} {peer_port:<16} 120              118" for local, peer, peer_port in self._demo_links]
+            return prefix + "\n".join([header, *rows, f"Total neighbors: {len(rows)}"]) + "\n"
+        ports = interfaces_of(self.hostname)
+        if command == "display ip interface brief":
+            rows = [f"{port:<24} {state:<5} {state:<10} {address or 'unassigned'}" for port, state, address in ports]
+            return prefix + "\n".join(["Interface                PHY   Protocol   IP Address", *rows]) + "\n"
+        if command == "display interface brief":
+            rows = [f"{port:<24} {state:<5} {state:<10} 0.01% 0.01% 0 0" for port, state, _ in ports]
+            return prefix + "\n".join(["PHY: Physical", "Interface                PHY   Protocol  InUti OutUti   inErrors  outErrors", *rows]) + "\n"
+        peers = ospf_peers_of(self.hostname)
+        if command == "display ospf peer brief":
+            header = "RouterId     Address          State        UpTime"
+            rows = [f"Area 0.0.0.0 interface {port}\n{header}\n {peer:<13} {address:<16} Full         00:12:34" for port, peer, address in peers]
+            return prefix + ("\n".join(rows) if rows else "Total number of peer(s): 0") + "\n"
+        if command == "display ospf peer":
+            rows = [f"Area 0.0.0.0 interface {port}'s neighbors\nRouter ID: {peer}   Address: {address}\nState: Full  Priority: 1" for port, peer, address in peers]
+            return prefix + f"OSPF Process 1 with Router ID {router_id(self.hostname)}\n" + (
+                "\n".join(rows) if rows else "Total number of peer(s): 0") + "\n"
+        if command == "display ip routing-table":
+            rows = []
+            for port, state, address in ports:
+                if state == "up" and address:
+                    interface = ip_interface(address)
+                    rows.append(f"{interface.network} Direct 0 0 D {interface.ip} {port}")
+            rows.extend(f"{peer}/32 OSPF 10 1 D {address} {port}" for port, peer, address in peers)
+            return prefix + "\n".join(["Destination/Mask Proto Pre Cost Flags NextHop Interface", *rows]) + "\n"
+        if command == "display ospf routing":
+            rows = [f"{peer}/32        1     Stub       {address}      {peer}        0.0.0.0" for _, peer, address in peers]
+            return prefix + "\n".join([f"Destinations        : {len(rows)}",
+                                      "Destination        Cost  Type       NextHop         AdvRouter       Area", *rows]) + "\n"
+        return None
+
     # ── 统一接口 ──────────────────────────────────────────────────────
     async def run_command(self, command: str, timeout: int | None = None) -> str:
         cmd = re.sub(r"\s+", " ", (command or "").strip().lower())
+        if self._demo:
+            observation = self._demo_observation(cmd)
+            if observation is not None:
+                return observation
         if "display version" in cmd:
             return _SIM_VERSION.format(hostname=self.hostname)
         if "cpu-usage" in cmd:
@@ -283,7 +335,7 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 f"<{self.hostname}>display ospf peer\n"
                 "OSPF Process 1 with Router ID 10.0.0.1\n"
                 " Neighbor brief information\n"
-                "Area 0.0.0.0 interface GigabitEthernet3/0/3's neighbors\n"
+                "Area 0.0.0.0 interface GigabitEthernet0/0/0's neighbors\n"
                 "Router ID: 10.0.0.2   Address: 10.0.123.2\n"
                 "State: Full  Mode:Nbr is Master  Priority: 1\n"
                 "DR: 10.0.123.1  BDR: 10.0.123.2  MTU: 0\n"
@@ -303,24 +355,6 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 f"GE0/0/1       {n1}            GE0/0/1          120              118\n"
                 f"GE0/0/3       {n2}            GE0/0/2          120              118\n"
                 "Info: The max number of neighbors is 256\n"
-            )
-        if "display ip interface brief" in cmd:
-            return (
-                f"<{self.hostname}>display ip interface brief\n"
-                "Interface                         PHY   Protocol  InUti OutUti   inErrors  outErrors\n"
-                "GigabitEthernet0/0/0  up  up  10.0.123.1/24\n"
-                "GigabitEthernet0/0/1  up  up  10.0.123.2/24\n"
-                "LoopBack0             up  up  10.0.0.1/24\n"
-            )
-        if "display ospf peer" in cmd:
-            return (
-                f"<{self.hostname}>display ospf peer\n"
-                "OSPF Process 1 with Router ID 10.0.0.1\n"
-                " Neighbor brief information\n"
-                "Area 0.0.0.0 interface GigabitEthernet3/0/3's neighbors\n"
-                "Router ID       Address         Pri  Dead-Time  State    Up/Down Time\n"
-                "10.0.0.2       10.0.123.2       1    00:00:36   Full     00:12:08\n"
-                "10.0.0.3       10.0.123.3       1    00:00:31   Full     00:11:42\n"
             )
         if cmd == "display ip routing-table":
             # The existing interface fixture supplies these local addresses.
@@ -377,7 +411,8 @@ async def get_device_adapter(
     """
     mode = get_device_mode()
     if mode == "sim":
-        return SimDeviceAdapter(hostname=getattr(device, "hostname", "sim-device"), neighbors=neighbors)
+        return SimDeviceAdapter(hostname=getattr(device, "hostname", "sim-device"), neighbors=neighbors,
+                                management_ip=getattr(device, "mgmt_ip", None))
 
     from modules.device.service import DeviceService  # 延迟导入避免循环依赖
     credentials = await DeviceService.get_device_credentials(device)

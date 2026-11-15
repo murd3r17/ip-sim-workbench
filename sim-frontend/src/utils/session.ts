@@ -1,5 +1,6 @@
 import { useAiCopilotStore } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
+import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
 
 const PREFIXES = ['lab_ctx_', 'ai_copilot_', 'deploy_ai_draft']
 
@@ -16,6 +17,7 @@ export function clearClientSession() {
   clearLocalAuth()
   try {
     useLabContextStore().clearAll()
+    useWorkbenchDraftsStore().$reset()
   } catch {
     /* pinia 未就绪时只清 localStorage */
   }

@@ -57,3 +57,49 @@ def build_export(snapshot, workspace, versions, version=None):
             'redaction':'仅导出副本遮蔽识别到的凭据字段/配置行，原记录不变',
         },
     })
+
+
+def render_learning_record(data: dict) -> str:
+    """Readable view of the same redacted, saved records as the JSON export."""
+    session, workspace = data["session"], data["workspace"]
+    title = " ".join(str(session.get("title") or "实训").splitlines())
+    status = {
+        "in_progress": "进行中", "completed": "已结束", "abandoned": "已放弃", "pending": "待开始",
+    }.get(session["status"], "状态未记录")
+    steps = {str(item.get("id")): item.get("status") for item in workspace["steps"] if isinstance(item, dict)}
+    objectives = [item for item in session["objectives"] if isinstance(item, dict)]
+    logged = sum(steps.get(str(item.get("id"))) == "done" for item in objectives)
+    logs = data["logs"]
+    lines = [
+        f"# {title} · 学习记录", "",
+        f"- 会话 #{session['id']} · {status}",
+        f"- 课程版本 {session.get('content_version') or '未记录'}",
+        f"- 学员记录 {logged}/{len(objectives)} 步",
+        "- 技能未验证。会话状态和步骤标记仅用于记录学习进度。",
+        f"- 保存的操作记录 {len(logs)} 条",
+        "", "## 已保存笔记", "",
+    ]
+    notes = str(workspace.get("notes") or "没有已保存的笔记。")
+    lines.extend("> " + line for line in notes.splitlines())
+    lines.extend(["", "## 步骤记录", ""])
+    for item in objectives:
+        name = " ".join(str(item.get("name") or item.get("goal") or "步骤").splitlines())
+        marked = "已标记完成" if steps.get(str(item.get("id"))) == "done" else "待记录"
+        lines.append(f"- {name} · {marked}")
+    if not objectives:
+        lines.append("没有可核对的课程步骤。")
+    if logs:
+        lines.extend(["", "## 保存的观察与操作", ""])
+        for log in logs:
+            event = " ".join(str(log.get("command") or log.get("action") or "记录").splitlines())
+            result = " ".join(str(log.get("result") or "未保存输出").splitlines())
+            lines.append(f"- {log.get('timestamp') or '时间未记录'} · {event} · {result}")
+    report = data.get("report")
+    lines.extend(["", "## AI 复盘", ""])
+    if report:
+        lines.append(f"已保存版本 v{report['version']}。以下为建议与解释。")
+        lines.append("")
+        lines.extend("> " + line for line in (report.get("report_text") or report.get("summary") or "").splitlines())
+    else:
+        lines.append("本会话暂无已保存的 AI 复盘。")
+    return "\n".join(lines) + "\n"

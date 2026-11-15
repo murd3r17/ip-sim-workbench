@@ -92,6 +92,7 @@ class SystemInfoResponse(BaseModel):
     python_version: str
     database_status: str
     llm_status: str
+    llm_checked_at: Optional[UtcDatetime] = None
     llm_provider: str
     llm_model: str
     device_count: int

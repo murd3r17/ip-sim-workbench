@@ -6,6 +6,7 @@
 """
 import asyncio
 from copy import deepcopy
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -286,13 +287,25 @@ class TrainingService:
     @staticmethod
     def content_snapshot(lab: TrainingLab) -> dict:
         """会话开始时固定实验版本与步骤，内容更新不改变历史任务。"""
-        return {
+        snapshot = {
             "version": lab.content_version,
             "title": lab.title,
             "objectives": deepcopy(lab.objectives or []),
             "environment_spec": deepcopy(lab.environment_spec or {}),
             "scoring_rules": deepcopy(lab.scoring_rules or {}),
         }
+        if not snapshot["version"]:
+            encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            snapshot["version"] = "local-" + hashlib.sha256(encoded).hexdigest()[:16]
+            # A snapshot has an identity even when the course has never had
+            # reviewed rules. Do not promote a legacy rule to automatic grading.
+            for step in snapshot["objectives"]:
+                if isinstance(step, dict):
+                    step["verification"] = {
+                        "kind": "manual_review", "version": snapshot["version"],
+                        "limitations": "该课程没有经审校的自动核对规则，请用观察记录供人工复核。",
+                    }
+        return snapshot
 
     @staticmethod
     async def _bind_trust_environment(db: AsyncSession, lab: TrainingLab, session: TrainingSession) -> None:
@@ -335,13 +348,14 @@ class TrainingService:
         if lab.status == LabStatus.DRAFT:
             raise ValueError("Lab尚未就绪，无法开始实训")
 
+        content = TrainingService.content_snapshot(lab)
         session = TrainingSession(
             lab_id=lab_id,
             trainee_id=trainee_id,
             started_at=datetime.now(timezone.utc),
             status="in_progress",
-            content_version=lab.content_version,
-            content_snapshot=TrainingService.content_snapshot(lab),
+            content_version=content["version"],
+            content_snapshot=content,
             mode_snapshot=build_mode_snapshot(lab),
         )
         await TrainingService._bind_trust_environment(db, lab, session)
@@ -747,13 +761,14 @@ class TrainingService:
             if not device_ids:
                 raise ValueError("该实验拓扑下没有设备，无法注入故障")
 
+        content = TrainingService.content_snapshot(lab)
         session = TrainingSession(
             lab_id=lab_id,
             trainee_id=trainee_id,
             started_at=datetime.now(timezone.utc),
             status="in_progress",
-            content_version=lab.content_version,
-            content_snapshot=TrainingService.content_snapshot(lab),
+            content_version=content["version"],
+            content_snapshot=content,
             mode_snapshot=build_mode_snapshot(lab),
         )
         await TrainingService._bind_trust_environment(db, lab, session)

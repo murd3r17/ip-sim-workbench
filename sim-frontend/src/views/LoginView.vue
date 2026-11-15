@@ -1,29 +1,32 @@
 <template>
-  <div class="login-container">
-    <div class="login-card">
-      <h1>IP仿真运维管理工作台</h1>
-      <el-alert
-        v-if="sessionExpired"
-        type="warning"
-        :closable="false"
-        show-icon
-        title="登录已过期，请重新登录（未保存的输入已丢失）"
-        style="margin-bottom: 12px"
-      />
-      <el-form :model="form" @submit.prevent="handleLogin">
-        <el-form-item>
-          <el-input v-model="form.username" placeholder="用户名" :prefix-icon="UserIcon" @keyup.enter="handleLogin" />
-        </el-form-item>
-        <el-form-item>
-          <el-input v-model="form.password" type="password" placeholder="密码" :prefix-icon="LockIcon" show-password @keyup.enter="handleLogin" />
-        </el-form-item>
-        <el-form-item>
-          <!-- native-type=submit：不然表单里没有提交按钮，输完口令敲回车毫无反应 -->
-          <el-button type="primary" native-type="submit" :loading="loading" @click="handleLogin" style="width: 100%">登录</el-button>
-        </el-form-item>
-      </el-form>
+  <main class="login-container">
+    <div class="login-shell">
+      <header class="login-intro">
+        <h1>IP 仿真运维管理工作台</h1>
+        <p>查看设备与拓扑，核对网络状态，继续实训。</p>
+      </header>
+      <section class="login-card" aria-labelledby="login-title">
+        <h2 id="login-title">登录工作台</h2>
+        <el-alert
+          v-if="sessionExpired"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="登录已过期，请重新登录（未保存的输入已丢失）"
+          style="margin-bottom: 12px"
+        />
+        <el-form :model="form" label-position="top" size="large" @submit.prevent="handleLogin">
+          <el-form-item label="用户名">
+            <el-input v-model="form.username" name="username" autocomplete="username" placeholder="用户名" :prefix-icon="UserIcon" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="form.password" name="password" autocomplete="current-password" type="password" placeholder="密码" :prefix-icon="LockIcon" show-password />
+          </el-form-item>
+          <el-button class="login-submit" type="primary" native-type="submit" :loading="loading">登录</el-button>
+        </el-form>
+      </section>
     </div>
-  </div>
+  </main>
 </template>
 
 <script setup lang="ts">
@@ -33,6 +36,7 @@ import { ElMessage } from 'element-plus/es/components/message/index'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { login } from '../api/auth'
 import { loginRedirectTarget } from '../utils/session'
+import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
 
 const router = useRouter()
 const route = useRoute()
@@ -42,6 +46,7 @@ const form = ref({ username: '', password: '' })
 const sessionExpired = ref(String(route.query.expired || '') === '1')
 
 const handleLogin = async () => {
+  if (loading.value) return
   if (!form.value.username || !form.value.password) {
     ElMessage.warning('请输入用户名和密码')
     return
@@ -56,6 +61,7 @@ const handleLogin = async () => {
       ElMessage.error('登录响应缺少 access_token，请联系管理员检查后端版本')
       return
     }
+    useWorkbenchDraftsStore().$reset()
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(data.user ?? {}))
     ElMessage.success('登录成功')
@@ -69,27 +75,68 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-/* 与全局暗色主题一致（P2-23）：此前是白底卡片 + 亮紫渐变 + #333 标题，
-   和 App.vue 的 --el-* 暗色变量冲突，输入框在卡片上"半亮半暗"。 */
 .login-container {
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 4vw, 72px);
+  background: radial-gradient(ellipse at 20% 0%, #213a54, #101924 75%);
+}
+.login-shell {
+  width: min(100%, clamp(900px, 72vw, 1720px));
+  min-height: clamp(460px, 54dvh, 640px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.16fr) minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid #465c73;
+  border-radius: 16px;
+  box-shadow: 0 20px 65px rgba(0, 0, 0, .28);
+}
+.login-intro,
+.login-card {
+  min-width: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   justify-content: center;
-  background: radial-gradient(circle at 50% 0%, #16273a 0%, #0b1118 60%);
+  padding: clamp(28px, 4vw, 76px);
+}
+.login-intro {
+  background: linear-gradient(145deg, #2e4a65, #20364d 74%);
+  color: #f5f8fc;
+}
+.login-intro h1 {
+  max-width: 12em;
+  margin: 0;
+  font-size: clamp(28px, 2.5vw, 52px);
+  line-height: 1.25;
+}
+.login-intro p {
+  margin: 18px 0 0;
+  color: #d5e4f3;
+  font-size: clamp(14px, 1.05vw, 21px);
+  line-height: 1.65;
 }
 .login-card {
-  width: 400px;
-  padding: 40px;
-  background: var(--el-bg-color-overlay, #101922);
-  border: 1px solid var(--el-border-color, #273444);
-  border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  background: var(--v7b-surface);
 }
-.login-card h1 {
-  text-align: center;
-  margin-bottom: 30px;
-  color: var(--el-text-color-primary, #dce8f2);
-  font-size: 20px;
+.login-card h2 {
+  margin: 0 0 26px;
+  color: var(--v7b-text);
+  font-size: clamp(23px, 1.65vw, 34px);
+}
+.login-submit { width: 100%; }
+
+@media (max-width: 760px) {
+  .login-shell {
+    width: min(100%, 500px);
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .login-intro,
+  .login-card { padding: clamp(20px, 6vw, 34px); }
+  .login-intro h1 { font-size: clamp(22px, 5vw, 30px); }
+  .login-intro p { margin-top: 8px; }
+  .login-card h2 { margin-bottom: 18px; }
 }
 </style>

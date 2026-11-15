@@ -1,6 +1,7 @@
 import hashlib
 
 from modules.ai_text.context_bundle import prepare_sources, source_documents, clip_documents
+from modules.knowledge.reader import document_payload
 
 
 TITLE = "09-用户管理认证配置与ipv6安全技术.md"
@@ -9,6 +10,38 @@ CLAIM = "网络上的路由器收到该RS报文后会立即向相应的主机单
 
 def hit(text=CLAIM, title=TITLE):
     return {"filename": title, "text": text, "document_id": "corpus-example"}
+
+
+def test_corpus_typo_is_attributed_to_transcription_not_huawei_diagram():
+    text = "传输层    TCP    UDP   ICMP  IGMP"
+    source = prepare_sources([hit(text, "02-网络基础与防火墙入门.md")])[0]
+    assert source["content"] == text
+    note = next(note for note in source["reviewed_notes"] if note["id"] == "ipv4-icmp-igmp-layer")
+    assert "转写" in note["content"] and "原教材将两者与 IP 放在网络层" in note["content"]
+    assert "原 PDF 第 60 页" in note["reference"]
+
+
+def test_truncated_switch_diagram_keeps_original_and_has_a_page_specific_note():
+    filename = "02-网络基础与防火墙入门.md"
+    body = "# 交换机\n\n```\nMAC A: 0050-5600-0001         MAC B: 0050-5600-0002\n  │ GE0/0/1\n"
+    raw = body.encode("utf-8")
+    document = document_payload({"id": "switch-demo", "filename": filename}, raw, None, "local_source")
+    assert document["content"] == body and document["version"] == hashlib.sha256(raw).hexdigest()
+    assert document["warnings"]
+    note = next(note for note in document["reviewed_notes"] if note["id"] == "hcia-switch-forwarding-truncated-diagram")
+    assert "原 PDF 第 96 页" in note["reference"] and "GE0/0/2" in note["content"]
+
+
+def test_truncated_hrp_section_does_not_present_the_partial_line_as_a_command():
+    intro = "在防火墙A和防火墙B上配置Cost值调整命令："
+    text = f"{intro}\n\n```cli\n[FW_A] hrp adjust ospf-cost enable\n[FW_B] hrp"
+    source = prepare_sources([hit(text, "01-hcip-security-认证概述与防火墙高可靠性技术.md")])[0]
+    note = next(note for note in source["reviewed_notes"] if note["id"] == "hcip-firewall-hrp-truncated-block")
+    assert source["content"] == intro and source["truncated"]
+    assert "[FW_B] hrp" not in source["prompt_text"]
+    assert "原 PDF 第 56 页" in note["reference"] and "截断" in note["content"]
+    assert "原 PDF 第 56 页" in source["prompt_text"]
+    assert prepare_sources([hit("```cli\n[FW_B] hrp")]) == []
 
 
 def test_initial_dhcp_request_address_note_is_scoped_and_preserves_original():
@@ -184,3 +217,17 @@ def test_ssh_legacy_key_range_is_kept_as_original_not_a_hardening_recommendation
     assert '不推荐' in note['content'] and '512' in note['content']
     assert note['content'] in source['prompt_text']
     assert not prepare_sources([hit('SSH 客户端首次认证功能。',filename)])[0].get('reviewed_notes')
+
+
+def test_frozen_book_note_requires_the_exact_document_version_and_source_page():
+    excerpt = '### PDF 第 952 页 · 重复地址检测 (1)\n\n重复地址检测使用 NS 和 NA。'
+    version = '528ca1c185b57003507ea4fa5bf437d01be0d6116c4544518d79c0f84975b1af'
+    source = hit(excerpt, 'huawei-b09-c021.md')
+
+    matched = prepare_sources([{**source, 'document_version': version}])[0]
+    assert matched['content'] == excerpt
+    assert [note['id'] for note in matched['reviewed_notes']] == ['reviewed-dad-two-conditions']
+
+    for other in [source, {**source, 'document_version': '0' * 64},
+                  {**source, 'document_version': version, 'text': excerpt.replace('952', '1952')}]:
+        assert not prepare_sources([other])[0].get('reviewed_notes')

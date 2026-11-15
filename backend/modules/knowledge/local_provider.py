@@ -131,14 +131,18 @@ class LocalKnowledgeProvider(KnowledgeProvider):
         top_k: int = 8,
         similarity_threshold: float = 0.2,
         workspace_slug: str = "ip-ops-kb",
+        *,
+        corpus_only: bool = False,
     ) -> None:
         settings = get_settings()
         configured = corpus_dir or getattr(settings, "knowledge_corpus_dir", "") or ""
         self.corpus_dir = (Path(configured).expanduser() if configured else DEFAULT_CORPUS_DIR).resolve()
-        self.storage_dir = (Path(storage_dir) if storage_dir else DEFAULT_STORAGE_DIR).resolve()
+        storage = storage_dir or getattr(settings, "knowledge_local_storage", "") or DEFAULT_STORAGE_DIR
+        self.storage_dir = Path(storage).expanduser().resolve()
         self.top_k = top_k
         self.similarity_threshold = similarity_threshold
         self.workspace_slug = workspace_slug
+        self.corpus_only = corpus_only
         self._lock = threading.RLock()
         self._signature: tuple | None = None
         self._generation: str = ""
@@ -149,7 +153,7 @@ class LocalKnowledgeProvider(KnowledgeProvider):
     # ── 索引 ─────────────────────────────────────────────────────────
     def _document_identity(self, path: Path) -> tuple[str, str]:
         absolute = path.resolve()
-        for namespace, root in (("upload", self.storage_dir), ("corpus", self.corpus_dir)):
+        for namespace, root in self._document_roots():
             try:
                 relative = absolute.relative_to(root.resolve()).as_posix()
             except ValueError:
@@ -158,9 +162,13 @@ class LocalKnowledgeProvider(KnowledgeProvider):
             return f"{namespace}-{digest}", f"{namespace}/{relative}"
         raise ValueError("文档不在本地知识库目录内")
 
+    def _document_roots(self) -> tuple[tuple[str, Path], ...]:
+        roots = (("corpus", self.corpus_dir),)
+        return roots if self.corpus_only else (("upload", self.storage_dir), *roots)
+
     def _scan_files(self) -> list[Path]:
         files: list[Path] = []
-        for root in (self.corpus_dir, self.storage_dir):
+        for _, root in self._document_roots():
             if root and root.is_dir():
                 files.extend(sorted(root.rglob("*.md")))
                 files.extend(sorted(root.rglob("*.txt")))

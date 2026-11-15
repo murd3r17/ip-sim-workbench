@@ -2,7 +2,7 @@
   <div class="deploy-center v7b-page">
     <PageHeader
       title="配置下发"
-      subtitle="草稿、确认、执行和回读是显式步骤；模拟开关不代表终端只读，真实写入仍需白名单与人工确认。"
+      subtitle="选择设备并准备配置。提交后到「变更审批」核对并确认，再执行和查看验证结果。"
     />
     <el-tabs v-model="activeTab">
       <!-- 配置下发 -->
@@ -25,6 +25,9 @@
           </template>
         </el-alert>
         <el-form :model="deployForm" label-width="100px" class="deploy-form">
+          <el-alert v-if="drafts.deploy.submitError" class="draft-alert" :title="drafts.deploy.submitError" type="warning" :closable="false" show-icon>
+            <el-button link type="primary" @click="showBatchList">查看配置批次</el-button>
+          </el-alert>
           <el-form-item label="任务名称">
             <el-input v-model="deployForm.name" placeholder="输入本次配置任务名称" />
           </el-form-item>
@@ -50,7 +53,7 @@
             <el-input ref="configEditor" v-model="deployForm.config_content" type="textarea" :rows="10" placeholder="输入VRP配置命令..." />
           </el-form-item>
           <el-form-item class="deploy-actions">
-            <el-button type="primary" @click="handleDeploy" :loading="deploying">创建任务</el-button>
+            <el-button type="primary" @click="handleDeploy" :loading="drafts.deploy.submitting">提交待确认</el-button>
             <el-button @click="handleValidate" :loading="validating">校验配置</el-button>
             <el-dropdown trigger="click" @command="(cmd: string) => cmd === 'generate' ? handleAiGenerate() : handleAiReview()">
               <el-button :loading="aiGenerateLoading || aiReviewLoading">AI 辅助</el-button>
@@ -61,26 +64,27 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <el-button link @click="$router.push('/config-versions')">配置管理</el-button>
+            <el-button link @click="viewDraftVersions">查看配置版本</el-button>
             <el-button
               v-if="labCtx.hasLab && labCtx.sessionId"
               link
               @click="$router.push({ path: '/training', query: { session_id: String(labCtx.sessionId) } })"
             >返回实训</el-button>
           </el-form-item>
+          <p v-if="hasDraft" class="draft-lifetime">草稿保留在此标签页。刷新或退出会清除未提交内容，需留存时请先复制保存。</p>
         </el-form>
         <el-card v-if="staticValidation" class="static-validation" shadow="never" aria-label="静态校验结果">
           <template #header>静态校验结果 · {{ staticValidation.model }} · 未执行</template>
           <el-alert v-if="staticValidationStale" title="配置内容或目标已变化，这份结果仅对应先前输入，请重新校验。" type="warning" :closable="false" show-icon />
-          <p>{{ staticValidation.result.valid ? '在已覆盖的规则内未发现问题。' : '发现以下配置问题，请修改后重新校验。' }}</p>
+          <p v-if="!staticValidationStale">{{ staticValidation.result.valid ? '已覆盖的规则检查通过，可以继续提交变更。' : '请按下列提示修改配置，然后重新校验。' }}</p>
           <ul v-if="staticValidation.result.diagnostics?.length"><li v-for="(error,index) in staticValidation.result.diagnostics" :key="index"><el-button link type="primary" :disabled="staticValidationStale || !error.line_number" @click="focusConfigLine(error.line_number)">第 {{ error.line_number || '?' }} 行</el-button> {{ error.message }} <code>{{ error.command }}</code></li></ul>
           <ul v-else-if="staticValidation.result.errors?.length"><li v-for="(error, index) in staticValidation.result.errors" :key="index">{{ error }}</li></ul>
           <p v-if="staticValidation.result.coverage?.checked?.length">已检查：{{ staticValidation.result.coverage.checked.join('、') }}</p>
           <p v-if="staticValidation.result.coverage?.not_checked?.length">未检查：{{ staticValidation.result.coverage.not_checked.join('、') }}</p>
-          <p>此结果不代表设备已执行或业务已恢复。</p>
+          <p>设备执行与回读结果可在「变更审批」中查看。</p>
         </el-card>
         <el-card v-if="aiGenerateResult" shadow="never" style="max-width: 800px; margin-top: 12px">
-          <template #header>生成与校验结果（已填入文本框，请核对后再创建任务）</template>
+          <template #header>生成与校验结果</template>
           <el-tag :type="aiGenerateResult.all_passed ? 'success' : 'warning'">
             {{ aiGenerateResult.all_passed ? '校验通过' : '存在风险' }}
           </el-tag>
@@ -108,19 +112,19 @@
       </el-tab-pane>
 
       <!-- 下发任务列表 -->
-      <el-tab-pane label="任务管理" name="tasks">
+      <el-tab-pane label="配置批次" name="tasks">
         <el-alert v-if="taskLoadError" :title="taskLoadError" type="error" :closable="false" show-icon><el-button @click="loadTasks">重试任务列表</el-button></el-alert>
         <RecordOriginFilter v-model="originFilter" :records="tasks" :unavailable="!!taskLoadError" />
         <el-table :data="visibleTasks" v-loading="tasksLoading">
           <template #empty>
-            <el-empty :description="taskLoadError || (tasks.length?'当前来源筛选没有匹配任务，可恢复全部来源。':'暂无下发任务。在「新建任务」提交后，可从这里查看进度。')" :image-size="72" />
+            <el-empty :description="taskLoadError || (tasks.length ? '当前来源筛选没有匹配批次，可恢复全部来源。' : '暂无配置批次。提交变更后可在这里查看每台设备的进度。')" :image-size="72" />
           </template>
           <el-table-column prop="name" label="任务名称" min-width="200" show-overflow-tooltip />
           <el-table-column prop="source" label="来源" width="100" />
-          <el-table-column label="状态" width="180">
+          <el-table-column label="设备任务" min-width="210">
             <template #default="{ row }">
               <span style="color: var(--v7b-muted); font-size: 12px">
-                待确认 {{ row.summary?.pending ?? 0 }} · 执行中 {{ row.summary?.running ?? 0 }} · 成功 {{ row.summary?.success ?? 0 }} · 失败 {{ row.summary?.failed ?? 0 }}
+                {{ batchStatusText(row.summary) }}
               </span>
             </template>
           </el-table-column>
@@ -174,9 +178,7 @@
         <el-descriptions-item label="任务名称">{{ currentTask?.name }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ currentTask?.source }}</el-descriptions-item>
         <el-descriptions-item label="批次汇总">
-          <span v-if="currentTask?.summary">
-            待确认 {{ currentTask.summary.pending }} · 执行中 {{ currentTask.summary.running }} · 成功 {{ currentTask.summary.success }} · 失败 {{ currentTask.summary.failed }}
-          </span>
+          <span>{{ batchStatusText(currentTask?.summary) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatApiTime(currentTask?.created_at) }}</el-descriptions-item>
       </el-descriptions>
@@ -184,10 +186,10 @@
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap">
           <h4 style="margin: 0">设备 {{ deviceName(item.device_id) }}（任务项 #{{ item.id }}）</h4>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-            <el-tag :type="stageTagType(item.stage)" size="small">{{ stageLabel(item.stage) }}</el-tag>
-            <el-button v-if="item.status === 'awaiting_confirmation'" type="warning" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleTaskConfirmation(item)">确认</el-button>
+            <el-tag :type="stageTagType(taskDisplayStage(item))" size="small">{{ stageLabel(taskDisplayStage(item)) }}</el-tag>
+            <el-button v-if="['pending', 'awaiting_confirmation'].includes(item.status)" type="warning" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleTaskConfirmation(item)">确认变更</el-button>
             <el-button v-if="item.status === 'confirmed'" type="success" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleExecution(item)">执行</el-button>
-            <el-button v-if="item.status === 'deploying'" type="primary" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleVerification(item)">验证报告</el-button>
+            <el-button v-if="item.status === 'deploying'" type="primary" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleVerification(item)">核对回读</el-button>
             <el-button v-if="['success', 'failed', 'rolled_back'].includes(item.status)" type="success" link size="small" @click="handleVerification(item)">查看结果</el-button>
             <!-- 取消并释放设备写锁：确认了却没执行的任务会一直占着锁，设备终端会被拒接 -->
             <el-button
@@ -199,7 +201,10 @@
           </div>
         </div>
         <!-- 5 步流程：让"还差哪一步"一眼可见 -->
-        <el-steps :active="flowStageIndex(item.status)" simple class="deploy-steps">
+        <p class="next-hint" v-if="item.started_at || item.completed_at">
+          开始 {{ formatApiTime(item.started_at) }} · 结束 {{ formatApiTime(item.completed_at) }}
+        </p>
+        <el-steps v-if="!['failed', 'rolled_back', 'cancelled'].includes(item.status)" :active="flowStageIndex(item.status)" simple class="deploy-steps">
           <el-step v-for="name in DEPLOY_FLOW_STEPS" :key="name" :title="name" />
         </el-steps>
         <div v-if="nextActionHint(item.status)" class="next-hint">{{ nextActionHint(item.status) }}</div>
@@ -287,7 +292,7 @@ import PageHeader from '../../components/v7b/PageHeader.vue'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
-import { notifyRequestError } from '../../utils/requestError'
+import { notifyRequestError, requestErrorMessage } from '../../utils/requestError'
 import { formatApiTime } from '../../utils/datetime'
 import { executionModeLabel, savedVerificationState } from '../../utils/display'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
@@ -297,19 +302,19 @@ import { confirmWithRisk } from '../../utils/deployConfirmation'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { getDevices, type DeviceRecord } from '../../api/device'
 import { generateAndValidate, reviewConfig } from '../../api/ai'
-import { cancelDeployTask, confirmDeployTask, createDeployBatch, createTemplate, executeDeployTask, getDeployBatch, getDeployBatches, getDeployTask, getTemplates, renderTemplate, validateConfig, verifyDeployTask, type ConfigTemplateRecord } from '../../api/deploy'
+import { cancelDeployTask, confirmDeployTask, createDeployBatch, createTemplate, executeDeployTask, getDeployBatch, getDeployBatches, getDeployTask, getTemplates, renderTemplate, validateConfig, verifyDeployTask, type ConfigTemplateRecord, type DeployBatchRecord } from '../../api/deploy'
 import { useLabContextStore } from '../../stores/labContext'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
+import { emptyDeployDraft, useWorkbenchDraftsStore } from '../../stores/workbenchDrafts'
 import { useAutoRefresh } from '../../utils/autoRefresh'
 import { resolveWorkbenchDeviceModel } from '../../utils/deviceModel'
-import type { ConfigValidateResult } from '../../api/deploy'
 
 const route = useRoute()
 const router = useRouter()
 const labCtx = useLabContextStore()
 const copilot = useAiCopilotStore()
-const activeTab = ref('deploy')
-const deploying = ref(false)
+const drafts = useWorkbenchDraftsStore()
+const activeTab = ref(deployTab(route.query.tab))
 const validating = ref(false)
 const actingTaskId = ref<number | null>(null)
 const deviceRequest = useSnapshotRequest('设备列表')
@@ -331,18 +336,17 @@ const verificationReport = ref<any>(null)
 // 设备列表
 const devices = ref<DeviceRecord[]>([])
 
-// 下发表单
-const deployForm = ref({
-  name: '',
-  device_ids: [] as number[],
-  engine: 'netmiko',
-  config_content: ''
+const deployForm = computed(() => drafts.deploy.form)
+const aiIntent = computed({
+  get: () => drafts.deploy.intent,
+  set: (value: string) => { drafts.deploy.intent = value },
 })
-const aiIntent = ref('')
+const hasDraft = computed(() => Boolean(deployForm.value.name.trim() || deployForm.value.config_content.trim() || aiIntent.value.trim()))
 const aiGenerateLoading = ref(false)
 const aiReviewLoading = ref(false)
 const aiGenerateResult = ref<any>(null)
 const aiReviewResult = ref<any>(null)
+let viewActive = true
 
 // 任务列表
 const tasks = ref<any[]>([])
@@ -375,8 +379,27 @@ const loadTemplates = async () => {
   await templateRequest.run(() => getTemplates(), value => { templates.value = value })
 }
 
-// 下发配置
+function deployTab(value: unknown) {
+  return value === 'tasks' || value === 'templates' ? value : 'deploy'
+}
+
+function showBatchList() {
+  activeTab.value = 'tasks'
+  void loadTasks()
+  void router.replace({ path: '/deploy', query: { tab: 'tasks' } })
+}
+
+function viewDraftVersions() {
+  const [deviceId] = deployForm.value.device_ids
+  const query: Record<string, string> = { from: 'draft' }
+  if (deployForm.value.device_ids.length === 1) query.device_id = String(deviceId)
+  void router.push({ path: '/config-versions', query })
+}
+
+// Record the submitted snapshot. Edits made while waiting belong to the next draft.
 const handleDeploy = async () => {
+  const draft = drafts.deploy
+  if (draft.submitting) return
   if (!deployForm.value.device_ids.length) {
     ElMessage.warning('请选择目标设备')
     return
@@ -385,40 +408,69 @@ const handleDeploy = async () => {
     ElMessage.warning('请输入配置内容')
     return
   }
-  deploying.value = true
+  const submitted = JSON.stringify(draft.form)
+  const intent = draft.intent
+  const submissionPath = route.fullPath
+  draft.submitting = true
+  draft.submitError = ''
+  let batch
   try {
-    await createDeployBatch({
-      name: deployForm.value.name.trim() || `配置任务 ${new Date().toLocaleString()}`,
-      source: 'manual', engine: deployForm.value.engine,
-      items: deployForm.value.device_ids.map(device_id => ({ device_id, config_content: deployForm.value.config_content })),
-    })
-    ElMessage.success('配置任务已创建，请在任务管理中确认后执行')
-    loadTasks()
-    activeTab.value = 'tasks'
-  } catch (error: any) {
-    notifyRequestError(error, '下发失败')
+    batch = await createDeployBatch({
+      name: draft.form.name.trim() || `配置任务 ${new Date().toLocaleString()}`,
+      source: 'manual', engine: draft.form.engine,
+      items: draft.form.device_ids.map(device_id => ({ device_id, config_content: draft.form.config_content })),
+    }, true)
+  } catch (error) {
+    draft.submitError = `草稿已保留。${requestErrorMessage(error, '提交结果暂未确认。')} 重试前可到「配置批次」确认是否已有这条记录。`
+    return
   } finally {
-    deploying.value = false
+    draft.submitting = false
+  }
+  if (drafts.deploy !== draft) return
+  const unchanged = submitted === JSON.stringify(draft.form) && intent === draft.intent
+  ElMessage.success(unchanged ? '变更已提交，等待人工确认' : '上一份配置已提交。本次编辑仍在草稿中。')
+  if (!unchanged) return
+  drafts.deploy = emptyDeployDraft()
+  aiGenerateResult.value = null
+  aiReviewResult.value = null
+  if (!viewActive || router.currentRoute.value.fullPath !== submissionPath || activeTab.value !== 'deploy') return
+  const task = batch.items?.length === 1 ? batch.items[0] : undefined
+  if (task) await router.push({ path: '/approvals', query: { task_id: String(task.id) } })
+  else {
+    activeTab.value = 'tasks'
+    await router.push({ path: '/deploy', query: { tab: 'tasks', batch_id: String(batch.id) } })
+    void loadTasks()
   }
 }
 
 const handleAiGenerate = async () => {
+  if (aiGenerateLoading.value || drafts.deploy.submitting) return
   if (!aiIntent.value.trim()) {
     ElMessage.warning('请先填写 AI 需求描述')
     return
   }
+  const draft = drafts.deploy
+  const previous = JSON.stringify(draft.form)
+  const intent = draft.intent
   aiGenerateLoading.value = true
   try {
+    if (draft.form.config_content.trim() && !await confirmDraftReplacement('生成结果')) return
+    if (!viewActive || drafts.deploy !== draft || JSON.stringify(draft.form) !== previous || intent !== draft.intent) return
     const res: any = await generateAndValidate({
-      natural_language: aiIntent.value,
+      natural_language: intent,
       device_model: resolveValidateModel(),
     })
-    aiGenerateResult.value = res
+    if (!viewActive || drafts.deploy !== draft) return
     const commands = Array.isArray(res?.commands) ? res.commands.filter(Boolean) : []
-    if (commands.length) {
-      deployForm.value.config_content = commands.join('\n')
+    if (commands.length && (JSON.stringify(draft.form) !== previous || intent !== draft.intent || draft.submitting)) {
+      ElMessage.info('生成期间草稿已变化，已保留你的编辑。需要替换时请重新生成。')
+      return
     }
-    ElMessage.success('已填入配置文本框，请核对后手动创建任务（不会自动下发）')
+    aiGenerateResult.value = res
+    if (commands.length) {
+      draft.form.config_content = commands.join('\n')
+      ElMessage.success('已填入配置草稿，核对后可提交变更')
+    } else ElMessage.info('本次未生成配置命令，请查看生成结果')
   } catch (error: any) {
     notifyRequestError(error, '生成失败，请稍后重试')
   } finally {
@@ -462,7 +514,7 @@ function resolveValidateModel(): string {
 }
 
 // 校验配置
-const staticValidation = ref<{ config: string; model: string; targets: string; result: ConfigValidateResult } | null>(null)
+const staticValidation = computed(() => drafts.deploy.validation)
 const configEditor=ref<{textarea?:HTMLTextAreaElement}|null>(null)
 const focusConfigLine=(line?:number)=>{
   if(!line||staticValidationStale.value)return
@@ -484,13 +536,14 @@ const handleValidate = async () => {
   const device_model = resolveValidateModel()
   const config_content = deployForm.value.config_content
   const targets = JSON.stringify(deployForm.value.device_ids)
+  const draft = drafts.deploy
   validating.value = true
   try {
     const res = await validateConfig({
       config_content,
       device_model,
     })
-    staticValidation.value = { config: config_content, model: device_model, targets, result: res }
+    if (drafts.deploy === draft) draft.validation = { config: config_content, model: device_model, targets, result: res }
   } catch (error: any) {
     notifyRequestError(error, '校验失败')
   } finally {
@@ -523,19 +576,22 @@ const refreshCurrentTask = async () => {
 }
 
 const stageLabel = (stage: string) => ({
-  pending: '待确认', waiting: '已确认待执行', deploying: '执行中', readback: '回读验证中',
-  success: '已完成', failed: '失败',
-}[stage] || stage)
+  pending: '待确认', waiting: '已确认待执行', deploying: '执行阶段', readback: '回读验证中',
+  success: '已完成', failed: '执行或验证失败', cancelled: '已取消', rolled_back: '已回滚',
+}[stage] || '状态未记录')
 
 const stageTagType = (stage: string) => ({
   pending: 'warning', waiting: 'info', deploying: 'primary', readback: 'primary',
-  success: 'success', failed: 'danger',
+  success: 'success', failed: 'danger', cancelled: 'info', rolled_back: 'warning',
 }[stage] || 'info') as '' | 'success' | 'warning' | 'info' | 'primary' | 'danger'
 
+const taskDisplayStage = (item: { status: string; stage?: string }) =>
+  ['cancelled', 'rolled_back'].includes(item.status) ? item.status : item.stage || item.status
+
 // ── 下发流程可视化（2026-10-05 用户反馈"得点很多个按钮，不知道下一步点哪个"）──
-// 流程：创建任务 → 确认下发 → 执行 → 验证 → 完成（5 步，缺一步都不算完成）
-const DEPLOY_FLOW_STEPS = ['创建任务', '确认下发', '执行', '验证', '完成']
+const DEPLOY_FLOW_STEPS = ['提交变更', '确认变更', '执行', '验证', '完成']
 const flowStageIndex = (status: string) => ({
+  pending: 1,
   awaiting_confirmation: 1,
   confirmed: 2,
   deploying: 3,
@@ -548,13 +604,14 @@ const flowStageIndex = (status: string) => ({
 }[status] ?? 0)
 
 const nextActionHint = (status: string) => ({
-  awaiting_confirmation: '下一步：点「确认」下发（高风险命令会弹二次确认）',
-  confirmed: '下一步：点「执行」；执行模式由服务端配置决定',
-  deploying: '下一步：点「验证报告」回读设备配置并比对',
+  pending: '下一步：核对设备与配置后点「确认变更」。',
+  awaiting_confirmation: '下一步：核对设备与配置后点「确认变更」。',
+  confirmed: '下一步：点「执行」，随后查看本次执行模式与结果。',
+  deploying: '执行结束后，点「核对回读」确认本次结果。',
   verifying: '正在回读比对，稍等',
   success: '已完成：需要复核时点「查看结果」',
   failed: '已失败：看验证报告或变更日志定位原因',
-  cancelled: '已取消（设备写锁已释放）',
+  cancelled: '本任务已取消。可在变更日志中查看取消记录。',
   rolled_back: '已回滚',
 }[status] || '')
 
@@ -574,10 +631,10 @@ const rollbackLabel = (r: unknown) => ({
 const verificationHint = (report: any) => {
   if (!report) return ''
   if (report.verification === 'not_performed') {
-    return '模拟模式下不会回读设备，报告为占位；要看真实回读与差异，需要关闭 DEPLOY_SIMULATE_ONLY 并命中白名单后执行。'
+    return '本次保存的是流程演练结果。实际配置和回读需要在已获准的设备环境中另行核对。'
   }
   if (report.verification === 'passed') return '回读内容与下发内容一致，这一步可以判定通过。'
-  if (report.verification === 'failed') return '回读与下发内容存在差异，请先看「回读差异」；必要时在配置管理里比对并回滚。'
+  if (report.verification === 'failed') return '回读与下发内容存在差异。先查看「回读差异」，再到「配置版本」比对快照。'
   return ''
 }
 
@@ -586,18 +643,38 @@ const goLink = (path: string) => {
   router.push(path)
 }
 
-/** 批次级"下一步"：让用户不用点开详情就知道该干什么 */
-const batchNextHint = (row: any) => {  const summary = row?.summary || {}
+const batchStatusText = (summary?: DeployBatchRecord['summary']) => {
+  if (!summary) return '批次汇总暂不可用'
+  if (!summary.total) return '该批次没有设备任务'
+  const labels = [
+    ['待确认', summary.pending], ['待执行', summary.waiting], ['执行或验证中', summary.running],
+    ['完成', summary.success], ['失败', summary.execution_failed],
+    ['取消', summary.cancelled], ['回滚', summary.rolled_back],
+  ] as const
+  const counts = labels.filter(([, count]) => (count ?? 0) > 0).map(([label, count]) => `${label} ${count}`)
+  return counts.join(' · ') || '展开详情查看各设备状态'
+}
+
+const batchNextHint = (row: DeployBatchRecord) => {
+  const summary = row.summary || {}
   if ((summary.pending ?? 0) > 0) return `有 ${summary.pending} 台待确认 → 点「详情」确认下发`
-  if ((summary.running ?? 0) > 0) return `有 ${summary.running} 台执行中 → 完成后点「详情」验证`
+  if ((summary.waiting ?? 0) > 0) return '有任务已确认。打开详情，核对设备后单独执行。'
+  if ((summary.running ?? 0) > 0) return '打开详情跟进执行或回读核对。'
+  if ((summary.execution_failed ?? 0) > 0) return '有任务失败，打开详情查看具体设备和原因。'
+  if ((summary.rolled_back ?? 0) > 0) return '有任务已回滚，打开详情核对恢复结果。'
   if ((summary.success ?? 0) > 0) return '已完成 → 点「详情」查看验证结果'
-  if ((summary.failed ?? 0) > 0) return '有失败项 → 点「详情」看失败原因'
+  if ((summary.cancelled ?? 0) > 0) return '设备任务已取消，可查看明细。'
   return '—'
 }
 
 // 使用模板
-const handleUseTemplate = (template: any) => {
-  deployForm.value.config_content = template.content
+const handleUseTemplate = async (template: ConfigTemplateRecord) => {
+  const draft = drafts.deploy
+  const content = draft.form.config_content
+  if (draft.submitting) return
+  if (content.trim() && content !== template.content && !await confirmDraftReplacement('模板内容')) return
+  if (!viewActive || drafts.deploy !== draft || draft.form.config_content !== content || draft.submitting) return
+  draft.form.config_content = template.content
   activeTab.value = 'deploy'
 }
 
@@ -742,9 +819,22 @@ function refreshDraftState() {
   draftSavedAt.value = at ? new Date(Number(at)).toLocaleString('zh-CN', { hour12: false }) : ''
 }
 
-function loadAiDraft() {
+async function confirmDraftReplacement(source: string) {
+  try {
+    await ElMessageBox.confirm(`${source}将替换当前配置内容。请先保存需要保留的文字。`, '替换配置草稿', {
+      type: 'warning', confirmButtonText: '替换', cancelButtonText: '保留当前草稿',
+    })
+    return true
+  } catch { return false }
+}
+
+async function loadAiDraft() {
   const draft = localStorage.getItem('deploy_ai_draft')
-  if (!draft?.trim()) return false
+  const current = drafts.deploy
+  if (!draft?.trim() || current.submitting) return
+  const previous = JSON.stringify(current.form)
+  if (hasDraft.value && !await confirmDraftReplacement('AI 草稿及其目标设备')) return
+  if (!viewActive || drafts.deploy !== current || previous !== JSON.stringify(current.form) || current.submitting || localStorage.getItem('deploy_ai_draft') !== draft) return
   // A loaded draft replaces the target selection, never adds to an old batch.
   // Legacy or mismatched metadata requires an explicit new selection.
   let targetId: number | null = null
@@ -756,18 +846,17 @@ function loadAiDraft() {
   deployForm.value.device_ids = targetId == null ? [] : [targetId]
   deployForm.value.config_content = draft
   activeTab.value = 'deploy'
-  ElMessage.success(targetId == null ? '已载入 AI 草稿，请选择目标设备并核对配置' : '已载入 AI 草稿及原目标设备，请核对后再创建任务')
+  ElMessage.success(targetId == null ? '已载入 AI 草稿，请选择目标设备并核对配置' : '已载入 AI 草稿及原目标设备，请核对后再提交变更')
   refreshDraftState()
-  return true
 }
 
 function maybeAutoLoadDraft() {
-  if (String(route.query.draft || '') !== '1') return
-  if (loadAiDraft()) {
-    const nextQuery = { ...route.query }
-    delete nextQuery.draft
-    router.replace({ path: '/deploy', query: nextQuery })
-  }
+  if (route.path !== '/deploy' || route.query.draft !== '1') return
+  if (!hasDraft.value) void loadAiDraft()
+  else ElMessage.info('已有配置草稿。可点「载入草稿」查看并替换为 AI 草稿。')
+  activeTab.value = 'deploy'
+  const { draft: _draft, ...query } = route.query
+  void router.replace({ path: '/deploy', query: { ...query, tab: 'deploy' } })
 }
 
 function clearAiDraft() {
@@ -778,11 +867,13 @@ function clearAiDraft() {
   refreshDraftState()
 }
 
-function prefillDevice(id?: number | null) {
-  if (!id) return
-  if (!deployForm.value.device_ids.includes(id)) {
-    deployForm.value.device_ids = [...deployForm.value.device_ids, id]
+function prefillDevice(id?: number | null, explicit = false) {
+  if (!id || !devices.value.some(device => device.id === id) || deployForm.value.device_ids.includes(id)) return
+  if (hasDraft.value || drafts.deploy.submitting) {
+    if (explicit) ElMessage.info(`已保留草稿原有的目标设备。如需改为 ${deviceName(id)}，请在表单中选择并重新校验。`)
+    return
   }
+  if (explicit || !deployForm.value.device_ids.length) deployForm.value.device_ids = [id]
 }
 
 function syncDeploySelection() {
@@ -809,20 +900,23 @@ watch(() => [...deployForm.value.device_ids], () => syncDeploySelection())
 watch(
   () => route.query.tab,
   (tab) => {
-    const name = String(tab || '')
-    if (name === 'tasks' || name === 'templates' || name === 'deploy') activeTab.value = name
+    if (route.path === '/deploy') activeTab.value = deployTab(tab)
   },
 )
 
 function onAiDraftEvent(ev: Event) {
   refreshDraftState()
   const autoLoad = Boolean((ev as CustomEvent).detail?.autoLoad)
-  if (autoLoad) loadAiDraft()
+  if (autoLoad) {
+    activeTab.value = 'deploy'
+    if (hasDraft.value) ElMessage.info('已有配置草稿。可点「载入草稿」查看并替换为 AI 草稿。')
+    else void loadAiDraft()
+  }
 }
 
 function onAiDeviceEvent(ev: Event) {
   const detail = (ev as CustomEvent).detail || {}
-  prefillDevice(Number(detail.device_id || 0) || null)
+  prefillDevice(Number(detail.device_id || 0), true)
 }
 
 watch(
@@ -830,20 +924,37 @@ watch(
   () => maybeAutoLoadDraft(),
 )
 
+let taskLinkEpoch = 0
 async function openTaskDeepLink() {
-  const taskId = Number(route.query.task_id || 0)
-  if (!taskId) return
+  const epoch = ++taskLinkEpoch
+  if (route.path !== '/deploy') return
+  const taskId = Number(route.query.task_id)
+  const batchId = Number(route.query.batch_id)
+  if (!(taskId > 0 || batchId > 0)) return
   activeTab.value = 'tasks'
   try {
+    if (batchId > 0) {
+      const batch = await getDeployBatch(batchId)
+      if (viewActive && epoch === taskLinkEpoch) {
+        currentTask.value = batch
+        detailDialogVisible.value = true
+      }
+      return
+    }
     const item = await getDeployTask(taskId)
+    if (!viewActive || epoch !== taskLinkEpoch) return
     if (item?.batch_id) {
-      currentTask.value = await getDeployBatch(item.batch_id)
-      detailDialogVisible.value = true
+      const batch = await getDeployBatch(item.batch_id)
+      if (viewActive && epoch === taskLinkEpoch) {
+        currentTask.value = batch
+        detailDialogVisible.value = true
+      }
       return
     }
     const batches = await getDeployBatches() as { id: number }[]
     for (const batch of batches) {
       const detail = await getDeployBatch(batch.id)
+      if (!viewActive || epoch !== taskLinkEpoch) return
       if ((detail.items || []).some((it: { id: number }) => it.id === taskId)) {
         currentTask.value = detail
         detailDialogVisible.value = true
@@ -856,27 +967,34 @@ async function openTaskDeepLink() {
 }
 
 watch(
-  () => route.query.task_id,
+  () => [route.query.task_id, route.query.batch_id],
   () => { void openTaskDeepLink() },
 )
+watch(() => route.query.device_id, id => {
+  if (route.path === '/deploy' && activeTab.value === 'deploy') prefillDevice(Number(id), true)
+})
+
+useAutoRefresh(loadTasks, 20000)
 
 onMounted(async () => {
   await loadDevices()
+  if (!viewActive) return
   loadTasks()
   loadTemplates()
-  const tab = String(route.query.tab || '')
-  if (tab === 'tasks' || tab === 'templates') activeTab.value = tab
-  const qid = Number(route.query.device_id || labCtx.device?.id || 0)
-  prefillDevice(qid || null)
+  if (activeTab.value === 'deploy' && route.query.draft !== '1') {
+    const qid = Number(route.query.device_id)
+    prefillDevice(qid || labCtx.device?.id, Boolean(qid))
+    syncDeploySelection()
+  }
   refreshDraftState()
   maybeAutoLoadDraft()
-  await openTaskDeepLink()
   window.addEventListener('deploy-ai-draft', onAiDraftEvent as EventListener)
   window.addEventListener('deploy-ai-device', onAiDeviceEvent as EventListener)
-  useAutoRefresh(loadTasks, 20000)
+  await openTaskDeepLink()
 })
 
 onUnmounted(() => {
+  viewActive = false
   window.removeEventListener('deploy-ai-draft', onAiDraftEvent)
   window.removeEventListener('deploy-ai-device', onAiDeviceEvent as EventListener)
 })
@@ -911,6 +1029,8 @@ onUnmounted(() => {
 .deploy-steps { margin: 10px 0 6px; }
 .deploy-steps :deep(.el-step__title) { font-size: 11px; line-height: 1.4; }
 .next-hint { color: var(--v7b-warn); font-size: 12px; line-height: 1.6; }
+.draft-alert { margin-bottom: 14px; }
+.draft-lifetime { color: var(--v7b-muted); font-size: 12px; }
 .link-row { margin-top: 8px; display: flex; gap: 4px; flex-wrap: wrap; }
 .verify-block { margin-top: 12px; }
 .verify-block .block-title { margin-bottom: 4px; color: var(--v7b-muted); font-size: 11px; }

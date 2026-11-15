@@ -1,6 +1,6 @@
 <template>
-  <section class="topology-canvas" aria-label="拓扑画布">
-    <div class="canvas-bar">
+  <section class="topology-canvas" :class="{ 'canvas-overview': overview }" aria-label="拓扑画布">
+    <div v-if="!overview" class="canvas-bar">
       <div class="canvas-caption">
         <strong>网络关系图</strong>
         <span>拖动空白平移 · 拖动卡片调整布局</span>
@@ -36,7 +36,8 @@
 
     <div ref="surface" class="canvas-surface" :class="{ 'is-panning': gesture?.moved && !gesture.node }">
       <svg
-        ref="svg" class="canvas-svg" aria-label="设备和链路"
+        ref="svg" class="canvas-svg" :role="overview ? 'img' : undefined"
+        :aria-label="overview ? `网络拓扑，${nodes.length} 台设备，${links.length} 条链路` : '设备和链路'"
         @pointerdown="startGesture($event)" @pointermove="moveGesture"
         @pointerup="endGesture" @pointercancel="cancelGesture" @lostpointercapture="cancelGesture"
       >
@@ -44,10 +45,11 @@
           <g
             v-for="link in links" :key="link.id" class="canvas-edge"
             :class="[link.tone, { selected: selectedLink?.id === link.id }]"
-            role="button" tabindex="0" :aria-pressed="selectedLink?.id === link.id"
+            :role="overview ? undefined : 'button'" :tabindex="overview ? undefined : 0"
+            :aria-pressed="overview ? undefined : selectedLink?.id === link.id"
             :aria-label="`${link.edge.source_name} ${link.edge.source_interface} 到 ${link.edge.target_name} ${link.edge.target_interface}，${link.label}`"
-            @pointerdown.stop @click="selectedLinkId = link.id"
-            @keydown.enter.prevent="selectedLinkId = link.id" @keydown.space.prevent="selectedLinkId = link.id"
+            @pointerdown.stop @click="selectLink(link.id)"
+            @keydown.enter.prevent="selectLink(link.id)" @keydown.space.prevent="selectLink(link.id)"
           >
             <title>{{ link.edge.source_name }} {{ link.edge.source_interface }} ↔ {{ link.edge.target_name }} {{ link.edge.target_interface }} · {{ link.label }}</title>
             <path :d="link.path" class="edge-hit" />
@@ -65,7 +67,8 @@
             v-for="node in nodes" :key="node.id" class="canvas-node"
             :class="[statusFor(node).tone, { selected: selectedId === node.id }]"
             :transform="`translate(${points[node.id].x} ${points[node.id].y})`"
-            role="button" tabindex="0" :aria-pressed="selectedId === node.id"
+            :role="overview ? undefined : 'button'" :tabindex="overview ? undefined : 0"
+            :aria-pressed="overview ? undefined : selectedId === node.id"
             :aria-label="`${node.label}，${statusFor(node).label}`"
             @pointerdown.stop="startGesture($event, node)"
             @click="selectAccessibleNode($event, node)"
@@ -85,9 +88,9 @@
       </svg>
     </div>
 
-    <div class="canvas-legend">
-      <span v-for="item in legend" :key="item.tone"><i class="legend-mark" :class="item.tone" />{{ item.label }}</span>
-      <span class="legend-hint">点选链路查看两端接口</span>
+    <div v-if="!overview || visibleLegend.length" class="canvas-legend">
+      <span v-for="item in visibleLegend" :key="item.tone"><i class="legend-mark" :class="item.tone" />{{ item.label }}</span>
+      <span v-if="!overview" class="legend-hint">点选链路查看两端接口</span>
     </div>
   </section>
 </template>
@@ -103,6 +106,7 @@ const props = defineProps<{
   edges: GraphEdge[]
   positions: Record<string, Point>
   selectedId?: string
+  overview?: boolean
 }>()
 const emit = defineEmits<{
   select: [node: GraphNode]
@@ -126,6 +130,7 @@ const unknownStatus = { tone: 'unknown', label: '状态未知' }
 const statusFor = (node: GraphNode) => deviceStatus[node.status] || unknownStatus
 const shortInterface = (value: string) => compactTopologyLabel(value.replace(/^GigabitEthernet/i, 'GE').replace(/^Ethernet/i, 'Eth') || '未登记', 88)
 const MAX_SCALE = 3.2
+const MAX_FIT_SCALE = 1.65
 
 interface Camera {
   center: Point
@@ -158,6 +163,9 @@ const points = computed(() => Object.fromEntries(Object.entries(getPositions()).
   return [id, { x: point.x * layout.value.width, y: point.y * layout.value.height }]
 })))
 const links = computed(() => drawTopologyEdges(props.edges, points.value))
+const visibleLegend = computed(() => props.overview
+  ? legend.filter(item => links.value.some(link => link.tone === item.tone))
+  : legend)
 const selectedLink = computed(() => links.value.find(link => link.id === selectedLinkId.value))
 const fitCamera = computed<Camera>(() => {
   let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity
@@ -171,7 +179,7 @@ const fitCamera = computed<Camera>(() => {
   for (const link of links.value) for (const point of link.points) include(point)
   const { width, height } = viewport.value
   const padding = Math.min(64, width * 0.15)
-  const readableScale = Math.min(2.35, Math.max(1.15, Math.min(width / 680, height / 410)))
+  const readableScale = Math.min(MAX_FIT_SCALE, Math.max(1.15, Math.min(width / 680, height / 410)))
   return {
     center: { x: (left + right) / 2, y: (top + bottom) / 2 },
     scale: Math.min(readableScale, (width - padding) / (right - left), Math.max(1, height - 48) / (bottom - top)),
@@ -190,8 +198,13 @@ function zoom(factor: number) {
 }
 
 function selectNode(node: GraphNode) {
+  if (props.overview) return
   selectedLinkId.value = ''
   emit('select', node)
+}
+
+function selectLink(id: string) {
+  if (!props.overview) selectedLinkId.value = id
 }
 
 function selectAccessibleNode(event: MouseEvent, node: GraphNode) {
@@ -199,7 +212,7 @@ function selectAccessibleNode(event: MouseEvent, node: GraphNode) {
 }
 
 function startGesture(event: PointerEvent, node?: GraphNode) {
-  if (event.button !== 0 || gesture.value || !svg.value) return
+  if (props.overview || event.button !== 0 || gesture.value || !svg.value) return
   svg.value.setPointerCapture(event.pointerId)
   gesture.value = {
     pointerId: event.pointerId,
@@ -261,6 +274,7 @@ onUnmounted(() => observer?.disconnect())
 <style scoped>
 .topology-canvas {
   min-width: 0;
+  max-height: 850px;
   display: flex;
   flex: 1 0 auto;
   flex-direction: column;
@@ -274,6 +288,7 @@ onUnmounted(() => observer?.disconnect())
 .canvas-bar,
 .canvas-legend,
 .link-detail { padding: 10px 14px; }
+.canvas-legend { padding-inline-end: 64px; }
 
 .canvas-bar,
 .canvas-actions,
@@ -325,6 +340,9 @@ onUnmounted(() => observer?.disconnect())
   user-select: none;
   cursor: grab;
 }
+.canvas-overview { border: 0; border-radius: 0; }
+.canvas-overview .canvas-surface { min-height: clamp(230px, 31vh, 370px); }
+.canvas-overview .canvas-svg { touch-action: auto; pointer-events: none; }
 .is-panning .canvas-svg { cursor: grabbing; }
 .canvas-node { cursor: grab; outline: none; }
 .canvas-node:active { cursor: grabbing; }

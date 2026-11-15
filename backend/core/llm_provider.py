@@ -2,6 +2,7 @@
 import json
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 import httpx
@@ -16,7 +17,7 @@ logger = get_logger("ai")
 # LLM 健康检查 TTL 缓存：健康接口/系统信息接口每次请求都同步打外部 LLM API
 # （如 GET /v1/models，超时 10s），高并发下会排队阻塞事件循环（实测 30 并发 P95≈42s）。
 # 60 秒窗口内只真正探测一次，失败也缓存（快速降级而非每次等待超时）。
-_LLM_HEALTH_CACHE: dict[str, tuple[float, bool]] = {}
+_LLM_HEALTH_CACHE: dict[str, tuple[float, bool, datetime]] = {}
 _LLM_HEALTH_TTL_SECONDS = 60.0
 
 
@@ -39,8 +40,14 @@ async def cached_llm_health_check(provider: "LLMProvider") -> bool:
     if hit is not None and now - hit[0] < _LLM_HEALTH_TTL_SECONDS:
         return hit[1]
     healthy = await provider.health_check()
-    _LLM_HEALTH_CACHE[key] = (now, healthy)
+    _LLM_HEALTH_CACHE[key] = (now, healthy, datetime.now(timezone.utc))
     return healthy
+
+
+def llm_health_checked_at(provider: "LLMProvider") -> datetime | None:
+    """When this configuration's latest connection probe completed."""
+    hit = _LLM_HEALTH_CACHE.get(_llm_health_cache_key(provider))
+    return hit[2] if hit is not None else None
 
 
 class LLMUnavailableError(RuntimeError):

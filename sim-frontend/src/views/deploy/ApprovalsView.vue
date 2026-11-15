@@ -2,28 +2,28 @@
   <div class="approvals-view v7b-page">
     <PageHeader
       title="变更审批"
-      subtitle="审批只记录结论并取得设备写锁，不会自动执行；高风险动作需要人工二次确认。"
+      subtitle="先核对任务和目标设备，再确认、执行、查看验证结果。确认后会锁定设备，等待你单独执行。"
     />
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
           <div>
-            <span class="title">变更审批</span>
-            <span class="subtitle">待确认 / 待执行 / 执行中的下发任务（高风险任务需二次确认）</span>
+            <span class="title">按设备处理变更</span>
+            <span class="subtitle">同一批次的每台设备都有独立的确认和结果</span>
           </div>
           <div class="header-actions">
             <el-select v-model="statusFilter" size="small" style="width: 150px" @change="loadTasks">
               <el-option label="全部待处理" value="" />
-              <el-option label="等待确认" value="awaiting_confirmation" />
-              <el-option label="已确认待执行" value="confirmed" />
-              <el-option label="执行中" value="deploying" />
+              <el-option label="待确认" value="awaiting_review" />
+              <el-option label="已确认，待执行" value="confirmed" />
+              <el-option label="执行中或待验证" value="deploying" />
               <el-option label="已完成" value="success" />
               <el-option label="失败" value="failed" />
               <el-option label="已回滚" value="rolled_back" />
             </el-select>
             <el-button size="small" :loading="loading" @click="loadTasks">刷新</el-button>
             <el-button size="small" type="primary" @click="router.push({ path: '/deploy', query: { tab: 'tasks' } })">
-              去下发中心
+              查看配置批次
             </el-button>
           </div>
         </div>
@@ -36,16 +36,16 @@
           <el-empty :image-size="72">
             <template #description>
               <div class="empty-desc">
-                <p>{{ taskLoadError || (tasks.length?'当前来源筛选没有匹配任务，可恢复全部来源。':'当前没有待处理的变更任务。') }}</p>
-                <p v-if="!taskLoadError">待审批任务有两个来源：在「配置下发 → 新建任务」创建的下发任务；在「配置管理」对某个快照点「回滚」生成的高风险回滚任务。</p>
+                <p>{{ taskLoadError || (tasks.length ? '当前来源筛选没有匹配任务。' : statusFilter ? '当前没有符合这个状态的任务。' : '当前没有待处理的变更任务。') }}</p>
+                <p v-if="!taskLoadError && !statusFilter && !tasks.length">在「配置下发」提交变更后，可以来这里核对每台设备的任务。</p>
               </div>
             </template>
             <el-button v-if="!taskLoadError" type="primary" @click="router.push({ path: '/deploy', query: { tab: 'deploy' } })">去配置下发</el-button>
-            <el-button v-if="!taskLoadError" @click="router.push('/config-versions')">去配置管理</el-button>
+            <el-button v-if="!taskLoadError" @click="router.push('/config-versions')">去配置版本</el-button>
           </el-empty>
         </template>
-        <el-table-column prop="id" label="任务" width="80">
-          <template #default="{ row }">#{{ row.id }}</template>
+        <el-table-column label="任务" min-width="155">
+          <template #default="{ row }"><strong>{{ row.batch_name || `配置任务 #${row.id}` }}</strong><div v-if="row.batch_name" class="task-number">任务 #{{ row.id }}</div></template>
         </el-table-column>
         <el-table-column label="设备" min-width="140">
           <template #default="{ row }">{{ deviceName(row.device_id) }}</template>
@@ -76,7 +76,7 @@
               type="primary"
               :loading="actingId === row.id"
               @click="approve(row)"
-            >{{ row.change_level === 'high_risk' ? '高风险确认' : '确认' }}</el-button>
+            >{{ row.change_level === 'high_risk' ? '高风险确认' : '确认变更' }}</el-button>
             <!-- 确认之后必须能继续执行/验证：回滚任务没有批次，配置下发页看不到它，
                  此前确认完就成死路（2026-10-05 审计发现） -->
             <el-button
@@ -119,7 +119,7 @@
       <el-descriptions v-if="verifyReport" :column="2" border size="small">
         <el-descriptions-item label="执行模式">{{ modeLabel(verifyReport.mode) }}</el-descriptions-item>
         <el-descriptions-item label="验证结果">{{ verificationLabel(verifyReport.verification) }}</el-descriptions-item>
-        <el-descriptions-item label="处理结果">{{ resultLabel(verifyReport.result) }}</el-descriptions-item>
+        <el-descriptions-item label="处理结果">{{ verifyReport.mode === 'simulated' && verifyReport.result === 'no_readback' ? '模拟已完成' : resultLabel(verifyReport.result) }}</el-descriptions-item>
         <el-descriptions-item label="回滚">{{ rollbackLabel(verifyReport.rollback) }}</el-descriptions-item>
         <el-descriptions-item v-if="verifyReport.error_message" label="异常说明">{{ executionErrorLabel(verifyReport.error_message) }}</el-descriptions-item>
       </el-descriptions>
@@ -127,15 +127,18 @@
         <div class="block-title">回读差异</div>
         <pre class="config-text">{{ verifyReport.verify_diff }}</pre>
       </div>
-      <p class="verify-tip">
-        模拟模式（DEPLOY_SIMULATE_ONLY=true）不会回读设备，报告中的"未回读"属正常；真实下发才会产生回读与差异比对。
-      </p>
-      <template #footer><el-button @click="verifyVisible = false">关闭</el-button></template>
+      <p v-if="verifyReport?.mode === 'simulated'" class="verify-tip">这次执行是模拟演练。设备配置未写入，因此没有设备回读可以核对。</p>
+      <p v-else-if="verifyReport?.verification === 'passed'" class="verify-tip">本任务的设备回读已与预期配置比对。可在「配置版本」查看同一任务的备份和变更记录。</p>
+      <template #footer>
+        <el-button v-if="verifiedTaskId" @click="openChangeRecord">查看变更记录</el-button>
+        <el-button @click="verifyVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="detailVisible" class="v7b-record-dialog" top="4vh" :title="detail ? `任务 #${detail.id} 详情` : '任务详情'" width="min(720px, 94vw)" draggable>
       <div v-if="detail" class="detail-body">
         <el-descriptions :column="2" border size="small">
+          <el-descriptions-item v-if="detail.batch_name" label="任务名称" :span="2">{{ detail.batch_name }}</el-descriptions-item>
           <el-descriptions-item label="设备">{{ deviceName(detail.device_id) }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ statusLabel(detail.status) }}</el-descriptions-item>
           <el-descriptions-item label="风险级别">{{ changeLevelLabel(detail.change_level) }}</el-descriptions-item>
@@ -143,7 +146,7 @@
           <el-descriptions-item label="创建时间">{{ formatTime(detail.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="确认人">{{ detail.confirmed_by ? `用户 #${detail.confirmed_by}` : '未记录' }}</el-descriptions-item>
           <el-descriptions-item label="确认时间">{{ formatTime(detail.confirmed_at || '') }}</el-descriptions-item>
-          <el-descriptions-item label="执行模式" :span="2">{{ executionModeLabel(detail.execution_mode) }}</el-descriptions-item>
+          <el-descriptions-item v-if="detail.execution_mode" label="执行模式" :span="2">{{ executionModeLabel(detail.execution_mode) }}</el-descriptions-item>
         </el-descriptions>
         <div class="config-block">
           <div class="block-title">任务配置脚本 · {{ statusLabel(detail.status) }}</div>
@@ -154,7 +157,8 @@
           <pre class="config-text">{{ detail.verify_diff }}</pre>
         </div>
         <div v-if="detail.error_message" class="config-block"><div class="block-title">执行或恢复异常</div><pre class="config-text">{{ detail.error_message }}</pre></div>
-        <p class="verify-tip">确认只记录审批并取得写锁；执行、回读与恢复须查看该任务保存的结果。当前开关不能补写历史执行模式。</p>
+        <p v-if="CONFIRMABLE.includes(detail.status)" class="verify-tip">核对目标和脚本后点「确认变更」。确认会锁定设备，配置在下一步「执行」时才处理。</p>
+        <p v-else-if="detail.status === 'confirmed'" class="verify-tip">任务已确认。现在可以执行，之后在同一任务上查看验证结果。</p>
       </div>
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
@@ -163,7 +167,12 @@
           type="primary"
           :loading="actingId === detail.id"
           @click="approve(detail)"
-        >确认下发</el-button>
+        >确认变更</el-button>
+        <el-button v-if="detail?.status === 'confirmed'" type="primary" :loading="actingId === detail.id" @click="execute(detail)">执行</el-button>
+        <el-button
+          v-if="detail && ['deploying', 'success', 'failed', 'rolled_back'].includes(detail.status)"
+          type="primary" :loading="actingId === detail.id" @click="verify(detail)"
+        >{{ detail.status === 'deploying' ? '验证' : '查看结果' }}</el-button>
         <el-button
           v-if="detail && isCancelable(detail.status)"
           type="danger"
@@ -179,8 +188,8 @@
 <script setup lang="ts">
 import PageHeader from '../../components/v7b/PageHeader.vue'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { notifyRequestError } from '../../utils/requestError'
@@ -188,7 +197,7 @@ import { confirmWithRisk } from '../../utils/deployConfirmation'
 import { formatApiTime } from '../../utils/datetime'
 import { getDeployTask, getDeployTasks, confirmDeployTask, cancelDeployTask, executeDeployTask, verifyDeployTask } from '../../api/deploy'
 import { getDevices, type DeviceRecord } from '../../api/device'
-import { executionModeLabel, savedVerificationState } from '../../utils/display'
+import { deployTaskStatusLabel as statusLabel, executionModeLabel, savedVerificationState } from '../../utils/display'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
 
@@ -196,6 +205,7 @@ interface DeployTaskRow {
   record_origin?: string
   id: number
   device_id: number
+  batch_name?: string | null
   status: string
   change_level?: string
   engine?: string
@@ -210,6 +220,7 @@ interface DeployTaskRow {
 }
 
 const router = useRouter()
+const route = useRoute()
 const tasks = ref<DeployTaskRow[]>([])
 const originFilter=ref('all')
 const visibleTasks=computed(()=>filterByRecordOrigin(tasks.value,originFilter.value))
@@ -220,20 +231,20 @@ const taskLoadError = taskRequest.error
 const actingId = ref<number | null>(null)
 const detailVisible = ref(false)
 const detail = ref<DeployTaskRow | null>(null)
-const statusFilter = ref('')
+const allowedFilters = ['awaiting_review', 'confirmed', 'deploying', 'success', 'failed', 'rolled_back']
+const statusFilterFromRoute = () => allowedFilters.find(value => value === route.query.status) || ''
+const statusFilter = ref(statusFilterFromRoute())
 const verifyVisible = ref(false)
 const verifyReport = ref<any>(null)
 const verifyTitle = ref('验证报告')
+const verifiedTaskId = ref<number | null>(null)
 
 const PENDING_STATUSES = ['pending', 'awaiting_confirmation', 'confirmed', 'deploying', 'verifying']
+const CONFIRMABLE = ['pending', 'awaiting_confirmation']
 const CANCELABLE = ['pending', 'awaiting_confirmation', 'confirmed']
 
 const deviceName = (id: number) => devices.value.find(item => item.id === id)?.hostname || `设备 ${id}`
 const isCancelable = (status: string) => CANCELABLE.includes(status)
-const statusLabel = (status: string) => ({
-    pending: '等待中', awaiting_confirmation: '待确认', confirmed: '已确认待执行',
-    deploying: '执行中 / 待验证', verifying: '验证中', success: '已完成', failed: '失败', rolled_back: '已回滚', cancelled: '已取消',
-} as Record<string, string>)[status] || status
 const statusClass = (status: string) => ['success'].includes(status) ? 'ok-text'
   : ['failed'].includes(status) ? 'danger-text'
     : ['awaiting_confirmation', 'pending'].includes(status) ? 'warn-text' : 'cyan-text'
@@ -258,25 +269,29 @@ const rollbackLabel = (r: string) => ({
 } as Record<string, string>)[r] || (r ? r : '无需回滚')
 
 const loadTasks = async () => {
+  const filter = statusFilter.value
   await taskRequest.run(() => Promise.all([
-      getDeployTasks(statusFilter.value ? { status: statusFilter.value } : undefined),
+      getDeployTasks(filter && filter !== 'awaiting_review' ? { status: filter } : undefined),
       devices.value.length ? Promise.resolve(devices.value) : getDevices(),
     ]), ([taskList, deviceList]) => {
     devices.value = deviceList as DeviceRecord[]
     const rows = (Array.isArray(taskList) ? taskList : []) as DeployTaskRow[]
     // 默认只看待处理；选「已完成」时看终态，否则终态任务会"确认完就消失"、结果无处可查
-    tasks.value = statusFilter.value
-      ? rows
-      : rows.filter(row => PENDING_STATUSES.includes(row.status))
+    const statuses = filter === 'awaiting_review' ? CONFIRMABLE : filter ? [filter] : PENDING_STATUSES
+    tasks.value = rows.filter(row => statuses.includes(row.status))
   })
 }
 
-const openDetail = async (row: DeployTaskRow) => {
+let detailRequest = 0
+const openDetail = async (row: { id: number }) => {
+  const request = ++detailRequest
   try {
-    detail.value = await getDeployTask(row.id) as DeployTaskRow
+    const item = await getDeployTask(row.id) as DeployTaskRow
+    if (request !== detailRequest) return
+    detail.value = item
     detailVisible.value = true
   } catch (error) {
-    notifyRequestError(error, '加载任务详情失败')
+    if (request === detailRequest) notifyRequestError(error, '加载任务详情失败')
   }
 }
 
@@ -288,12 +303,13 @@ const approve = async (row: DeployTaskRow) => {
       () => ElMessageBox.confirm(
         `任务 #${row.id}（${deviceName(row.device_id)}）为高风险变更，确认只记录审批结论并取得设备写锁，不会自动执行；执行请在审批通过后单独点「执行」。是否继续？`,
         '高风险二次确认',
-        { type: 'warning', confirmButtonText: '确认下发', cancelButtonText: '取消' },
+        { type: 'warning', confirmButtonText: '确认变更', cancelButtonText: '取消' },
       ),
     )
     ElMessage.success(riskConfirmed ? '已二次确认并取得写锁；请点「执行」下发' : '已确认并取得写锁；请点「执行」下发')
-    detailVisible.value = false
+    if (statusFilter.value === 'awaiting_review') statusFilter.value = 'confirmed'
     await loadTasks()
+    if (detailVisible.value && detail.value?.id === row.id) await openDetail(row)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') notifyRequestError(error, '确认失败')
   } finally {
@@ -310,8 +326,9 @@ const execute = async (row: DeployTaskRow) => {
     else ElMessage.success(result.mode === 'simulated'
       ? '已执行（模拟）；接下来点「验证」查看模拟结果'
       : '已执行下发；接下来点「验证」核对设备回读')
+    if (statusFilter.value === 'confirmed') statusFilter.value = result.error_category ? 'failed' : 'deploying'
     await loadTasks()
-    if (detailVisible.value) await openDetail(row)
+    if (detailVisible.value && detail.value?.id === row.id) await openDetail(row)
   } catch (error) {
     notifyRequestError(error, '执行失败')
   } finally {
@@ -336,13 +353,22 @@ const verify = async (row: DeployTaskRow) => {
       verify_diff: saved.verify_diff, error_message: saved.error_message,
     }
     verifyTitle.value = `验证报告 · 任务 #${row.id}（${deviceName(row.device_id)}）`
+    verifiedTaskId.value = row.id
+    detailVisible.value = false
     verifyVisible.value = true
+    if (allowedFilters.includes(saved.status)) statusFilter.value = saved.status
     await loadTasks()
   } catch (error) {
     notifyRequestError(error, '验证失败')
   } finally {
     actingId.value = null
   }
+}
+
+function openChangeRecord() {
+  if (!verifiedTaskId.value) return
+  verifyVisible.value = false
+  void router.push({ path: '/config-versions', query: { tab: 'logs', from: 'approval', task_id: verifiedTaskId.value } })
 }
 
 const cancel = async (row: DeployTaskRow) => {  try {
@@ -367,7 +393,21 @@ const cancel = async (row: DeployTaskRow) => {  try {
   }
 }
 
-onMounted(loadTasks)
+function openLinkedTask() {
+  if (route.path !== '/approvals') return
+  const id = Number(route.query.task_id)
+  if (Number.isSafeInteger(id) && id > 0) void openDetail({ id })
+}
+watch(() => route.query.status, () => {
+  statusFilter.value = statusFilterFromRoute()
+  void loadTasks()
+})
+watch(() => route.query.task_id, openLinkedTask)
+onMounted(() => {
+  void loadTasks()
+  openLinkedTask()
+})
+onUnmounted(() => { detailRequest++ })
 </script>
 
 <style scoped>
@@ -375,6 +415,7 @@ onMounted(loadTasks)
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .card-header .title { font-size: 14px; font-weight: 600; }
 .card-header .subtitle { margin-left: 10px; color: var(--v7b-muted); font-size: 11px; }
+.task-number { color: var(--v7b-muted); font-size: 11px; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .ok-text { color: var(--v7b-ok); }
 .warn-text { color: var(--v7b-warn); }

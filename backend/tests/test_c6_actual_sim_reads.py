@@ -10,7 +10,7 @@ from modules.ai_text.context_bundle import prepare_sources
 async def test_actual_sim_ipv4_route_read_contains_fields_instead_of_generic_ack():
     output=await SimDeviceAdapter('R-3').run_command('display ip routing-table')
     assert 'Destination/Mask' in output and 'Direct' in output
-    assert 'GigabitEthernet0/0/0' in output and '10.0.123.0/24' in output
+    assert 'GE3/0/3' in output and '10.0.23.0/24' in output
     assert 'Info: (sim) 已执行' not in output
 
 @pytest.mark.asyncio

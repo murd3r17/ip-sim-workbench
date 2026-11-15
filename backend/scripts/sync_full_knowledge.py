@@ -101,7 +101,8 @@ def persist_source(path: Path, metadata: dict, uploads: Path, name: str, content
     return f"custom-documents/{path.name}"
 
 
-async def sync(provider, stage: Path, storage: Path, corpus: Path, *, apply: bool, expected: int = 135) -> dict:
+async def sync(provider, stage: Path, storage: Path, corpus: Path, *, apply: bool,
+               expected: int = 135, verify_search: bool = True) -> dict:
     version, rows = load_manifest(stage, corpus, expected)
     workspace = await provider.get_workspace()
     slug = provider.workspace_slug
@@ -161,13 +162,15 @@ async def sync(provider, stage: Path, storage: Path, corpus: Path, *, apply: boo
             require(doc["id"] == state["verified"][row["file"]]["id"], "workspace_document_identity_conflict")
             source = await provider.read_document(None, doc)
             require(source["version"] == row["sha256"] and source["content"].strip(), "persistent_source_hash_mismatch")
-        for query in QUERIES:
-            sources = await provider.search(query, top_k=8)
-            found = [item for item in sources if item.get("text", "").strip()
-                     and (item.get("title") in final or item.get("title") in {doc["id"] for doc in docs})]
-            require(bool(found), "workspace_vector_search_unverified")
-            state["search"].append({"query": query, "source_count": len(found)})
-        state.update(status="VERIFIED", document_count=expected)
+        if verify_search:
+            ids = {doc["id"] for doc in docs}
+            for query in QUERIES:
+                sources = await provider.search(query, top_k=8)
+                found = [item for item in sources if item.get("text", "").strip()
+                         and (item.get("title") in final or item.get("title") in ids)]
+                require(bool(found), "workspace_vector_search_unverified")
+                state["search"].append({"query": query, "source_count": len(found)})
+        state.update(status="VERIFIED" if verify_search else "IMPORTED", document_count=expected)
         state.pop("current", None)
     except BaseException:
         state["status"] = "INCOMPLETE"

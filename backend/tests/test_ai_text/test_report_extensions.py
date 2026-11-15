@@ -118,6 +118,30 @@ async def _seed_versions(session_factory) -> tuple[int, int]:
 
 class TestInspectionSummary:
     @pytest.mark.asyncio
+    async def test_no_observations_shows_coverage_without_model(self, client, test_session_factory, monkeypatch):
+        token = await _admin_token(test_session_factory)
+        job_id = await _seed_job(test_session_factory)
+        async with test_session_factory() as db:
+            job = await db.get(MonitorJob, job_id)
+            job.status = MonitorJobStatus.FAILED
+            job.success_count = 0
+            job.failure_count = 1
+            job.summary_json = json.dumps({"skipped": 2, "errors": ["R1: 未验证管理连接"]})
+            await db.commit()
+        build = AsyncMock(side_effect=AssertionError("No device observation to send"))
+        monkeypatch.setattr(SystemService, "build_llm_provider", build)
+        response = await client.post(
+            "/api/v1/ai/inspection-summary", json={"job_id": job_id}, headers=_auth(token)
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["basis"] == "no_current_observations"
+        assert body["coverage"]["skipped"] == 2
+        assert "未知" in body["summary"]
+        assert body["root_causes"] == []
+        build.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_returns_report_and_passes_job_payload(self, client, test_session_factory, monkeypatch):
         token = await _admin_token(test_session_factory)
         job_id = await _seed_job(test_session_factory)

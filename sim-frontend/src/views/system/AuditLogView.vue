@@ -55,7 +55,21 @@
       />
     </el-card>
     <el-dialog v-model="detailVisible" class="v7b-record-dialog" top="4vh" title="审计记录详情" width="min(820px, 94vw)">
-      <template v-if="currentLog"><el-descriptions :column="2" border><el-descriptions-item label="记录">#{{ currentLog.id }}</el-descriptions-item><el-descriptions-item label="用户">{{ currentLog.username }}</el-descriptions-item><el-descriptions-item label="操作">{{ auditActionLabel(currentLog.action) }}</el-descriptions-item><el-descriptions-item label="原始动作码">{{ currentLog.action }}</el-descriptions-item><el-descriptions-item label="对象">{{ currentLog.resource_type }} #{{ currentLog.resource_id }}</el-descriptions-item><el-descriptions-item label="记录时间">{{ formatTime(currentLog.created_at) }}</el-descriptions-item></el-descriptions><p>审计记录说明谁在何时进行了操作；审批记录不等于设备已执行，执行及恢复以任务结果为准。</p><pre class="audit-detail">{{ formatDetail(currentLog.detail) }}</pre></template>
+      <template v-if="currentLog">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="记录">#{{ currentLog.id }}</el-descriptions-item>
+          <el-descriptions-item label="用户">{{ currentLog.username }}</el-descriptions-item>
+          <el-descriptions-item label="操作">{{ auditActionLabel(currentLog.action) }}</el-descriptions-item>
+          <el-descriptions-item label="对象">{{ currentLog.resource_type || '未记录' }}{{ currentLog.resource_id ? ` #${currentLog.resource_id}` : '' }}</el-descriptions-item>
+          <el-descriptions-item label="记录时间">{{ formatTime(currentLog.created_at) }}</el-descriptions-item>
+        </el-descriptions>
+        <p v-if="actionHelp[currentLog.action]">{{ actionHelp[currentLog.action] }}</p>
+        <details class="audit-raw">
+          <summary>诊断详情</summary>
+          <p>原始动作码 {{ currentLog.action }}</p>
+          <pre class="audit-detail">{{ formatDetail(currentLog.detail) }}</pre>
+        </details>
+      </template>
       <template #footer><el-button @click="detailVisible=false">返回</el-button></template>
     </el-dialog>
   </div>
@@ -80,6 +94,13 @@ const loading = auditRequest.loading
 const loadError = auditRequest.error
 const detailVisible=ref(false),currentLog=ref<AuditLog|null>(null)
 const formatDetail=(value:string|null)=>{try{return JSON.stringify(JSON.parse(value||''),null,2)}catch{return value||'无附加详情'}}
+const actionHelp: Record<string, string> = {
+  device_health_check: '这次检查探测设备管理连接。各设备上次可达时间和新的探测结果在设备页查看。',
+  deploy_task_confirmed: '该动作记录人工确认。实际执行、保存与回读请在配置下发的任务详情中查看。',
+  deploy_task_cancelled: '该动作记录取消。请在任务详情核对取消前是否有已执行的设备子任务。',
+  alarm_acknowledged: '该动作记录接手告警。当前设备状态以最近的监控采样为准。',
+  llm_test: '该动作测试模型服务连通性。对话生成结果在助手的对应请求中查看。',
+}
 const page = ref(1)
 const total = ref(0)
 const filterModule = ref('')
@@ -103,5 +124,6 @@ onMounted(loadLogs)
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; flex-wrap:wrap;gap:12px }
 .filters { display: flex; align-items: center; }
+.audit-raw { margin-top: 12px; }
 .audit-detail { max-height:50vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--v7b-surface-2);padding:12px;color:var(--v7b-text);font-size:13px;line-height:1.7 }
 </style>

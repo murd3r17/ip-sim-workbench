@@ -60,13 +60,25 @@ def sections(content: str) -> list[dict[str, Any]]:
 
 
 def document_payload(document: dict, raw: bytes, modified_at: str | None,
-                     source_kind: str) -> dict:
+                     source_kind: str, *, allow_navigation: bool = False) -> dict:
     # Reuse the exact corpus frontmatter contract; never rewrite the source text.
     from .local_provider import _frontmatter
-    metadata, body = _frontmatter(raw.decode('utf-8-sig'))
+    from .reviewed_source_notes import notes_for_excerpt
+    from core.markdown_blocks import unclosed_fence_start
+
+    # Some persisted imports have leading blank lines before their metadata.
+    decoded = raw.decode('utf-8-sig')
+    candidate = decoded.lstrip("\r\n")
+    metadata, body = _frontmatter(candidate)
     metadata = {**(document.get('metadata') or {}), **metadata}
-    if str(metadata.get('ingest', 'true')).lower() != 'true':
+    if not allow_navigation and str(metadata.get('ingest', 'true')).lower() != 'true':
         raise DocumentReadError('document_revoked', '资料已撤回，不再展示正文。', 410)
+    filename = document.get('filename') or document.get('title')
+    version = hashlib.sha256(raw).hexdigest()
+    warnings = (
+        ["源文件末尾的代码或图示没有闭合。该段内容可能不完整，请以原教材为准。"]
+        if unclosed_fence_start(body) is not None else []
+    )
     return {
         'id': str(document['id']), 'filename': document.get('filename') or document.get('title'),
         'title': metadata.get('title') or document.get('title') or document.get('filename'),
@@ -74,10 +86,11 @@ def document_payload(document: dict, raw: bytes, modified_at: str | None,
         'doc_id': metadata.get('doc_id') or document.get('doc_id'),
         'seq': metadata.get('seq'), 'source_pdf': metadata.get('source_pdf'),
         'source_path': document.get('source_path'), 'source_kind': source_kind,
-        'version': hashlib.sha256(raw).hexdigest(), 'size': len(raw), 'page': None,
+        'version': version, 'size': len(raw), 'page': None,
         'modified_at': modified_at, 'created_at': None,
         'metadata': {k: metadata.get(k) for k in ('track', 'level', 'doc_type', 'quality', 'language', 'vendor')},
         'scope': 'current_document', 'content': body, 'sections': sections(body), 'truncated': False,
+        'warnings': warnings, 'reviewed_notes': notes_for_excerpt(filename or "", body, version),
         'message': '当前持久源文件全文；与原回答保存的片段版本分别记录。页码未建立可靠映射。',
     }
 

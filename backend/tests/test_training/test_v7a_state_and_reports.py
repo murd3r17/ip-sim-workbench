@@ -205,9 +205,9 @@ async def test_completed_and_abandoned_sessions_are_read_only(client, test_sessi
     detail = await client.get(f"/api/v1/training/sessions/{second}", headers=auth_header(token))
     assert detail.json()["status"] == "abandoned"
     assert detail.json()["is_active"] is False
-    # 会话固定了开始时的步骤快照；管理员自建实验没有注册内容版本时为 None（不能伪造版本）
+    # 自建实验的新会话按开始时的内容生成版本，已有历史快照保持原样。
     assert detail.json()["content_snapshot"]["objectives"]
-    assert detail.json()["content_version"] in (None, "v7a.2026-10-26")
+    assert detail.json()["content_version"].startswith("local-")
 
 
 @pytest.mark.asyncio
@@ -316,9 +316,10 @@ async def test_draft_is_refused_without_verified_environment_binding(client, tes
         actor = {'user_id': session.trainee_id, 'role': 'user'}
         policy = await _lab_draft_policy(db, request, actor)
         assert policy["allow_draft"] is False
+        assert policy["allow_model"] is False
         # D01: this session froze the original empty requirements; later edits
         # must not silently change its permissions or historical meaning.
-        assert "没有可信的环境绑定信息" in policy["reason"]
+        assert "当前会话没有可核对的设备与接口映射" in policy["reason"]
 
         lab.environment_spec = {
             "requires_binding": True,

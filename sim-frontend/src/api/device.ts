@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios'
 import request from './request'
 
 export interface DeviceRecord {
@@ -6,6 +7,8 @@ export interface DeviceRecord {
   mgmt_ip: string
   ssh_port?: number
   status: string
+  last_seen_at?: string | null
+  status_changed_at?: string | null
   device_type: string
   vendor?: string
   model?: string
@@ -117,8 +120,8 @@ export interface TopologyLayout {
   published_positions: Record<string, TopologyLayoutPosition>
 }
 
-export const getDevices = (params?: { topology_id?: number; status?: string }) =>
-  request.get<DeviceRecord[], DeviceRecord[]>('/devices', { params })
+export const getDevices = (params?: { topology_id?: number; status?: string }, config?: AxiosRequestConfig) =>
+  request.get<DeviceRecord[], DeviceRecord[]>('/devices', { ...config, params })
 
 export const getDevice = (id: number) => request.get<DeviceRecord, DeviceRecord>(`/devices/${id}`)
 
@@ -128,8 +131,14 @@ export const updateDevice = (id: number, data: any) => request.put(`/devices/${i
 
 export const deleteDevice = (id: number) => request.delete(`/devices/${id}`)
 
+export interface DeviceHealthResult {
+  total: number
+  checked_at?: string
+  results: { device_id?: number; hostname: string; status: string; mode?: string; reason?: string | null }[]
+}
+
 export const checkDevicesHealth = (topologyId?: number) =>
-  request.post<{ total: number; results: { hostname: string; status: string }[] }, { total: number; results: { hostname: string; status: string }[] }>(
+  request.post<DeviceHealthResult, DeviceHealthResult>(
     '/devices/health-check',
     undefined,
     { params: topologyId ? { topology_id: topologyId } : undefined },
@@ -139,8 +148,8 @@ export const getTopologies = () => request.get<TopologyRecord[], TopologyRecord[
 
 export const createTopology = (data: any) => request.post('/topologies', data)
 
-export const getTopologyLinks = (topologyId: number) =>
-  request.get<TopologyLinkRecord[], TopologyLinkRecord[]>(`/topologies/${topologyId}/links`)
+export const getTopologyLinks = (topologyId: number, config?: AxiosRequestConfig) =>
+  request.get<TopologyLinkRecord[], TopologyLinkRecord[]>(`/topologies/${topologyId}/links`, config)
 
 export const getTopologyLayout = (topologyId: number) =>
   request.get<TopologyLayout, TopologyLayout>(`/topologies/${topologyId}/layout`)

@@ -104,7 +104,7 @@ export const useLabContextStore = defineStore('labContext', () => {
     persist('lab_ctx_modes', modeFacts.value)
 
     const copilot = useAiCopilotStore()
-    copilot.setNotes(`当前实训：${payload.labTitle}（session=${payload.sessionId}）`)
+    copilot.linkLab(payload.sessionId)
     copilot.setOpen(true)
   }
 

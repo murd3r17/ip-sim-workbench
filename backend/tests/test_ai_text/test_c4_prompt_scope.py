@@ -32,3 +32,17 @@ def test_skill_system_rules_are_server_owned_and_simple_help_omits_telemetry():
 
 def test_page_starter_is_not_a_knowledge_query():
     assert select_skill("设备页是做什么的？").id == "page_help"
+
+
+def test_explicit_request_to_ignore_the_current_lab_omits_old_objects_and_history():
+    question = "Router ID 与接口地址有什么关系？不用结合当前实验。"
+    steps = [{"id": 1, "name": "PRIVATE_STEP"}]
+    choice = select_skill(question, lab_steps=steps)
+    assert choice.reason == "explicit_concepts_only"
+    service = LLMService(db=None, user_id=1, provider=object())
+    prompt = service._build_copilot_prompt(question, [], {
+        "skill_id": choice.id, "selection": "PRIVATE_DEVICE", "notes": "PRIVATE_NOTES",
+        "server_lab_content": {"title": "PRIVATE_LAB"},
+    }, history=[{"role": "user", "content": "PRIVATE_HISTORY"}], page_data="PRIVATE_OBSERVATION", lab_steps=steps)
+    assert question in prompt
+    assert "PRIVATE_" not in prompt

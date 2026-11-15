@@ -1,5 +1,5 @@
 <template>
-  <aside class="copilot" :class="{ collapsed: !store.open, focused: !!preFocusWidth }" :style="panelStyle">
+  <aside id="workbench-assistant" class="copilot" aria-label="AI 助手" :class="{ collapsed: !store.open, focused: !!preFocusWidth }" :style="panelStyle">
     <button v-if="!store.open" class="copilot-fab" title="打开 AI 助手" @click="store.setOpen(true)">AI</button>
 
     <template v-else>
@@ -14,8 +14,8 @@
         <div class="header-actions">
           <button class="icon-btn header-text" aria-label="新对话" title="新对话" @click="onNewChat">新建</button>
           <button class="icon-btn header-text" aria-label="历史对话" title="历史对话" :class="{ on: store.historyOpen }" @click="store.toggleHistory()">历史</button>
-          <button class="icon-btn" :aria-label="preFocusWidth ? '恢复宽度' : '专注展开'" :title="preFocusWidth ? '恢复宽度' : '专注展开'" @click="toggleFocus">{{ preFocusWidth ? '▣' : '⛶' }}</button>
-          <el-dropdown trigger="click" @command="onDisplayCommand">
+          <button class="icon-btn" :aria-label="preFocusWidth ? '恢复面板大小' : '专注展开'" :title="preFocusWidth ? '恢复面板大小' : '专注展开'" @click="toggleFocus">{{ preFocusWidth ? '▣' : '⛶' }}</button>
+          <el-dropdown class="display-settings" trigger="click" @command="onDisplayCommand">
             <button class="icon-btn" aria-label="助手显示设置" title="助手显示设置">⋯</button>
             <template #dropdown>
               <el-dropdown-menu>
@@ -73,7 +73,7 @@
           <button class="page-pill" type="button" :title="pageMeta.title" @click="askAboutPage">
             {{ pageMeta.title }}
           </button>
-          <span v-if="labCtx.hasLab" class="ctx-chip">
+          <span v-if="labLinked" class="ctx-chip">
             <button
               class="lab-pill"
               type="button"
@@ -88,6 +88,7 @@
               @click.stop="clearLab"
             >×</button>
           </span>
+          <button v-else-if="labCtx.isActive" class="page-pill" type="button" @click="linkCurrentLab">关联当前实训</button>
           <span v-if="store.selection" class="ctx-chip">
             <button
               class="sel-pill"
@@ -124,7 +125,7 @@
           >
             {{ chip.label }}
           </button>
-          <button class="chip chip-vision" type="button" :disabled="store.loading" @click="pickFile">
+          <button v-if="visionEnabled" class="chip chip-vision" type="button" :disabled="store.loading" @click="pickFile">
             发截图解读
           </button>
         </div>
@@ -133,7 +134,7 @@
       <!-- 已有对话：紧凑联动条 -->
       <div v-else class="live-bar">
         <button class="page-pill sm" type="button" @click="askAboutPage">{{ pageMeta.title }}</button>
-        <span v-if="labCtx.hasLab" class="ctx-chip">
+        <span v-if="labLinked" class="ctx-chip">
           <button
             class="lab-pill sm"
             type="button"
@@ -148,6 +149,7 @@
             @click.stop="clearLab"
           >×</button>
         </span>
+        <button v-else-if="labCtx.isActive" class="page-pill sm" type="button" @click="linkCurrentLab">关联当前实训</button>
         <span v-if="store.selection" class="ctx-chip">
           <button
             class="sel-pill sm"
@@ -177,8 +179,8 @@
 
       <div ref="listEl" class="messages">
         <div v-if="!store.messages.length" class="empty">
-          <p>结合左侧当前模块提问；生成的 CLI 需你在 WebSSH / 配置下发中亲自确认。</p>
-          <p class="empty-tip">支持粘贴/上传截图或文本文件（拓扑、告警、CLI 输出、配置），我可帮你解读。</p>
+          <p>可以问当前页面怎么操作，或请助手解读选中的设备与证据。</p>
+          <p class="empty-tip">{{ visionEnabled ? '可以添加截图或文本文件供助手解读。' : '可添加终端输出或配置等文本文件。' }}</p>
         </div>
         <div
           v-for="msg in store.messages"
@@ -197,28 +199,23 @@
             />
             <template v-else-if="msg.role === 'user'">
               <div v-if="msg.attachments?.length" class="msg-attachments">
-                <img
-                  v-for="(att, i) in msg.attachments"
-                  :key="i"
-                  :src="att.contentString"
-                  alt="att"
-                  class="msg-img"
-                  @click="zoomImage(att.contentString)"
-                />
-                <span
-                  v-for="(att, i) in textAttachments(msg)"
-                  :key="'t' + i"
-                  class="msg-file-tag"
-                  :title="att.name"
-                >{{ att.name }}</span>
+                <template v-for="(att, i) in msg.attachments" :key="i">
+                  <button v-if="isImageAttachment(att) && att.contentString" class="msg-file-tag" type="button"
+                    :aria-label="'查看图片 ' + (att.name || '附件')" @click="zoomImage(att.contentString)">
+                    <img :src="att.contentString" :alt="att.name || '已发送图片'" class="msg-img" />
+                  </button>
+                  <button v-else class="msg-file-tag" type="button" @click="openAttachment(msg, i)">
+                    {{ att.name || '附件' }}
+                  </button>
+                </template>
               </div>
               <pre class="text">{{ msg.content }}</pre>
             </template>
             <span v-if="msg.streaming && msg.content" class="caret" />
-            <div v-if="msg.sources?.length && !msg.streaming" class="sources">
-              <div class="sources-title">来源</div>
+            <div v-if="answerSources(msg).length && !msg.streaming" class="sources">
+              <div class="sources-title">回答引用</div>
               <button
-                v-for="(s, i) in msg.sources"
+                v-for="{ source: s, index: i } in answerSources(msg)"
                 :key="i"
                 class="source-item source-link"
                 type="button"
@@ -243,7 +240,13 @@
               <span>回答{{ msg.requestState === 'failed' ? '失败' : '尚未确认完成' }}，可查询已保存的内容。</span>
               <button type="button" class="text-btn" :disabled="store.loading || !!recoveringRequest" @click="recoverReply(msg)">查询原回答</button>
               <span v-if="recoveryNotice.id === msg.id">{{ recoveryNotice.text }}</span>
+              <button v-if="retryMessageId === msg.id" type="button" class="text-btn"
+                :disabled="store.loading || !!recoveringRequest" @click="restoreQuestion(msg)">恢复原问题</button>
             </div>
+            <details v-if="msg.requestId && !msg.streaming && (msg.cancelled || msg.requestState === 'failed' || msg.requestState === 'interrupted')" class="request-details">
+              <summary>诊断详情</summary>
+              <span>请求编号 <code>{{ msg.requestId }}</code></span>
+            </details>
             <div v-if="msg.recovered" class="msg-time">这条回复已恢复原请求结果 · 未重新生成</div>
             <div class="msg-time">{{ formatMsgTime(msg.createdAt) }}</div>
           </div>
@@ -254,6 +257,10 @@
 
       <footer class="composer">
         <div v-if="carryContextHint" class="carry-hint">{{ carryContextHint }}</div>
+        <div v-if="attachmentContext && !pendingAttachments.length" class="carry-hint">
+          本次将读取 {{ attachmentContext.attachments?.map(a => a.name || '附件').join('、') }}
+          <button type="button" class="text-btn" @click="composer().ignoreAttachment = true">仅回答问题</button>
+        </div>
         <input
           ref="fileInput"
           type="file"
@@ -278,8 +285,10 @@
         </div>
         <div v-if="!visionEnabled && !pendingAttachments.length" class="attach-hint attach-hint-off">{{ visionHint }}；仍可添加文本文件</div>
         <textarea
+          ref="promptInput"
           v-model="input"
           rows="3"
+          aria-label="向 AI 助手提问"
           :placeholder="pageMeta.placeholder"
           :disabled="store.loading"
           @keydown="onKeydown"
@@ -312,7 +321,17 @@
         </div>
       </footer>
 
-      <!-- 图片放大弹层 -->
+      <el-dialog v-model="attachmentVisible" :title="openedAttachment?.name || '对话附件'" append-to-body width="min(42rem, 92vw)">
+        <p v-if="attachmentOpening">正在读取已保存的文件…</p>
+        <template v-else-if="openedAttachment?.contentString">
+          <img v-if="isImageAttachment(openedAttachment)" :src="openedAttachment.contentString" alt="已保存图片" class="saved-attachment-image" />
+          <pre v-else class="saved-attachment-text">{{ openedAttachment.contentString }}</pre>
+          <button class="draft-btn primary" type="button" @click="continueWithAttachment">用此附件追问</button>
+        </template>
+        <p v-else>暂时无法读取附件。请确认原会话已同步，或重新选择文件。</p>
+      </el-dialog>
+
+      <!-- 引用原文 -->
       <div v-if="citation" class="citation-mask" @click.self="closeCitation">
         <section ref="citationPanel" class="citation-panel" role="dialog" aria-modal="true" aria-label="引用原文" tabindex="-1" @keydown="onCitationKeydown">
           <header class="citation-head">
@@ -320,8 +339,9 @@
             <button class="icon-btn" type="button" title="关闭引用" aria-label="关闭引用" @click="closeCitation">×</button>
           </header>
           <p class="citation-meta">
-            {{ citation.scope === 'answer_excerpt' ? '回答采用的片段' : '来源正文' }}
+            {{ citation.scope === 'answer_excerpt' ? '本次检索保存的片段' : '来源正文' }}
             <span v-if="citation.version"> · 版本 {{ citation.version.slice(0, 12) }}</span>
+            <span v-if="citation.page"> · PDF 第 {{ citation.page }} 页</span>
             <span v-if="citation.captured_at"> · {{ new Date(citation.captured_at).toLocaleString('zh-CN') }}</span>
           </p>
           <p v-if="citation.status === 'ok' && citation.message" class="citation-meta">{{ citation.message }}</p>
@@ -339,12 +359,14 @@
           <p v-else-if="citation.status === 'loading'" class="citation-meta">正在校验引用…</p>
           <p v-else class="citation-error">{{ citation.message }}</p>
           <footer class="citation-foot">
-            <button v-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">阅读当前全文</button>
+            <button v-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">{{ citation.legacy ? '查阅核对过的原页位置' : citation.document_version ? '阅读同版正文' : '阅读当前全文' }}</button>
             <button class="draft-btn" type="button" @click="closeCitation">返回对话</button>
           </footer>
         </section>
       </div>
-      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.document_id" :filename="citation?.filename" />
+      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.legacy?.document.id || citation?.document_id" :filename="citation?.filename"
+        :version="citation?.legacy?.document.version || citation?.document_version" :section-id="citation?.section_id"
+        :original-page="citation?.legacy?.physical[0]" :excerpt="citation?.legacy ? undefined : citation?.content" />
       <div v-if="zoomVisible" class="zoom-mask" @click="zoomVisible = false">
         <img :src="zoomSrc" class="zoom-img" alt="预览" />
         <button class="zoom-close" type="button" title="关闭" @click="zoomVisible = false">×</button>
@@ -354,10 +376,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
-import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest } from '../api/ai'
+import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest, getCopilotSession } from '../api/ai'
 import { useAiCopilotStore, type CopilotAttachment, type CopilotMessage } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
 import { renderMarkdown } from '../utils/markdownLite'
@@ -370,8 +392,22 @@ const store = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const route = useRoute()
 const router = useRouter()
-const input = ref('')
-const wantDraft = ref(false)
+type Composer = { text: string; files: CopilotAttachment[]; wantsDraft: boolean; uploadId?: string; ignoreAttachment?: boolean }
+const drafts = reactive(new Map<string, Composer>())
+function composer(id = store.activeId || '') {
+  if (!drafts.has(id)) drafts.set(id, { text: '', files: [], wantsDraft: false })
+  return drafts.get(id)!
+}
+const input = computed({
+  get: () => composer().text,
+  set: (text) => { store.ensureActiveConversation(); composer().text = text },
+})
+const promptInput = ref<HTMLTextAreaElement | null>(null)
+const wantDraft = computed({
+  get: () => composer().wantsDraft,
+  set: (value) => { store.ensureActiveConversation(); composer().wantsDraft = value },
+})
+const labLinked = computed(() => labCtx.isActive && store.linkedLabSession === labCtx.sessionId)
 const listEl = ref<HTMLElement | null>(null)
 const streamingStarted = ref(false)
 const progressStatus = ref('正在准备问题与页面信息…')
@@ -416,7 +452,10 @@ function isCurrentRequest(request: StreamRequest) {
 }
 
 // 待发送附件（图片 data URL）
-const pendingAttachments = ref<CopilotAttachment[]>([])
+const pendingAttachments = computed({
+  get: () => composer().files,
+  set: (value: CopilotAttachment[]) => { composer().files = value },
+})
 const MAX_ATTACHMENTS = 4
 const MAX_ATTACH_MB = 12
 // Capability is authenticated and fail-closed; an unconfigured image must not
@@ -451,13 +490,15 @@ const panelStyle = computed(() =>
 
 // 页面数据快照在发送消息时实时采集（见 send 流程），此处只同步页面上下文。
 function pageCtx() {
+  const selected = store.selection
+  const labDevice = labCtx.device
   return {
-    sessionId: labCtx.sessionId,
-    labId: labCtx.labId,
-    labTitle: labCtx.labTitle,
-    topologyId: labCtx.topologyId,
-    device: labCtx.device,
-    labSteps: labCtx.labSteps,
+    sessionId: labLinked.value ? labCtx.sessionId : null,
+    labId: labLinked.value ? labCtx.labId : null,
+    labTitle: labLinked.value ? labCtx.labTitle : '',
+    topologyId: labLinked.value ? labCtx.topologyId : null,
+    device: labLinked.value && selected?.kind === 'device' && selected.id === labDevice?.id ? labDevice : null,
+    labSteps: labLinked.value ? labCtx.labSteps : [],
   }
 }
 
@@ -483,7 +524,11 @@ function clearSelection() {
 }
 
 function clearLab() {
-  labCtx.clearLab()
+  store.linkLab(null)
+}
+
+function linkCurrentLab() {
+  if (labCtx.isActive) store.linkLab(labCtx.sessionId)
 }
 
 function askAboutLab() {
@@ -506,8 +551,8 @@ function askAboutSelection() {
 
 function onNewChat() {
   cancelActiveRequest()
-  clearAttachments()
-  store.newChat()
+  const draft = composer()
+  store.newChat(Boolean(draft.text.trim() || draft.files.length))
 }
 
 function onSwitch(id: string) {
@@ -522,7 +567,7 @@ function onSwitch(id: string) {
 
 const carryContextHint = computed(() => {
   const bits: string[] = []
-  if (labCtx.hasLab) bits.push(`实训「${labCtx.label}」`)
+  if (labLinked.value) bits.push(`实训「${labCtx.label}」`)
   if (store.selection?.label) bits.push(`选中「${store.selection.label}」`)
   if (!bits.length) return ''
   return `当前仍带着 ${bits.join('、')} 上下文，下一条提问会带上它们。`
@@ -620,6 +665,8 @@ function extOf(name: string) {
 }
 
 function readTextFile(file: File) {
+  store.ensureActiveConversation()
+  const draft = composer()
   const maxChars = 300000 // 约 300KB 文本，控制上下文
   if (file.size > maxChars * 3) {
     ElMessage.warning(`文本文件过大（>${Math.round(maxChars * 3 / 1024)}KB）已截断前部分：${file.name}`)
@@ -628,7 +675,8 @@ function readTextFile(file: File) {
   reader.onload = () => {
     let text = String(reader.result)
     if (text.length > maxChars) text = text.slice(0, maxChars) + `\n\n[内容已截断，原文件 ${file.name} 共 ${file.size} 字节]`
-    pendingAttachments.value.push({
+    if (draft.files.length >= MAX_ATTACHMENTS) return
+    draft.files.push({
       contentString: text,
       mime: 'text/plain',
       name: file.name,
@@ -651,9 +699,12 @@ function readImage(file: File) {
     ElMessage.warning(`图片过大（>${MAX_ATTACH_MB}MB）：${file.name}`)
     return
   }
+  store.ensureActiveConversation()
+  const draft = composer()
   const reader = new FileReader()
   reader.onload = () => {
-    pendingAttachments.value.push({
+    if (draft.files.length >= MAX_ATTACHMENTS) return
+    draft.files.push({
       contentString: String(reader.result),
       mime: file.type,
       name: file.name,
@@ -714,6 +765,7 @@ function stopGenerating() {
 
 const recoveringRequest = ref('')
 const recoveryNotice = ref({ id: '', text: '' })
+const retryMessageId = ref('')
 async function recoverReply(message: CopilotMessage) {
   if (!message.requestId || store.loading || recoveringRequest.value) return
   const conversationId = store.activeId
@@ -745,14 +797,16 @@ async function recoverReply(message: CopilotMessage) {
       recovered: true,
     })
     recoveryNotice.value = { id: '', text: '' }
+    retryMessageId.value = saved.state === 'failed' || saved.state === 'interrupted' ? message.id : ''
     store.syncActiveToList()
   } catch (error: any) {
     if (stillCurrent()) {
       const status = error?.response?.status
+      retryMessageId.value = status === 404 ? message.id : ''
       recoveryNotice.value = { id: message.id, text: status === 403
         ? '当前权限不能读取原请求结果，请联系管理员核对权限；本次未重新生成。'
         : status === 404
-          ? '未找到可读取的原请求记录；本次未重新生成，不能据此判断此前是否执行。'
+          ? '未找到原请求记录。可以恢复原问题再发送。'
           : '暂时无法查询原请求；已有内容保留，可稍后再查。' }
     }
   } finally {
@@ -776,10 +830,91 @@ async () => {
   await recoverReply(message)
 }, { immediate: true })
 
-// 消息中的文本附件（contentString 不是 data:image 的）
-function textAttachments(msg: { attachments?: CopilotAttachment[] }) {
-  return (msg.attachments || []).filter((a) => !a.contentString.startsWith('data:image/'))
+function restoreQuestion(message: CopilotMessage) {
+  const index = store.messages.findIndex((item) => item.id === message.id)
+  const original = store.messages.slice(0, index).reverse().find((item) => item.role === 'user')
+  if (!original) return
+  if (input.value.trim() || pendingAttachments.value.length) {
+    ElMessage.warning('请先处理输入框里的问题，再恢复原问题。')
+    return
+  }
+  input.value = original.content
+  composer().uploadId = original.attachments?.length ? original.id : original.attachmentMessageId
+  composer().ignoreAttachment = false
+  wantDraft.value = false
+  void nextTick(() => promptInput.value?.focus())
 }
+
+function isImageAttachment(item: CopilotAttachment) {
+  return item.mime?.startsWith('image/') || item.contentString.startsWith('data:image/')
+}
+
+const attachmentVisible = ref(false)
+const attachmentOpening = ref(false)
+const openedAttachment = ref<CopilotAttachment>()
+let openedUploadId = ''
+let attachmentRead = 0
+
+async function openAttachment(message: CopilotMessage, index: number) {
+  const item = message.attachments?.[index]
+  const conversationId = store.activeId
+  if (!item || !conversationId) return
+  const sequence = ++attachmentRead
+  openedAttachment.value = item
+  openedUploadId = message.id
+  attachmentVisible.value = true
+  attachmentOpening.value = !item.contentString
+  if (item.contentString) return
+  try {
+    const saved = await getCopilotSession(conversationId, { silent: true })
+    if (sequence !== attachmentRead || store.activeId !== conversationId || !attachmentVisible.value) return
+    const full = saved.messages.find((entry) => entry.id === message.id)?.attachments?.[index]
+    if (full?.contentString) openedAttachment.value = full
+  } catch {
+    // Keep the file identity and its unavailable state visible.
+  } finally {
+    if (sequence === attachmentRead) attachmentOpening.value = false
+  }
+}
+
+function continueWithAttachment() {
+  if (!openedAttachment.value?.contentString) return
+  composer().uploadId = openedUploadId
+  composer().ignoreAttachment = false
+  attachmentVisible.value = false
+  void nextTick(() => promptInput.value?.focus())
+}
+
+function priorUpload(question: string) {
+  const draft = composer()
+  if (draft.ignoreAttachment || /不(?:用|看|读取|结合|引用)(?:此前|之前|上次|原来的)?(?:文件|附件|表格|截图)/.test(question)) return
+  const uploads = store.messages.filter((item) => item.role === 'user' && item.attachments?.length)
+  if (draft.uploadId) return uploads.find((item) => item.id === draft.uploadId)
+  const named = uploads.slice().reverse().find((item) => item.attachments?.some((file) =>
+    file.name && question.toLowerCase().includes(file.name.toLowerCase())))
+  if (named) return named
+  const recent = uploads[uploads.length - 1]
+  if (!recent) return
+  if (/附件|这个表|这份表|表[里中内]|这份日志|刚才的日志|刚才的图|截图[里中上]|那一行/.test(question)) return recent
+  if (/只(?:讲|聊|解释|按)原理|只问概念|脱离.{0,4}(?:实训|实验|现场)|不(?:要|用|必|需要)?(?:结合|参考).{0,4}(?:实训|实验|现场)|当前设备|本次观察|刚采集|实时状态|接口.{0,8}(?:现在|当前|实时)/.test(question)) return
+  const interfaces = (value: string) => (value.match(/\b(?:X?GigabitEthernet|X?GE|LoopBack|Eth-Trunk|Vlanif)\s*\d+(?:\/\d+)*(?:\.\d+)?/gi) || [])
+    .map(name => name.toLowerCase().replace(/gigabitethernet/g, 'ge').replace(/\s+/g, ''))
+  const requestedPorts = interfaces(question)
+  if (!requestedPorts.length) return
+  if (recent.attachments?.some(file => !isImageAttachment(file)
+    && interfaces(file.contentString).some(port => requestedPorts.includes(port)))) return recent
+}
+const attachmentContext = computed(() => priorUpload(input.value))
+
+watch(() => store.activeId, (id) => {
+  attachmentVisible.value = false
+  attachmentRead++
+  retryMessageId.value = ''
+  if (!id) drafts.clear()
+})
+watch(() => store.conversations.map((conversation) => conversation.id), (ids) => {
+  for (const id of drafts.keys()) if (id && !ids.includes(id)) drafts.delete(id)
+})
 
 // 图片放大：面板内弹层，避免 window.open 被拦截/新窗口体验差
 const zoomSrc = ref('')
@@ -789,7 +924,14 @@ function reviewedReferenceUrl(url: string): string | undefined {
   return /^https:\/\/www\.rfc-editor\.org\/rfc\/rfc\d+\.html#section-[\d.]+$/.test(url) ? url : undefined
 }
 const fullDocumentVisible = ref(false)
-const citation = ref<null | { title?: string; filename?: string; document_id?: string; score?: number | null; content?: string; version?: string; captured_at?: string; scope?: string; truncated?: boolean; reviewed_notes?: ReviewedSourceNote[]; status?: 'loading' | 'ok' | 'revoked' | 'unverifiable'; message?: string }>(null)
+const citation = ref<null | { title?: string; filename?: string; document_id?: string; document_version?: string; section_id?: string; page?: number; legacy?: { document: { id: string; version: string }; physical: number[] }; score?: number | null; content?: string; version?: string; captured_at?: string; scope?: string; truncated?: boolean; reviewed_notes?: ReviewedSourceNote[]; status?: 'loading' | 'ok' | 'revoked' | 'unverifiable'; message?: string }>(null)
+
+function answerSources(message: CopilotMessage) {
+  if (!message.sources?.length || message.streaming) return []
+  const prose = message.content.replace(/```[\s\S]*?(?:```|$)/g, '').replace(/`[^`\n]+`/g, '')
+  const numbers = new Set(Array.from(prose.matchAll(/\[(\d{1,2})\]/g), match => Number(match[1]) - 1))
+  return message.sources.flatMap((source, index) => numbers.has(index) ? [{ source, index }] : [])
+}
 const citationPanel = ref<HTMLElement | null>(null)
 let citationReturnFocus: HTMLElement | null = null
 watch(() => !!citation.value, async (opened) => {
@@ -851,6 +993,10 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
       if (seq !== citationSeq) return
       citation.value = { ...citation.value, status: 'ok', content: doc.content, version: doc.version,
         document_id: doc.document_id,
+        document_version: doc.document_version,
+        section_id: doc.section_id,
+        page: doc.page,
+        legacy: doc.legacy_locator,
         title: doc.title || citation.value.title, scope: doc.scope, captured_at: doc.captured_at, truncated: doc.truncated,
         reviewed_notes: doc.reviewed_notes, message: doc.message }
     }
@@ -869,12 +1015,8 @@ function zoomImage(src: string) {
   zoomVisible.value = true
 }
 
-function clearAttachments() {
-  pendingAttachments.value = []
-}
-
 async function send(preset?: string, forceDraft = false) {
-  const text = (preset ?? input.value).trim()
+  const text = (preset ?? input.value).trim() || (!preset && pendingAttachments.value.length ? '请解读这份附件。' : '')
   if ((!text && !pendingAttachments.value.length) || store.loading) return
   // Capture the entire request before any awaited page read. Selection changes
   // during that read belong to the next question, never half of this one.
@@ -882,25 +1024,23 @@ async function send(preset?: string, forceDraft = false) {
     route: store.routePath,
     page_name: store.pageName || pageMeta.value.title,
     selection: store.selectionText,
-    notes: [store.notes, labCtx.hasLab ? `当前实训=${labCtx.label}` : '',
-      labCtx.topologyId ? `topology_id=${labCtx.topologyId}` : '',
-      labCtx.device ? `device=${labCtx.device.hostname}#${labCtx.device.id}` : '',
-    ].filter(Boolean).join('；'),
+    notes: store.notes,
   }
   const snapshotContext = JSON.parse(JSON.stringify(pageCtx()))
   const evidenceId = store.evidenceId
-  const requestedDraft = forceDraft || wantDraft.value
-  const deviceModel = resolveWorkbenchDeviceModel(store.selection?.model || labCtx.device?.model)
-  const labId = labCtx.labId
-  const labSessionId = labCtx.sessionId
-  const labSteps = JSON.parse(JSON.stringify((labCtx.labSteps || []).filter(
-    (item) => item && typeof item === 'object' && !Array.isArray(item),
-  )))
-  const attachments = pendingAttachments.value.map((a) => ({ ...a }))
-  if (!preset) input.value = ''
-  // preset 快捷问题不带图：清空待发附件，防止图与问句不匹配
-  if (preset) clearAttachments()
-  else pendingAttachments.value = []
+  const requestedDraft = forceDraft || (!preset && wantDraft.value)
+  const deviceModel = resolveWorkbenchDeviceModel(store.selection?.model || snapshotContext.device?.model)
+  const labId = snapshotContext.labId
+  const labSessionId = snapshotContext.sessionId
+  const attachments = preset ? [] : pendingAttachments.value.map((a) => ({ ...a }))
+  const upload = !preset && !attachments.length ? priorUpload(text) : undefined
+  if (!preset) {
+    input.value = ''
+    pendingAttachments.value = []
+    composer().uploadId = undefined
+    composer().ignoreAttachment = false
+    wantDraft.value = false
+  }
 
   // 历史必须在 push 本轮消息之前取：否则本轮提问会同时出现在 message 与
   // history 末尾，被发给模型两次（此前只在 push 之后过滤掉 assistant 占位符）。
@@ -914,6 +1054,7 @@ async function send(preset?: string, forceDraft = false) {
     role: 'user',
     content: text,
     attachments: attachments.length ? attachments : undefined,
+    attachmentMessageId: upload?.id,
   })
   const requestId = newRequestId()
   const assistantId = store.pushMessage({
@@ -973,7 +1114,8 @@ async function send(preset?: string, forceDraft = false) {
         top_k: 6,
         page_data: pageData,
         attachments: attachments.length ? attachments : undefined,
-        lab_steps: labSteps.length ? labSteps : undefined,
+        conversation_id: request.conversationId || undefined,
+        attachment_message_id: upload?.id,
         lab_id: labId,
         lab_session_id: labSessionId,
         request_id: request.requestId,
@@ -1064,7 +1206,8 @@ async function send(preset?: string, forceDraft = false) {
   } catch (err: any) {
     if (!isCurrentRequest(request) || request.controller.signal.aborted || request.cancelled) return
     const raw = String(err?.message || '')
-    const hint = raw.includes('知识库') || raw.includes('AnythingLLM') || raw.includes('3001')
+    const hint = err?.code === 'attachment_unavailable' ? raw
+      : raw.includes('知识库') || raw.includes('AnythingLLM') || raw.includes('3001')
       ? '知识检索暂不可用，请到知识库页查看当前服务状态后重试。'
       : request.requestId ? '连接中断或请求失败，请先查询原回答。' : '请求失败，请稍后重试。'
     markFailed(hint)
@@ -1148,21 +1291,26 @@ onMounted(() => {
     visionEnabled.value = false
     visionHint.value = '图片功能状态读取失败，请稍后刷新重试'
   })
-  // 监听外部触发（如实训开始自动引导）
-  window.addEventListener('copilot-send', onExternalSend)
+  window.addEventListener('copilot-prefill', onExternalPrefill)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('copilot-send', onExternalSend)
+  window.removeEventListener('copilot-prefill', onExternalPrefill)
   cancelActiveRequest()
 })
 
-function onExternalSend(e: Event) {
+function onExternalPrefill(e: Event) {
   const detail = (e as CustomEvent).detail
   const prompt = detail?.prompt
-  if (typeof prompt === 'string' && prompt.trim()) {
-    send(prompt)
+  if (typeof prompt !== 'string' || !prompt.trim()) return
+  store.setOpen(true)
+  if (!input.value.trim()) {
+    input.value = prompt
+    wantDraft.value = false
+  } else if (input.value !== prompt) {
+    ElMessage.info('输入框有尚未发送的问题。清空后可从原页面再次载入本次问题。')
   }
+  void nextTick(() => promptInput.value?.focus())
 }
 </script>
 
@@ -1180,6 +1328,8 @@ function onExternalSend(e: Event) {
   color: inherit;
 }
 .request-recovery .text-btn { text-decoration: underline; }
+.request-details { margin-top: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.request-details summary { cursor: pointer; }
 .copilot {
   position: relative;
   flex: 0 0 auto;
@@ -1203,17 +1353,20 @@ function onExternalSend(e: Event) {
 }
 .copilot.focused { max-width: 560px !important; }
 @media (max-width: 900px) {
-  /* 窄窗口：明确的可关闭抽屉，保留返回主任务的路径；不覆盖同一步要操作的控件。 */
   .copilot:not(.collapsed) {
     position: fixed;
-    top: 54px;
-    right: 0;
-    bottom: 0;
-    height: auto;
-    width: min(380px, 92vw) !important;
-    z-index: 60;
-    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+    z-index: 24;
+    inset: 54px 0 0;
+    height: calc(100dvh - 54px);
+    min-height: 0;
+    width: 100% !important;
+    max-width: none !important;
+    border-left: 0;
+    border-top: 1px solid var(--v7b-line-strong);
+    transition: none;
   }
+  .copilot.collapsed { flex: 0 0 0; height: 0; }
+  .copilot-fab, .header-actions [aria-label="专注展开"], .header-actions [aria-label="恢复面板大小"] { display: none !important; }
 }
 .copilot-fab {
   position: fixed;
@@ -1376,11 +1529,11 @@ function onExternalSend(e: Event) {
 .live-spacer { flex: 1; min-width: 8px; }
 .chip-rail {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 12px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  scroll-snap-type: x proximity;
+  max-height: 6rem;
+  overflow-y: auto;
 }
 .page-pill,
 .sel-pill,
@@ -1888,14 +2041,17 @@ function onExternalSend(e: Event) {
 }
 .stop-btn:hover { background: #a55a38; }
 @media (max-width: 900px) {
-  .copilot:not(.collapsed) {
-    position: fixed;
-    right: 0;
-    top: 0;
-    z-index: 35;
-    width: min(92vw, 400px) !important;
-    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.45);
-  }
+  .copilot-header { padding-block: 5px !important; }
+  .display-settings { display: none; }
+  .starter { padding-block: 5px; }
+  .starter-row { padding-bottom: 4px; }
+  .messages { padding-block: 6px; }
+  .composer { padding-block: 6px; }
+  .composer textarea { min-height: 42px; height: 48px; }
+  .composer .attach-hint-off { display: none; }
+}
+@media (max-width: 900px) and (max-height: 540px) {
+  .copilot:not(.collapsed) { flex-basis: min(64dvh, 350px); }
 }
 
 .citation-mask { position: absolute; inset: 0; z-index: 40; background: rgba(10, 18, 26, .55); display: flex; align-items: stretch; justify-content: center; }
@@ -1918,6 +2074,8 @@ function onExternalSend(e: Event) {
 .citation-head strong { min-width: 0; overflow-wrap: anywhere; }
 .citation-meta { overflow-wrap: anywhere; }
 .draft-actions, .composer-row { flex-wrap: wrap; }
+.saved-attachment-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; }
+.saved-attachment-image { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; margin-bottom: 12px; }
 .title-wrap { flex-shrink: 0; }
 .copilot-header { gap: 8px; flex-wrap: wrap; padding-block: 8px; }
 .header-actions { margin-left: auto; }

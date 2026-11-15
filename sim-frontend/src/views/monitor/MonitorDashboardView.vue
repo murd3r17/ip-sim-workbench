@@ -15,7 +15,7 @@
         <el-card shadow="hover">
           <div class="stat-card">
             <div class="stat-value" style="color: var(--v7b-ok)">{{ stats?.onlineDevices ?? '—' }}</div>
-            <div class="stat-label">在线设备</div>
+            <div class="stat-label">记录可达</div>
           </div>
         </el-card>
       </el-col>
@@ -41,24 +41,24 @@
     <el-card style="margin-bottom: 16px">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px">
         <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap">
-          <span>选择拓扑:</span>
+          <span>图表与巡检范围</span>
           <el-select v-model="selectedTopology" placeholder="选择拓扑" style="width: 200px">
             <el-option v-for="t in topologies" :key="t.id" :label="t.name" :value="t.id" />
           </el-select>
           <AdminAction v-slot="{ disabled }">
-            <el-button type="primary" :disabled="disabled || inspecting || !selectedTopology" @click="handleCollect" :loading="collecting">触发采集</el-button>
+            <el-button type="primary" :disabled="disabled || inspecting || !selectedTopology" @click="handleCollect" :loading="collecting">采集指标</el-button>
           </AdminAction>
           <AdminAction v-slot="{ disabled }">
-            <el-button type="success" :disabled="disabled || collecting || !selectedTopology" @click="handleInspection" :loading="inspecting">触发巡检</el-button>
+            <el-button :disabled="disabled || collecting || !selectedTopology" @click="handleInspection" :loading="inspecting">巡检并保存报告</el-button>
           </AdminAction>
         </div>
         <div>
-          <el-button @click="refreshData()">刷新数据</el-button>
+          <el-button @click="refreshData()">刷新已保存记录</el-button>
         </div>
       </div>
       <div v-if="collectHint" class="collect-hint">{{ collectHint }}</div>
-      <div class="collect-hint">实时统计：{{ streamStatus }}；图表最近采样：{{ latestSampleTime }}。图表按设备展示历史采样，刷新不会触发采集。</div>
-      <div class="collect-hint">统计与活跃告警覆盖全部拓扑；图表及巡检任务使用所选拓扑。</div>
+      <div class="collect-hint">所选拓扑最近采样 {{ latestSampleTime }}。刷新只读取已保存的数据。</div>
+      <div class="collect-hint">上方计数覆盖全部拓扑 · 更新连接{{ streamStatus }}。缺少新样本时，零告警仅表示没有对应记录。</div>
       <el-alert v-if="topologyLoadError" :title="topologyLoadError" type="error" :closable="false" show-icon><el-button @click="loadTopologies">重试拓扑列表</el-button></el-alert>
       <el-alert v-if="chartError" :title="chartError" type="error" :closable="false" show-icon />
       <el-alert
@@ -94,7 +94,7 @@
 
     <el-alert
       v-if="selectedTopology && !chartsHaveData && !chartError && !topologyLoadError"
-      title="趋势图来自手动刷新的采集结果，SSE 只更新上方统计和告警。无数据时请先点「触发采集」。"
+      title="所选拓扑没有趋势样本。请管理员采集指标，随后刷新已保存记录。"
       type="info"
       :closable="false"
       show-icon
@@ -147,7 +147,7 @@
         </template>
         <el-table-column prop="device_name" label="设备" width="140" />
         <el-table-column prop="device_id" label="设备ID" width="80" />
-        <el-table-column prop="alarm_type" label="告警类型" width="150" />
+        <el-table-column label="告警类型" width="160"><template #default="{ row }">{{ alarmTypeLabel(row.alarm_type) }}</template></el-table-column>
         <el-table-column prop="severity" label="严重程度" width="100">
           <template #default="{ row }">
             <el-tag :type="getSeverityType(row.severity)">{{ getSeverityLabel(row.severity) }}</el-tag>
@@ -159,11 +159,11 @@
             <el-tag :type="row.status === 'fired' ? 'danger' : 'success'">{{ getAlarmStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="fired_at" label="触发时间" width="180" />
+        <el-table-column label="触发时间" width="180"><template #default="{ row }">{{ formatApiTime(row.fired_at) }}</template></el-table-column>
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.device_id" type="primary" link @click="$router.push(`/webssh/${row.device_id}`)">终端</el-button>
-            <el-button type="primary" link @click="$router.push('/alarms?status=active')">告警</el-button>
+            <el-button type="primary" link @click="$router.push({ path: '/alarms', query: { alarm_id: row.id } })">告警详情</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -172,14 +172,15 @@
     <el-card style="margin-top: 16px">
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center">
-          <span>巡检任务</span>
-          <span style="color: var(--el-text-color-secondary)">最近巡检与报告回看</span>
+          <h2 ref="inspectionHeading" class="inspection-heading" tabindex="-1">巡检任务</h2>
+          <el-button v-if="linkedInspection" link type="primary" @click="router.replace({ query: { ...route.query, task_id: undefined } })">显示全部巡检</el-button>
+          <span v-else style="color: var(--el-text-color-secondary)">最近巡检与报告回看</span>
         </div>
       </template>
       <el-alert v-if="inspectionError" :title="inspectionError" type="error" :closable="false" show-icon />
       <el-table :data="inspectionTasks">
         <template #empty>
-          <el-empty :description="inspectionError || '暂无巡检任务'" :image-size="72" />
+          <el-empty :description="inspectionError || (linkedInspection ? `正在读取巡检 #${linkedInspection}` : '暂无巡检任务')" :image-size="72" />
         </template>
         <el-table-column prop="id" label="任务ID" width="80" />
         <el-table-column prop="job_type" label="类型" width="100">
@@ -189,7 +190,7 @@
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="getTaskStatusType(row.status)">{{ row.status }}</el-tag>
+            <el-tag :type="getTaskStatusType(row.status)">{{ inspectionStatusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="success_count" label="成功" width="80" />
@@ -197,11 +198,13 @@
         <el-table-column label="跳过" width="80">
           <template #default="{ row }">{{ row.summary?.skipped ?? '—' }}</template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="180" />
+        <el-table-column label="创建时间" width="180"><template #default="{ row }">{{ formatApiTime(row.created_at) }}</template></el-table-column>
         <el-table-column label="报告摘要">
           <template #default="{ row }">
-            <span v-if="row.report">{{ row.report.alarm_count }} 条告警，{{ (row.report.metric_types || []).length }} 类指标</span>
-            <span v-else>无</span>
+            <span v-if="row.status === 'running' || row.status === 'pending'">等待设备观察</span>
+            <span v-else-if="row.success_count === 0">本次未取得设备观察，健康状态未知</span>
+            <span v-else-if="row.report">已覆盖设备 {{ row.report.alarm_count ?? '—' }} 条告警，{{ (row.report.metric_types || []).length }} 类指标</span>
+            <span v-else>暂无报告</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
@@ -210,33 +213,48 @@
               type="primary"
               link
               :loading="summaryJobId === row.id"
-              :disabled="row.status === 'running'"
+              :disabled="row.status === 'running' || row.status === 'pending'"
               @click="handleAiSummary(row)"
-            >AI 总结</el-button>
+            >{{ row.success_count === 0 ? '查看采集问题' : '解读本次巡检' }}</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <el-dialog v-model="aiSummaryVisible" :title="aiSummaryTitle" width="720px" draggable>
+    <el-dialog v-model="aiSummaryVisible" :title="aiSummaryTitle" width="min(720px, 94vw)" draggable>
       <div v-if="aiSummary" class="ai-summary">
+        <p v-if="aiSummary.coverage" class="collect-hint">
+          本次覆盖 {{ aiSummary.coverage.observed ?? '—' }}/{{ aiSummary.coverage.target ?? '—' }} 台
+          · 失败 {{ aiSummary.coverage.failed ?? '—' }} · 跳过 {{ aiSummary.coverage.skipped ?? '未记录' }}
+          · {{ formatApiTime(aiSummary.coverage.finished_at) }}
+        </p>
         <p class="summary-line">{{ aiSummary.summary }}</p>
-        <div v-if="aiSummary.key_findings?.length" class="summary-block">
+        <div v-if="aiSummary.missing_devices?.length" class="summary-block">
+          <div class="block-title">本次没有观察的设备</div>
+          <ul>
+            <li v-for="item in aiSummary.missing_devices" :key="item.device_id || item.hostname">
+              {{ item.hostname }} · {{ item.status === 'skipped' ? '跳过' : '采集失败' }}
+              <template v-if="item.reason"> · {{ collectionReasonLabel(item.reason) }}</template>
+              <router-link v-if="item.device_id" class="inspection-device" :to="{ path: '/devices', query: { observe_device: item.device_id } }">查看设备观察</router-link>
+            </li>
+          </ul>
+        </div>
+        <div v-if="aiSummary.key_findings?.length && (aiSummary.basis !== 'no_current_observations' || !aiSummary.missing_devices?.length)" class="summary-block">
           <div class="block-title">关键发现</div>
           <ul><li v-for="(item, idx) in aiSummary.key_findings" :key="`kf-${idx}`">{{ item }}</li></ul>
         </div>
         <div v-if="aiSummary.root_causes?.length" class="summary-block">
-          <div class="block-title">根因</div>
+          <div class="block-title">可能原因，待核对</div>
           <ul><li v-for="(item, idx) in aiSummary.root_causes" :key="`rc-${idx}`">{{ item }}</li></ul>
         </div>
         <div v-if="aiSummary.recommendations?.length" class="summary-block">
           <div class="block-title">处置建议</div>
           <ul><li v-for="(item, idx) in aiSummary.recommendations" :key="`rec-${idx}`">{{ item }}</li></ul>
         </div>
-        <div v-if="aiSummary.report_text" class="summary-block">
-          <div class="block-title">报告正文</div>
+        <details v-if="aiSummary.report_text" class="summary-block">
+          <summary>展开完整解读</summary>
           <pre class="report-text">{{ aiSummary.report_text }}</pre>
-        </div>
+        </details>
       </div>
       <template #footer><el-button @click="aiSummaryVisible = false">关闭</el-button></template>
     </el-dialog>
@@ -246,6 +264,7 @@
 <script setup lang="ts">
 import { formatApiTime } from '../../utils/datetime'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import * as echarts from 'echarts/core'
 import { LineChart, BarChart, PieChart } from 'echarts/charts'
@@ -254,11 +273,11 @@ import { CanvasRenderer } from 'echarts/renderers'
 import type { ECharts } from 'echarts/core'
 import { getTopologies, type TopologyRecord } from '../../api/device'
 import { getAlarms, getMonitorStats, getMonitorTasks, getMonitorTrends, triggerCollection, runInspection, createMonitorStream, type AlarmRecord, type MonitorStats, type MonitorTaskRecord, type MonitorTrend } from '../../api/monitor'
-import { inspectionSummary } from '../../api/ai'
+import { inspectionSummary, type InspectionSummary } from '../../api/ai'
 import { notifyRequestError } from '../../utils/requestError'
 import { buildMonitorSeries } from '../../utils/monitorSeries'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
-import { severityLabel as getSeverityLabel, severityTagType as getSeverityType } from '../../utils/display'
+import { alarmTypeLabel, severityLabel as getSeverityLabel, severityTagType as getSeverityType } from '../../utils/display'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
 import { useLabContextStore } from '../../stores/labContext'
 import AdminAction from '../../components/AdminAction.vue'
@@ -268,6 +287,8 @@ echarts.use([LineChart, BarChart, PieChart, GridComponent, TooltipComponent, Leg
 
 const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
+const route = useRoute()
+const router = useRouter()
 
 const collecting = ref(false)
 const inspecting = ref(false)
@@ -275,6 +296,18 @@ const inspecting = ref(false)
 const collectHint = ref('')
 const collectFailures = ref<string[]>([])
 const selectedTopology = ref<number | null>(null)
+const linkedTopology = computed(() => Number(route.query.topology_id))
+const linkedInspection = computed(() => {
+  const id = Number(route.query.task_id)
+  return selectedTopology.value === linkedTopology.value && Number.isSafeInteger(id) && id > 0 ? id : undefined
+})
+const inspectionHeading = ref<HTMLElement>()
+const collectionReasons: Record<string, string> = {
+  failed: '设备读取失败', timeout: '设备读取超时', no_metrics: '回显中没有可用指标',
+  '设备状态为 offline，本轮未采集': '上次管理连接记录为离线',
+  '设备状态为 unknown，本轮未采集': '上次管理连接状态未知',
+}
+const collectionReasonLabel = (reason: string) => collectionReasons[reason] || reason
 const topologyRequest = useSnapshotRequest('监控拓扑列表')
 const topologiesLoading = topologyRequest.loading
 const topologyLoadError = topologyRequest.error
@@ -289,7 +322,7 @@ const inspectionTasks = ref<MonitorTaskRecord[]>([])
 const summaryJobId = ref<number | null>(null)
 const aiSummaryVisible = ref(false)
 const aiSummaryTitle = ref('巡检 AI 总结')
-const aiSummary = ref<any>(null)
+const aiSummary = ref<InspectionSummary | null>(null)
 const trendData = ref<MonitorTrend>({ metrics: {}, alarms: [], summary: {} })
 const chartError = ref('')
 const streamStatus = ref('连接中')
@@ -328,6 +361,7 @@ let refreshTimer: number | null = null
 let sseClosed = false
 let chartReqSeq = 0
 let inspectReqSeq = 0
+let summaryReqSeq = 0
 let chartResizeHandler: (() => void) | null = null
 let chartResizeObserver: ResizeObserver | null = null
 let chartResizeFrame: number | null = null
@@ -336,7 +370,9 @@ let chartResizeFrame: number | null = null
 const loadTopologies = async () => {
   await topologyRequest.run(() => getTopologies(), value => {
     topologies.value = value
-    if (!value.some(item => item.id === selectedTopology.value)) selectedTopology.value = value[0]?.id ?? null
+    if (!value.some(item => item.id === selectedTopology.value)) {
+      selectedTopology.value = value.find(item => item.id === linkedTopology.value)?.id ?? value[0]?.id ?? null
+    }
   })
 }
 
@@ -354,29 +390,32 @@ const loadInspectionTasks = async (silent = false) => {
   if (!selectedTopology.value) return
   const seq = ++inspectReqSeq
   try {
-    const params = selectedTopology.value ? { topology_id: selectedTopology.value, job_type: 'inspection', limit: 10 } : { job_type: 'inspection', limit: 10 }
+    const params = { topology_id: selectedTopology.value, job_type: 'inspection', job_id: linkedInspection.value, limit: 10 }
     const rows = await getMonitorTasks(params, { silent })
     if (seq !== inspectReqSeq) return
     inspectionTasks.value = rows
-    inspectionError.value = ''
+    inspectionError.value = linkedInspection.value && !rows.length ? `当前拓扑中找不到巡检 #${linkedInspection.value}` : ''
   } catch (err) {
     if (seq !== inspectReqSeq) return
-    inspectionError.value = '巡检任务读取失败；已显示记录可能陈旧，请点「刷新数据」重试。'
+    inspectionError.value = '巡检任务读取失败；已显示记录可能陈旧，请点「刷新已保存记录」重试。'
     notifyRequestError(err, '加载巡检任务失败')
   }
 }
 
 // B5：对巡检/采集任务报告做 AI 归因总结
 const handleAiSummary = async (row: MonitorTaskRecord) => {
+  const seq = ++summaryReqSeq
   summaryJobId.value = row.id
   try {
-    aiSummary.value = await inspectionSummary(row.id)
-    aiSummaryTitle.value = `巡检 AI 总结 · 任务 #${row.id}`
+    const result = await inspectionSummary(row.id)
+    if (seq !== summaryReqSeq) return
+    aiSummary.value = result
+    aiSummaryTitle.value = `${row.success_count === 0 ? '本次采集问题' : '巡检解读'} · 任务 #${row.id}`
     aiSummaryVisible.value = true
   } catch (err) {
-    notifyRequestError(err, 'AI 总结生成失败')
+    if (seq === summaryReqSeq) notifyRequestError(err, '巡检详情读取失败')
   } finally {
-    summaryJobId.value = null
+    if (seq === summaryReqSeq) summaryJobId.value = null
   }
 }
 
@@ -395,7 +434,7 @@ const handleCollect = async () => {
     refreshTimer = window.setTimeout(refreshData, 500)
   } catch (error) {
     // 超时不代表没采到：后端可能仍在跑，仍然刷新一次
-    collectHint.value = '采集请求未在超时前返回；后端可能仍在采集，稍后点「刷新数据」查看结果。'
+    collectHint.value = '采集请求未在超时前返回；后端可能仍在采集，稍后点「刷新已保存记录」查看结果。'
     notifyRequestError(error, '触发采集失败')
     refreshTimer = window.setTimeout(refreshData, 3000)
   } finally {
@@ -461,7 +500,7 @@ const loadChartData = async (silent = false) => {
   } catch (err) {
     if (seq !== chartReqSeq) return
     notifyRequestError(err, '加载监控趋势失败')
-    chartError.value = '趋势数据加载失败，已显示采样可能陈旧；请点「刷新数据」重试，不能据此判断设备当前正常。'
+    chartError.value = '趋势数据加载失败，已显示采样可能陈旧；请点「刷新已保存记录」重试，查看采样时间。'
   }
 }
 
@@ -517,6 +556,8 @@ const updateOspfChart = (data: any[]) => renderTimeSeries(ospfChartInstance, dat
 
 const getTaskTypeLabel = (jobType: string) => ({ collection: '采集', inspection: '巡检' }[jobType] || jobType)
 const getTaskStatusType = (status: string) => ({ success: 'success', failed: 'danger', running: 'warning', pending: 'info' }[status] || 'info')
+const inspectionStatusLabel = (status: string) =>
+  ({ success: '已采集', failed: '采集不完整', running: '采集中', pending: '等待采集' }[status] || '状态未记录')
 
 
 const getAlarmStatusLabel = (status?: string) => {
@@ -599,12 +640,29 @@ onMounted(() => {
   window.addEventListener('resize', chartResizeHandler)
 })
 
-watch(selectedTopology, (id) => {
+watch(linkedTopology, (id) => {
+  if (topologies.value.some(item => item.id === id)) selectedTopology.value = id
+})
+
+watch(linkedInspection, (id) => {
+  if (!id) return
+  inspectionHeading.value?.scrollIntoView({ block: 'start' })
+  inspectionHeading.value?.focus({ preventScroll: true })
+}, { flush: 'post' })
+
+watch([selectedTopology, linkedInspection], ([id], [previousId]) => {
   // Old target data must disappear even if the new target is empty or unavailable.
-  chartReqSeq++
   inspectReqSeq++
+  summaryReqSeq++
+  summaryJobId.value = null
+  aiSummaryVisible.value = false
   inspectionTasks.value = []
   inspectionError.value = ''
+  if (id) loadInspectionTasks()
+  if (id === previousId) return
+  collectHint.value = ''
+  collectFailures.value = []
+  chartReqSeq++
   trendData.value = { metrics: {}, alarms: [], summary: {} }
   chartError.value = ''
   updateCpuChart([])
@@ -620,13 +678,13 @@ watch(selectedTopology, (id) => {
     label: topo?.name || `拓扑 #${id}`,
     detail: '监控采集目标',
   })
-  loadInspectionTasks()
   loadChartData()
 })
 
 onUnmounted(() => {
   chartReqSeq++
   inspectReqSeq++
+  summaryReqSeq++
   chartResizeObserver?.disconnect()
   chartResizeObserver = null
   if (chartResizeFrame !== null) {
@@ -683,6 +741,8 @@ onUnmounted(() => {
 .summary-block .block-title { margin-bottom: 4px; color: var(--el-text-color-secondary); font-size: 11px; }
 .summary-block ul { margin: 0; padding-left: 18px; }
 .summary-block li { font-size: 12px; line-height: 1.7; }
+.inspection-heading { margin: 0; font-size: 1rem; }
+.inspection-device { margin-inline-start: 0.65em; color: var(--v7b-accent); }
 .report-text {
   max-height: 240px;
   margin: 0;

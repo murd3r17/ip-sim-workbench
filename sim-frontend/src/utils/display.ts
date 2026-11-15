@@ -113,6 +113,16 @@ export function taskStatusLabel(status?: string): string {
   return (status && TASK_STATUS_LABEL[status]) || status || '-'
 }
 
+export function deployTaskStatusLabel(status?: string): string {
+  const stages: Record<string, string> = {
+    pending: '待确认',
+    confirmed: '已确认，待执行',
+    deploying: '执行中或待验证',
+    success: '已完成',
+  }
+  return stages[status || ''] || taskStatusLabel(status)
+}
+
 export function taskStatusTagType(status?: string): string {
   return (status && TASK_STATUS_TAG[status]) || 'info'
 }
@@ -120,6 +130,12 @@ export function taskStatusTagType(status?: string): string {
 export function alarmTypeLabel(kind?: string): string {
   const labels: Record<string,string> = {interface_expected_down:'预期启用接口未Up',interface_review:'端口状态待核对',interface_down_high:'接口down总数（旧规则）',cpu_usage_high:'CPU使用率超限',memory_usage_high:'内存使用率超限',temperature_high:'温度超限',ospf_neighbor_count_low:'OSPF邻居数低于阈值'}
   return (kind && labels[kind]) || kind || '未知类型'
+}
+
+export function alarmMeasurementLabel(value?: number | string | null, kind?: string | null): string {
+  if (value == null || value === '') return '未记录'
+  const unit = kind === 'cpu_usage_high' || kind === 'memory_usage_high' ? '%' : kind === 'temperature_high' ? ' °C' : ''
+  return `${value}${unit}`
 }
 
 export function alarmMeaning(kind?: string): string {
@@ -146,7 +162,7 @@ export function savedVerificationState(record: {execution_mode?:unknown;verified
 
 export function auditActionLabel(action?: string): string {
   const labels: Record<string,string>={deploy_task_confirmed:'确认下发任务',deploy_task_executed:'执行下发任务',deploy_task_verified:'核对设备回读',deploy_task_cancelled:'取消任务',device_write_lock_acquired:'取得设备写锁',device_write_lock_released:'释放设备写锁',port_expectations_updated:'更新本地端口期望',alarm_acknowledged:'接手告警',alarm_closed:'结束告警记录',login:'登录',logout:'退出登录',create:'创建记录',update:'更新记录',delete:'删除记录'}
-  Object.assign(labels,{create_config:'新增配置项',update_config:'更新配置项',delete_config:'删除配置项',llm_test:'测试模型连通性',health_check:'检查管理连接',capture_config:'采集配置快照'})
+  Object.assign(labels,{create_config:'新增配置项',update_config:'更新配置项',delete_config:'删除配置项',llm_test:'测试模型连通性',health_check:'检查管理连接',device_health_check:'检查管理连接',capture_config:'采集配置快照'})
   return (action&&labels[action])||action||'未记录动作'
 }
 
@@ -165,4 +181,8 @@ export function observationCompletenessLabel(value?: string): string {
 }
 export function observationModeLabel(value?: string): string {
   return ({real:'真实读取',sim:'模拟读取',simulated:'模拟读取',unknown:'来源模式未知'} as Record<string,string>)[value||''] || value || '来源模式未记录'
+}
+
+export function environmentStatusLabel(status: string): string {
+  return ({ ready: '映射已核对', mismatch: '映射不一致', unreachable: '设备不可达', busy: '设备占用中', unknown: '证据不足', draft: '待预检' } as Record<string, string>)[status] || '状态待确认'
 }

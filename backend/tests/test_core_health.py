@@ -79,6 +79,22 @@ def test_side_probe_cache_roundtrip():
     assert first == second == {"status": "unavailable"}
 
 
+def test_connection_probe_time_belongs_to_the_actual_probe_and_configuration():
+    provider = _CountingProvider(healthy=False)
+    assert lp.llm_health_checked_at(provider) is None
+    with pytest.raises(StopIteration) as result:
+        lp.cached_llm_health_check(provider).send(None)
+    assert result.value.value is False
+    checked_at = lp.llm_health_checked_at(provider)
+    assert checked_at is not None and checked_at.tzinfo is not None
+
+    with pytest.raises(StopIteration):
+        lp.cached_llm_health_check(provider).send(None)
+    assert provider.calls == 1
+    assert lp.llm_health_checked_at(provider) == checked_at
+    assert lp.llm_health_checked_at(_CountingProvider(model="another")) is None
+
+
 class TestLlmConfigSource:
     """health 的 config_source 必须反映"DB 里是否真有 llm.* 覆盖行"。
 

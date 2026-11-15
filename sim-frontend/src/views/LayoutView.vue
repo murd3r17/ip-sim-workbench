@@ -1,25 +1,25 @@
 <template>
   <div class="app-layout">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
-    <aside class="app-aside" :class="{ narrow: navCollapsed, open: navOpen }" aria-label="主导航">
+    <aside id="workbench-navigation" class="app-aside" :class="{ narrow: collapsed, open: navOpen }" aria-label="主导航">
       <div class="logo">
         <span class="logo-mark">IP</span>
-        <span v-if="!navCollapsed" class="logo-text">仿真运维工作台<small>Operations Center</small></span>
+        <span v-if="!collapsed" class="logo-text">仿真运维工作台<small>Operations Center</small></span>
       </div>
       <el-menu
         :default-active="activePath"
-        :collapse="navCollapsed"
+        :collapse="collapsed"
         :collapse-transition="false"
         router
         class="nav-menu"
         @select="navOpen = false"
       >
-        <el-menu-item-group v-if="!navCollapsed" title="总览">
+        <el-menu-item-group v-if="!collapsed" title="总览">
           <el-menu-item index="/dashboard">工作台</el-menu-item>
           <el-menu-item index="/topology">拓扑</el-menu-item>
         </el-menu-item-group>
         <el-menu-item v-else index="/dashboard" title="工作台">⌂</el-menu-item>
-        <el-menu-item-group v-if="!navCollapsed" title="设备与变更">
+        <el-menu-item-group v-if="!collapsed" title="设备与变更">
           <el-menu-item index="/devices">设备</el-menu-item>
           <el-menu-item index="/webssh">终端</el-menu-item>
           <el-menu-item index="/deploy">配置下发</el-menu-item>
@@ -28,15 +28,15 @@
           <el-menu-item v-if="isAdmin" index="/environments">环境映射</el-menu-item>
         </el-menu-item-group>
         <el-menu-item v-else index="/devices" title="设备">▤</el-menu-item>
-        <el-menu-item-group v-if="!navCollapsed" title="观测">
+        <el-menu-item-group v-if="!collapsed" title="观测">
           <el-menu-item index="/monitor">监控</el-menu-item>
           <el-menu-item index="/alarms">告警</el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group v-if="!navCollapsed" title="工具">
+        <el-menu-item-group v-if="!collapsed" title="工具">
           <el-menu-item index="/training">实训</el-menu-item>
           <el-menu-item index="/knowledge">知识库</el-menu-item>
         </el-menu-item-group>
-        <el-menu-item-group v-if="!navCollapsed && isAdmin" title="系统">
+        <el-menu-item-group v-if="!collapsed && isAdmin" title="系统">
           <el-sub-menu index="system">
             <template #title>系统管理</template>
             <el-menu-item index="/system/info">系统信息</el-menu-item>
@@ -56,7 +56,7 @@
     <div class="center-wrap">
       <header class="app-header">
         <div class="header-title">
-          <button class="mobile-nav-toggle" title="打开导航" @click="navOpen = true">☰</button>
+          <button class="mobile-nav-toggle" type="button" aria-label="打开导航" aria-controls="workbench-navigation" :aria-expanded="navOpen" @click="navOpen = !navOpen">☰</button>
           <div class="title-block">
             <span class="page-title">{{ route.name }}</span>
             <span class="page-context">{{ contextLabel }}</span>
@@ -75,7 +75,7 @@
             :title="`正在实训 ${labCtx.label}。关闭窗口不会结束实验，点这里即可再打开。`"
             @click="resumeTraining"
           >实训进行中 · {{ labCtx.label }}</button>
-          <button class="ai-toggle" :class="{ on: copilot.open }" title="AI 助手（可收起，不遮挡主任务）" @click="copilot.toggle()">
+          <button class="ai-toggle" type="button" :class="{ on: copilot.open }" :aria-expanded="copilot.open" aria-controls="workbench-assistant" title="展开或收起 AI 助手" @click="copilot.toggle()">
             AI 助手
           </button>
           <el-dropdown trigger="click" @command="handleCommand">
@@ -88,7 +88,7 @@
           </el-dropdown>
         </div>
       </header>
-      <main id="main-content" class="app-main">
+      <main id="main-content" class="app-main" :inert="narrowWindow && copilot.open">
         <router-view v-slot="{ Component }">
           <component :is="Component" class="page-root" />
         </router-view>
@@ -105,14 +105,19 @@ import AiCopilotPanel from '../components/AiCopilotPanel.vue'
 import { useAiCopilotStore } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
 import { useCurrentUser } from '../composables/useCurrentUser'
+import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { clearClientSession } from '../utils/session'
 
 const route = useRoute()
 const router = useRouter()
 const navOpen = ref(false)
 const navCollapsed = ref(localStorage.getItem('v7b_nav_collapsed') === '1')
+const narrowWindow = ref(window.matchMedia('(max-width: 900px)').matches)
+const collapsed = computed(() => navCollapsed.value && !narrowWindow.value)
 const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
+const drafts = useWorkbenchDraftsStore()
 const { user, isAdmin } = useCurrentUser()
 
 const environmentName = 'IP仿真运维管理工作台'
@@ -130,23 +135,49 @@ const contextLabel = computed(() => {
 
 const now = ref(new Date())
 let clockTimer = 0
+const narrowQuery = window.matchMedia('(max-width: 900px)')
+function syncNarrowWindow() {
+  narrowWindow.value = narrowQuery.matches
+  if (!narrowWindow.value) navOpen.value = false
+}
+const hasUnsentWork = computed(() =>
+  !!(drafts.deploy.form.config_content.trim() || drafts.deploy.form.name.trim() || drafts.deploy.intent.trim()) ||
+  Object.keys(drafts.training).length > 0)
+function confirmLeaving(event: BeforeUnloadEvent) {
+  if (!hasUnsentWork.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 const currentTime = computed(() => now.value.toLocaleTimeString('zh-CN', { hour12: false }))
 onMounted(() => {
   clockTimer = window.setInterval(() => { now.value = new Date() }, 1000)
+  narrowQuery.addEventListener('change', syncNarrowWindow)
+  window.addEventListener('beforeunload', confirmLeaving)
   // 首次在窄窗口进入时默认收起助手，避免一进来就把主任务挤到很窄；用户仍可一键展开。
   if (localStorage.getItem('ai_copilot_open') === null && window.innerWidth < 1280) {
     copilot.setOpen(false)
   }
 })
-onUnmounted(() => window.clearInterval(clockTimer))
+onUnmounted(() => {
+  window.clearInterval(clockTimer)
+  narrowQuery.removeEventListener('change', syncNarrowWindow)
+  window.removeEventListener('beforeunload', confirmLeaving)
+})
 
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
   localStorage.setItem('v7b_nav_collapsed', navCollapsed.value ? '1' : '0')
 }
 
-function handleCommand(cmd: string) {
+async function handleCommand(cmd: string) {
   if (cmd === 'logout') {
+    if (hasUnsentWork.value) {
+      try {
+        await ElMessageBox.confirm('退出会清除此标签页中未保存的笔记和配置草稿。要继续退出吗？', '退出登录', {
+          confirmButtonText: '退出', cancelButtonText: '返回保存', type: 'warning',
+        })
+      } catch { return }
+    }
     clearClientSession()
     router.push('/login')
   }
@@ -315,12 +346,13 @@ function resumeTraining() {
   background: var(--v7b-bg);
 }
 .page-root {
+  --workspace-content-max: clamp(1760px, 74vw, 2160px);
   flex: 1;
   min-height: 0;
   min-width: 0;
   width: 100%;
   overflow: auto;
-  padding: 18px 20px 24px;
+  padding: 18px max(20px, calc((100% - var(--workspace-content-max)) / 2)) 24px;
 }
 .app-aside :deep(.el-menu-item),
 .app-aside :deep(.el-sub-menu__title) {
@@ -349,8 +381,10 @@ function resumeTraining() {
   .env-name { display: none; }
 }
 @media (max-width: 900px) {
-  .app-aside { position: fixed; inset: 0 auto 0 0; width: 220px !important; flex-basis: 220px; transform: translateX(-100%); transition: transform .18s ease; }
-  .app-aside.open { transform: translateX(0); }
+  .app-layout { height: 100dvh; flex-direction: column; }
+  .center-wrap { flex: 1 1 0; height: auto; min-height: 0; }
+  .app-aside { position: fixed; inset: 0 auto 0 0; width: 220px !important; flex-basis: 220px; visibility: hidden; transform: translateX(-100%); transition: transform .18s ease; }
+  .app-aside.open { visibility: visible; transform: translateX(0); }
   .nav-scrim { position: fixed; inset: 0; z-index: 25; display: block; border: 0; background: rgba(0,0,0,.55); }
   .mobile-nav-toggle { display: inline-grid; place-items: center; }
   .collapse-btn { display: none; }

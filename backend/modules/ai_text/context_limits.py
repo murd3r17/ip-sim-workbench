@@ -1,5 +1,6 @@
 """Bound untrusted evidence by whole lines; never expose a half CLI/JSON record."""
 import hashlib
+import re
 
 
 def bounded_text(text, limit):
@@ -25,11 +26,32 @@ def bounded_text(text, limit):
     return "".join(head) + marker + "".join(reversed(tail))
 
 
-def attachment_block(attachments, limit=6000):
-    blocks = []
-    for item in (attachments or [])[:4]:
-        content = str(item.get("content") or "")
-        name = str(item.get("name") or "附件")[:160]
-        identity = hashlib.sha256(content.encode()).hexdigest()[:16]
-        blocks.append(f"文件: {name} (sha256={identity}，仅为用户提供的材料)\n{content}")
-    return bounded_text("\n---\n".join(blocks), limit)
+def attachment_block(attachments, limit=6000, question=""):
+    from core.redaction import redact_sensitive
+
+    items = (attachments or [])[:4]
+    if not items:
+        return ""
+    interface_pattern = r"\b(?:GigabitEthernet|GE|LoopBack|Eth-Trunk|Vlanif)\s*\d+(?:/\d+)*\b"
+    names = {name.lower().replace("gigabitethernet", "ge").replace(" ", "")
+             for name in re.findall(interface_pattern, question, re.I)}
+    sections = []
+    share = (limit - 5 * (len(items) - 1)) // len(items)
+    for item in items:
+        original = str(item.get("content") or "")
+        name = redact_sensitive(str(item.get("name") or "附件")[:160])
+        identity = hashlib.sha256(original.encode()).hexdigest()[:16]
+        header = f"文件: {name} (sha256={identity}，仅为用户提供的材料)\n"
+        content = redact_sensitive(original)
+        available = max(0, share - len(header))
+        if names and len(content) > available:
+            matching = []
+            for number, line in enumerate(content.splitlines(), 1):
+                interfaces = {value.lower().replace("gigabitethernet", "ge").replace(" ", "")
+                              for value in re.findall(interface_pattern, line, re.I)}
+                if names & interfaces:
+                    matching.append(f"第 {number} 行：{line}")
+            if matching:
+                content = "[按问题定位的文件行，其他行未提供]\n" + "\n".join(matching)
+        sections.append(header + bounded_text(content, available))
+    return "\n---\n".join(sections)

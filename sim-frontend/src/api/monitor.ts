@@ -92,14 +92,14 @@ export const getMonitorStats = (opts?: { silent?: boolean }) =>
 export const getMonitorTrends = (params?: { topology_id?: number; device_id?: number; metric_type?: string; limit?: number }, opts?: { silent?: boolean }) =>
   request.get<MonitorTrend, MonitorTrend>('/monitor/trends', { params, silent: opts?.silent })
 
-export const getMonitorTasks = (params?: { topology_id?: number; job_type?: string; limit?: number }, opts?: { silent?: boolean }) =>
+export const getMonitorTasks = (params?: { topology_id?: number; job_type?: string; job_id?: number; limit?: number }, opts?: { silent?: boolean }) =>
   request.get<MonitorTaskRecord[], MonitorTaskRecord[]>('/monitor/tasks', { params, silent: opts?.silent })
 
 export const runInspection = (topologyId: number) =>
   request.post(`/monitor/inspections/${topologyId}`)
 
 // 告警
-export const getAlarms = (params?: { status?: string; device_id?: number; limit?: number; offset?: number }, opts?: { silent?: boolean }) =>
+export const getAlarms = (params?: { status?: string; device_id?: number; alarm_id?: number; limit?: number; offset?: number }, opts?: { silent?: boolean }) =>
   request.get<AlarmRecord[], AlarmRecord[]>('/alarms', { params, silent: opts?.silent })
 
 export const acknowledgeAlarm = (alarmId: number) =>

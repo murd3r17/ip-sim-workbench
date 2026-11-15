@@ -49,6 +49,7 @@ class TaskItem(BaseModel):
     name: str
     status: str
     progress: int
+    batch_id: int | None = None
     device_name: str | None = None
     high_risk: bool = False
     has_diff: bool = False
@@ -60,6 +61,7 @@ class TaskSummary(BaseModel):
     pending: int
     failed: int
     with_diff: int
+    deploy_batches: int = 0
     items: list[TaskItem]
 
 
@@ -67,8 +69,11 @@ class AlarmItem(BaseModel):
     id: int
     device_id: int
     device_name: str
+    alarm_type: str | None = None
     severity: str
     message: str
+    metric_value: float | None = None
+    threshold: float | None = None
     status: str
     fired_at: UtcDatetime
 
@@ -93,6 +98,7 @@ class ApprovalItem(BaseModel):
     """待确认/待执行的下发任务（首页"审批状态"面板）。"""
 
     id: int
+    name: str | None = None
     device_name: str
     status: str
     high_risk: bool
@@ -104,12 +110,14 @@ class ReportItem(BaseModel):
     """最近巡检/采集任务（首页"巡检 / 验证报告"入口）。"""
 
     id: int
+    topology_id: int | None = None
     job_type: str
     status: str
     trigger_mode: str
     device_count: int | None = None
     success_count: int | None = None
     failure_count: int | None = None
+    skipped_count: int | None = None
     alarm_count: int | None = None
     created_at: UtcDatetime
 
@@ -120,6 +128,7 @@ class ServiceState(BaseModel):
     provider: str | None = None
     model: str | None = None
     config_source: str | None = None
+    checked_at: UtcDatetime | None = None
 
 
 class ServicesSummary(BaseModel):

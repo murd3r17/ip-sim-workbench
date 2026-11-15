@@ -32,14 +32,17 @@
       <p class="log-scope">最近最多 500 行 · 本次只读结果</p>
       <el-alert v-if="readError" :title="readError" type="warning" :closable="false" show-icon />
       <p v-if="reading" role="status">正在读取所选日志…</p>
-      <pre v-else-if="!readError" class="log-content">{{ logContent || '本次返回没有日志内容。' }}</pre>
+      <template v-else-if="!readError">
+        <el-input v-model="logFilter" aria-label="筛选当前日志" clearable placeholder="筛选当前日志，可粘贴请求编号" />
+        <pre class="log-content">{{ displayedLog || (logFilter.trim() ? '在已载入的行中没有找到匹配项。' : '本次返回没有日志内容。') }}</pre>
+      </template>
       <template #footer><el-button v-if="readError" :loading="reading" @click="viewLog(currentFile)">重试读取</el-button><el-button @click="logVisible=false">返回列表</el-button></template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { notifyRequestError } from '../../utils/requestError'
 import { formatApiTime } from '../../utils/datetime'
 import { listLogFiles, readLogFile } from '@/api/system'
@@ -51,6 +54,11 @@ const loading = ref(false)
 const logVisible = ref(false)
 const currentFile = ref('')
 const logContent = ref('')
+const logFilter = ref('')
+const displayedLog = computed(() => {
+  const query = logFilter.value.trim().toLowerCase()
+  return query ? logContent.value.split('\n').filter(line => line.toLowerCase().includes(query)).join('\n') : logContent.value
+})
 const loadError=ref(''),readError=ref(''),reading=ref(false)
 let loadEpoch=0,readEpoch=0
 watch(logVisible,visible=>{if(!visible){readEpoch++;reading.value=false}},{flush:'sync'})
@@ -76,6 +84,7 @@ const loadFiles = async () => {
 
 const viewLog = async (filename: string) => {
   const epoch=++readEpoch
+  if (filename !== currentFile.value) logFilter.value = ''
   currentFile.value = filename
   logVisible.value=true;logContent.value='';readError.value='';reading.value=true
   try {

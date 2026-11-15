@@ -105,11 +105,18 @@ test('设备列表遇到 503 可重试，恢复后可采集只读事实', async 
   await expect(drawer.locator('.obs-result')).toContainText('解析器')
 })
 
-test('拓扑呈现已保存设备、链路证据和终端入口', async ({ page }) => {
+test('首页展示只读拓扑全局，同一拓扑的详情页可检查链路和打开终端', async ({ page }) => {
   await login(page)
-  await page.getByRole('menuitem', { name: '拓扑', exact: true }).click()
+  const overview = page.getByRole('region', { name: '网络拓扑', exact: true })
+  await expect(overview.locator('.canvas-node')).toHaveCount(6)
+  await expect(overview.locator('.canvas-edge')).toHaveCount(5)
+  await expect(overview.getByRole('button')).toHaveCount(0)
+  const detailLink = overview.getByRole('link', { name: '打开拓扑页' })
+  await expect(detailLink).toHaveAttribute('href', /^\/topology\?topology_id=\d+$/)
+  await detailLink.click()
   const canvas = page.getByRole('region', { name: '拓扑画布' })
   await expect(canvas.locator('.canvas-node')).toHaveCount(6)
+  await expect(canvas.locator('.canvas-edge')).toHaveCount(5)
   await canvas.getByRole('button', { name: '适应画布' }).click()
   await canvas.getByRole('checkbox', { name: '接口标签' }).check()
   await expect(canvas.locator('.edge-label text').first()).toBeVisible()

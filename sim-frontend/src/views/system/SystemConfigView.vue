@@ -50,7 +50,7 @@ const visibleConfigs=computed(()=>configs.value.filter(x=>inGroup(x,activeGroup.
 const countOf=(key:string)=>configs.value.filter(x=>inGroup(x,key)).length
 const showLlmTest=computed(()=>['all','llm'].includes(activeGroup.value))
 const consumer=(key:string):ConfigConsumer=>effective.value?.stored_items.find(x=>x.key===key)||effective.value?.known_items.find(x=>x.key===key)||{key,consumer:'unregistered',activation:'unknown',note:key.startsWith('llm.')?'仅支持已登记的LLM覆盖键，具体生效方式以有效配置快照为准。':'此键尚无已确认消费者；保存键值不证明已改变当前服务。'}
-const activationLabel=(value:string)=>({next_provider:'后续新模型请求',next_collection:'后续采集读取',not_applied:'仅保存，未覆盖运行值',unknown:'消费者未登记'}[value]||value)
+const activationLabel=(value:string)=>({next_provider:'后续新模型请求',next_collection:'后续采集读取',not_applied:'仅保存，未覆盖运行值',unknown:'未确认何处读取'}[value]||value)
 const deleteMessage=(key:string)=>consumer(key).activation==='next_provider'?'删除此数据库覆盖后，后续新模型请求回退到进程启动配置；在途请求不改。':'只删除此数据库键值；不会修改启动环境或直接修复设备。是否继续？'
 const loadConfigs=async()=>{
  const epoch=++loadEpoch;loading.value=true

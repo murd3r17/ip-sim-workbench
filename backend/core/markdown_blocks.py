@@ -55,6 +55,19 @@ def blocks(text: str) -> Iterator[tuple[str, int, int]]:
         yield kind, offsets[start], offsets[i]
 
 
+def unclosed_fence_start(text: str) -> int | None:
+    """Return the start of a fenced block whose closing marker is missing."""
+    for kind, start, end in blocks(text):
+        if kind != "fence":
+            continue
+        lines = text[start:end].splitlines()
+        marker = FENCE.match(lines[0])[1]
+        closing = r" {0,3}" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}\s*"
+        if len(lines) == 1 or not re.fullmatch(closing, lines[-1]):
+            return start
+    return None
+
+
 def complete_prefix(text: str, limit: int) -> str:
     """A contiguous source prefix ending at a complete substantive block.
 

@@ -2,13 +2,13 @@
   <div class="topology-page">
     <PageHeader
       title="拓扑"
-      subtitle="核对库存设备的 LLDP 邻接与链路基线；布局发布、基线修改和运行态观察分别记录。"
+      subtitle="选择要查看的拓扑。点设备看状态，点链路看两端接口，运行态校验用于对照最近读取的 LLDP 邻接。"
     >
       <template #actions>
         <el-button :loading="loading" @click="loadTopology">刷新</el-button>
-        <AdminAction v-slot="{ disabled }"><el-button type="primary" :disabled="disabled" :loading="discovering" @click="runDiscover">运行态校验</el-button></AdminAction>
+        <AdminAction v-slot="{ disabled }"><el-button type="primary" :disabled="disabled || loading || !nodes.length" :loading="discovering" @click="runDiscover">运行态校验</el-button></AdminAction>
         <AdminAction v-slot="{ disabled }">
-          <el-button type="primary" :disabled="disabled || !nodes.length || savingDraft" :loading="publishing" @click="publishToDashboard">发布到总览</el-button>
+          <el-button :disabled="disabled || !nodes.length || savingDraft" :loading="publishing" @click="publishLayout">发布布局到首页</el-button>
         </AdminAction>
         <el-dropdown trigger="click" @command="handleTopologyCommand">
           <el-button>更多</el-button>
@@ -31,14 +31,21 @@
     <el-alert v-if="topologyLoadError" :title="topologyLoadError" type="error" :closable="false" show-icon />
     <div class="topology-context">
       <div class="topology-counts">
-        <el-tag type="info">{{ topologyLoadError ? '拓扑数据暂不可用' : `设备 ${nodes.length}` }}</el-tag>
+        <label v-if="topologies.length" class="topology-picker">
+          <span>当前拓扑</span>
+          <el-select :model-value="topologyId || undefined" aria-label="查看拓扑" :disabled="switchingTopology || savingDraft || publishing || discovering || importing || rollingBack" @change="switchTopology">
+            <el-option v-for="item in topologies" :key="item.id" :value="item.id" :label="topologyOptionLabel(item)" />
+          </el-select>
+        </label>
+        <el-tag type="info">{{ topologyLoadError ? '拓扑数据暂不可用' : `图上全部设备 ${nodes.length} 台` }}</el-tag>
         <el-tag v-if="!topologyLoadError" type="info">{{ baselineEdgeCount ? `基线关系 ${baselineEdgeCount}` : '未设置链路基线' }}</el-tag>
         <el-tag v-if="manualEdgeCount" type="info">非基线关系 {{ manualEdgeCount }}</el-tag>
-        <el-tag v-if="selectedNode" type="warning">选中 {{ selectedNode.label }}</el-tag>
+        <el-tag v-if="selectedNode" type="warning">已高亮 {{ selectedNode.label }}，仍显示全部设备</el-tag>
       </div>
       <div v-if="selectedNode" class="v7b-actions">
-        <el-button size="small" type="primary" @click="openSelectedWebSSH">开终端</el-button>
-        <el-button size="small" @click="openSelectedDeploy">去下发</el-button>
+        <el-button size="small" type="primary" @click="openSelectedObservation">只读观察</el-button>
+        <el-button size="small" @click="openSelectedWebSSH">开终端</el-button>
+        <el-button size="small" @click="openSelectedDeploy">准备变更</el-button>
       </div>
       <input ref="fileInput" class="file-input" type="file" accept=".xlsx" @change="onExcelSelected">
     </div>
@@ -199,8 +206,8 @@
 import PageHeader from '../../components/v7b/PageHeader.vue'
 import TopologyCanvas from '../../components/TopologyCanvas.vue'
 import { formatApiTime } from '../../utils/datetime'
-import { type GraphEdge, type GraphNode } from '../../utils/topologyCanvas'
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { toTopologyGraph, type GraphEdge, type GraphNode } from '../../utils/topologyCanvas'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
@@ -223,12 +230,11 @@ import {
   rollbackTopologyVersion,
   saveTopologyLayoutDraft,
   validateTopologyImport,
-  type DeviceRecord,
   type ImportPreview,
   type RuntimeCheckResult,
-  type TopologyLinkRecord,
   type TopologyLayoutPosition,
   type TopologyRuntimeDiff,
+  type TopologyRecord,
   type TopologyVersion,
 } from '../../api/device'
 import { useLabContextStore } from '../../stores/labContext'
@@ -242,8 +248,8 @@ const edges = ref<GraphEdge[]>([])
 const selectedNode = ref<GraphNode | null>(null)
 const router = useRouter()
 
-function handleTopologyCommand(command: string) {
-  if (command === 'create') showCreateDialog.value = true
+async function handleTopologyCommand(command: string) {
+  if (command === 'create' && await confirmTopologyChange()) showCreateDialog.value = true
   else if (command === 'excel') selectExcel()
   else if (command === 'baseline') confirmRuntimeBaseline()
   else if (command === 'save') saveDraft()
@@ -277,6 +283,11 @@ function openSelectedWebSSH() {
   router.push(`/webssh/${selectedNode.value.id}`)
 }
 
+function openSelectedObservation() {
+  if (!selectedNode.value) return
+  void router.push({ path: '/devices', query: { observe_device: selectedNode.value.id } })
+}
+
 function openSelectedDeploy() {
   if (!selectedNode.value) return
   router.push({ path: '/deploy', query: { device_id: selectedNode.value.id } })
@@ -293,6 +304,8 @@ const showCreateDialog = ref(false)
 const createForm = ref({ name: '', description: '' })
 const discoverResult = ref('')
 const topologyId = ref(0)
+const topologies = ref<TopologyRecord[]>([])
+const switchingTopology = ref(false)
 const selectedExcel = ref<File>()
 const importPreview = ref<ImportPreview>()
 const importDialogVisible = ref(false)
@@ -391,25 +404,26 @@ const loadTopology = async () => {
   const epoch = ++topologyLoadEpoch
   loading.value = true
   try {
-    const topologies = await getTopologies()
+    const options = await getTopologies()
     if (epoch !== topologyLoadEpoch) return
-    if (!topologies || !topologies.length) {
+    topologies.value = options
+    if (!options.length) {
       topologyId.value = 0
       clearTopologyView()
       topologyLoadError.value = ''
       return
     }
 
-    const withDevices = topologies.filter((t: { device_count?: number }) => (t.device_count || 0) > 0)
+    const withDevices = options.filter(item => (item.device_count || 0) > 0)
     const preferred = Number(route.query.topology_id || labCtx.topologyId || topologyId.value || 0)
     const matched = preferred
-      ? topologies.find((t: { id: number }) => t.id === preferred)
+      ? options.find(item => item.id === preferred)
       : null
-    const chosen = matched || withDevices[0] || topologies[0]
-    if (topologyId.value !== (chosen?.id || topologies[0].id)) {
+    const chosen = matched || withDevices[0] || options[0]
+    if (topologyId.value !== chosen.id) {
       clearTopologyView()
     }
-    topologyId.value = chosen?.id || topologies[0].id
+    topologyId.value = chosen.id
     labCtx.setTopology(topologyId.value)
     const revision = layoutRevision
     const [devices, links, latestCheck, layout] = await Promise.all([
@@ -420,37 +434,14 @@ const loadTopology = async () => {
     ])
     if (epoch !== topologyLoadEpoch) return
 
-    nodes.value = devices.map((d: DeviceRecord) => ({
-      id: String(d.id),
-      label: d.hostname,
-      status: d.status,
-      type: d.device_type,
-      model: d.model || '',
-      mgmt_ip: d.mgmt_ip,
-      network_role: d.network_role
-    }))
+    const graph = toTopologyGraph(devices, links)
+    nodes.value = graph.nodes
     if (selectedNode.value) {
       selectedNode.value = nodes.value.find(node => node.id === selectedNode.value?.id) || null
     }
 
-    const names = new Map(devices.map(device => [device.id, device.hostname]))
-    const baseEdges = links.map((l: TopologyLinkRecord) => ({
-      source: String(l.source_device_id),
-      target: String(l.target_device_id),
-      source_name: names.get(l.source_device_id) || String(l.source_device_id),
-      target_name: names.get(l.target_device_id) || String(l.target_device_id),
-      source_interface: l.source_interface,
-      target_interface: l.target_interface,
-      source_ip: l.source_ip,
-      target_ip: l.target_ip,
-      link_type: l.link_type || 'physical',
-      status: l.status,
-      bandwidth: l.bandwidth || '',
-      discovery_source: l.discovery_source || '',
-      source_type: l.source_type,
-    }))
     runtimeCheck.value = latestCheck
-    edges.value = applyRuntimeDiff(baseEdges, latestCheck?.is_stale || latestCheck?.evidence_stale || latestCheck?.mode_changed ? undefined : latestCheck?.diff)
+    edges.value = applyRuntimeDiff(graph.edges, latestCheck?.is_stale || latestCheck?.evidence_stale || latestCheck?.mode_changed ? undefined : latestCheck?.diff)
     // 保留尚未保存的本地布局
     if (!layoutDirty.value && revision === layoutRevision) {
       draftPositions.value = layout.draft_positions
@@ -466,6 +457,32 @@ const loadTopology = async () => {
     if (epoch === topologyLoadEpoch) loading.value = false
   }
 }
+
+function topologyOptionLabel(item: TopologyRecord) {
+  return item.device_count == null ? item.name : `${item.name} · ${item.device_count} 台设备`
+}
+
+async function confirmTopologyChange() {
+  if (!layoutDirty.value) return true
+  try {
+    await ElMessageBox.confirm('当前布局有未保存的位置调整。可以先返回并保存草稿。', '切换拓扑', {
+      type: 'warning', confirmButtonText: '切换并放弃位置调整', cancelButtonText: '留在当前拓扑',
+    })
+    return true
+  } catch { return false }
+}
+
+async function switchTopology(id: number) {
+  if (id === topologyId.value || switchingTopology.value || !topologies.value.some(item => item.id === id)) return
+  switchingTopology.value = true
+  try {
+    if (await confirmTopologyChange()) await router.push({ path: '/topology', query: { ...route.query, topology_id: id } })
+  } finally { switchingTopology.value = false }
+}
+
+watch(() => route.query.topology_id, () => {
+  if (route.path === '/topology') void loadTopology()
+})
 
 const currentPositions = () => canvas.value?.getPositions() || {}
 
@@ -489,13 +506,10 @@ const handleCreateTopology = async () => {
       description: createForm.value.description.trim() || undefined,
       topology_type: 'main',
     }) as unknown as { id: number }
-    clearTopologyView()
-    topologyId.value = created.id
-    labCtx.setTopology(created.id)
     showCreateDialog.value = false
     createForm.value = { name: '', description: '' }
     ElMessage.success('拓扑已创建，可导入 Excel 或添加设备')
-    await loadTopology()
+    await router.replace({ path: '/topology', query: { ...route.query, topology_id: created.id } })
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -545,11 +559,11 @@ function acceptLayout(positions: Record<string, TopologyLayoutPosition>, revisio
   return true
 }
 
-const publishToDashboard = async () => {
+const publishLayout = async () => {
   const target = topologyId.value
   if (!target || !nodes.value.length || savingDraft.value || publishing.value) return
   try {
-    await ElMessageBox.confirm('确定把当前布局发布到运维总览？发布后总览页将使用这份拓扑。', '发布到运维总览', { type: 'warning' })
+    await ElMessageBox.confirm('确定发布当前拓扑布局？之后可通过「恢复已发布布局」取回这份布局。', '发布布局', { type: 'warning' })
   } catch {
     return
   }
@@ -561,7 +575,7 @@ const publishToDashboard = async () => {
     const accepted = topologyId.value === target && acceptLayout(saved.draft_positions, revision)
     const layout = await publishTopologyLayout(target)
     if (accepted && topologyId.value === target) acceptLayout(layout.published_positions, revision + 1)
-    ElMessage.success('已发布到运维总览')
+    ElMessage.success('拓扑布局已发布')
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -813,5 +827,7 @@ onUnmounted(() => {
 .coverage-details summary { cursor: pointer; color: var(--v7b-accent); padding: 7px 0; }
 .coverage-body { max-height: 36vh; overflow: auto; padding: 10px 12px; background: var(--v7b-surface); border: 1px solid var(--v7b-line); line-height: 1.7; overflow-wrap: anywhere; }
 .topology-counts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.topology-picker { display: flex; align-items: center; gap: 8px; color: var(--v7b-muted); font-size: 12px; }
+.topology-picker :deep(.el-select) { width: min(300px, 64vw); }
 .topology-counts :deep(.el-tag--info) { background: #fff; color: var(--v7b-muted); border-color: var(--v7b-line); }
 </style>
