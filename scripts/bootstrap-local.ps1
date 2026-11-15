@@ -36,6 +36,18 @@ $EnvFile = Join-Path $Root ".env"
 $EnvExample = Join-Path $Root ".env.example"
 if ($MinimalDbPath -and $Mode -ne 'minimal') { throw 'MinimalDbPath 仅用于本地模拟工作台。' }
 
+if ($Mode -eq 'minimal' -and -not $NoStart) {
+  $portCheck = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $BackendPort)
+  try {
+    $portCheck.ExclusiveAddressUse = $true
+    $portCheck.Start()
+  } catch [System.Net.Sockets.SocketException] {
+    throw "无法监听本机端口 $BackendPort。请确认端口可用，或用 -BackendPort 指定其他端口。"
+  } finally {
+    $portCheck.Stop()
+  }
+}
+
 function Info($msg) { Write-Host "[bootstrap] $msg" }
 function Warn($msg) { Write-Host "[bootstrap] WARN: $msg" -ForegroundColor Yellow }
 
@@ -199,7 +211,8 @@ if ($NoStart) {
   if ($Mode -eq 'full') {
     Write-Host "  powershell -ExecutionPolicy Bypass -File scripts\start-full.ps1 -BackendPort $BackendPort"
   } else {
-    Write-Host "  cd backend; .venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000"
+    Write-Host "  Set-Location .\backend"
+    Write-Host "  .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
   }
   exit 0
 }
@@ -209,25 +222,30 @@ if ($Mode -eq 'full') {
   & (Join-Path $PSScriptRoot 'start-full.ps1') -Root $Root -BackendPort $BackendPort
 } else {
   Info "启动后端（前端由后端托管）…"
+  $appUrl = "http://127.0.0.1:$BackendPort"
   New-Item -ItemType Directory -Force -Path (Join-Path $Root '.runtime\logs') | Out-Null
   $env:PYTHONPATH = $Backend
-  Start-Process -FilePath $VenvPy `
-    -ArgumentList @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000") `
+  $backendProcess = Start-Process -FilePath $VenvPy `
+    -ArgumentList @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "$BackendPort") `
+    -PassThru `
     -WorkingDirectory $Backend -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $Root ".runtime\logs\backend.out") `
     -RedirectStandardError (Join-Path $Root ".runtime\logs\backend.err")
   $deadline = (Get-Date).AddSeconds(60)
   $up = $false
   while ((Get-Date) -lt $deadline) {
+    if ($backendProcess.HasExited) { break }
     try {
-      $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/v1/health" -UseBasicParsing -TimeoutSec 3
+      $resp = Invoke-WebRequest -Uri "$appUrl/api/v1/health" -UseBasicParsing -TimeoutSec 3
       if ($resp.StatusCode -eq 200) { $up = $true; break }
     } catch { Start-Sleep -Milliseconds 800 }
   }
   if ($up) {
     Write-Host ""
-    Write-Host "  ★ 打开 http://127.0.0.1:8000  （登录见根 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD）" -ForegroundColor Green
+    Write-Host "  ★ 打开 $appUrl  （登录见根 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD）" -ForegroundColor Green
     Write-Host ""
+  } elseif ($backendProcess.HasExited) {
+    throw "后端启动进程已退出，请查看 .runtime\logs\backend.err"
   } else {
     throw "后端 60s 内未就绪，请查看 .runtime\logs\backend.err"
   }
