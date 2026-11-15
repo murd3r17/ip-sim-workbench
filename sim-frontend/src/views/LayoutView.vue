@@ -72,7 +72,8 @@
             v-if="labCtx.isActive"
             class="lab-resume"
             type="button"
-            :title="`正在实训 ${labCtx.label}。关闭窗口不会结束实验，点这里即可再打开。`"
+            aria-haspopup="dialog"
+            :title="`在当前页打开「${labCtx.label}」的实训会话`"
             @click="resumeTraining"
           >实训进行中 · {{ labCtx.label }}</button>
           <button class="ai-toggle" type="button" :class="{ on: copilot.open }" :aria-expanded="copilot.open" aria-controls="workbench-assistant" title="展开或收起 AI 助手" @click="copilot.toggle()">
@@ -95,11 +96,17 @@
       </main>
     </div>
     <AiCopilotPanel />
+    <TrainingSessionOverlay
+      v-if="trainingOverlaySessionId !== null"
+      :key="trainingOverlaySessionId"
+      :overlay-session-id="trainingOverlaySessionId"
+      @overlay-closed="trainingOverlaySessionId = null"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiCopilotPanel from '../components/AiCopilotPanel.vue'
 import { useAiCopilotStore } from '../stores/aiCopilot'
@@ -119,6 +126,10 @@ const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const drafts = useWorkbenchDraftsStore()
 const { user, isAdmin } = useCurrentUser()
+const TrainingSessionOverlay = defineAsyncComponent(() => import('./training/TrainingLabView.vue'))
+const trainingOverlaySessionId = ref<number | null>(null)
+
+watch(() => route.fullPath, () => { trainingOverlaySessionId.value = null })
 
 const environmentName = 'IP仿真运维管理工作台'
 const activePath = computed(() => {
@@ -185,15 +196,12 @@ async function handleCommand(cmd: string) {
 
 function resumeTraining() {
   const id = labCtx.sessionId
-  if (!id) {
-    router.push('/training')
-    return
-  }
-  if (route.path === '/training' && String(route.query.session_id || '') === String(id)) {
+  if (!id || !labCtx.isActive) return
+  if (route.name === '实训') {
     window.dispatchEvent(new CustomEvent('training-open-session', { detail: { sessionId: id } }))
     return
   }
-  router.push({ path: '/training', query: { session_id: String(id) } })
+  trainingOverlaySessionId.value = id
 }
 </script>
 

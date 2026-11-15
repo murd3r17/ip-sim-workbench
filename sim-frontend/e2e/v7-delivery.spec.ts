@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import { expect, test, type Page } from '@playwright/test'
-import { ADMIN_PASSWORD, ADMIN_USER, confirmBox, ensureCopilotClosed } from './helpers'
+import { expect, test, type Page, type WebSocket } from '@playwright/test'
+import { ADMIN_PASSWORD, ADMIN_USER, ensureCopilotClosed } from './helpers'
 
 const publicPages = [
   ['/dashboard', '工作台'], ['/devices', '设备'], ['/topology', '拓扑'],
@@ -157,24 +157,54 @@ test('模拟配置任务确认后才能执行，并可查看回读报告', async
   await expect(page.getByRole('dialog').filter({ hasText: '验证结果' })).toContainText('模拟')
 })
 
-test('实训会话关闭后能重新打开同一会话', async ({ page }) => {
+test('顶部实训入口打开同一会话并保留终端连接', async ({ page }) => {
   await login(page)
   await page.getByRole('menuitem', { name: '实训', exact: true }).click()
   const lab = page.getByRole('row').filter({ hasText: '模拟网络巡检实训' }).first()
-  await lab.getByRole('button', { name: '开始实训', exact: true }).click()
   const started = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/training/sessions'
     && response.request().method() === 'POST' && response.ok())
-  await confirmBox(page)
+  await lab.getByRole('button', { name: '开始实训', exact: true }).click()
   const { id } = await (await started).json()
   expect(Number(id)).toBeGreaterThan(0)
-  const session = page.getByRole('dialog').filter({ hasText: '会话ID' })
+  const session = page.getByRole('dialog', { name: new RegExp(`实训会话 #${id} ·`) })
   await expect(session).toBeVisible()
-  await expect(session.getByText(String(id), { exact: true }).first()).toBeVisible()
   await session.locator('button.el-dialog__headerbtn').click()
   await expect(session).not.toBeVisible()
+  const resume = page.getByRole('button', { name: /^实训进行中/ })
+  await resume.click()
+  await expect(session).toBeVisible()
+  await expect(page).toHaveURL(/\/training$/)
+  await session.locator('button.el-dialog__headerbtn').click()
   await lab.getByRole('button', { name: '继续实训', exact: true }).click()
   await expect(session).toBeVisible()
-  await expect(session.getByText(String(id), { exact: true }).first()).toBeVisible()
+
+  const sockets: WebSocket[] = []
+  page.on('websocket', socket => {
+    if (new URL(socket.url()).pathname.startsWith('/api/v1/ws/ssh/')) sockets.push(socket)
+  })
+  await session.getByRole('button', { name: '开终端', exact: true }).click()
+  await page.getByRole('button', { name: '连接', exact: true }).click()
+  const ready = page.getByRole('status').filter({ hasText: '终端已就绪' })
+  await expect(ready).toBeVisible()
+  const terminalUrl = page.url()
+  const input = page.locator('.xterm-helper-textarea')
+  await input.focus()
+  await page.keyboard.type('display ')
+
+  await resume.click()
+  await expect(session).toBeVisible()
+  await expect(page).toHaveURL(terminalUrl)
+  await session.locator('button.el-dialog__headerbtn').click()
+  await expect(session).not.toBeVisible()
+  await expect(page).toHaveURL(terminalUrl)
+  await expect(ready).toBeVisible()
+
+  await input.focus()
+  await page.keyboard.type('version')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.xterm-rows')).toContainText(/Versatile|VRP/)
+  expect(sockets).toHaveLength(1)
+  expect(sockets[0].isClosed()).toBeFalsy()
 })
 
 test('受控挂起的助手请求及时出现停止入口并可取消', async ({ page }) => {

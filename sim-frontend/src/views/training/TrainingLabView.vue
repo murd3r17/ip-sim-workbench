@@ -1,5 +1,6 @@
 <template>
-  <div class="training-lab v7b-page">
+  <div v-show="overlaySessionId === undefined" class="training-lab v7b-page">
+    <template v-if="overlaySessionId === undefined">
     <PageHeader
       title="实训"
       subtitle="从实验列表开始或继续会话，在同一页记录笔记、查看提示和复盘；历史会话只读，不会覆盖旧记录。"
@@ -239,8 +240,10 @@
       </template>
     </el-dialog>
 
-    <!-- 会话详情对话框 -->
-    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" width="min(94vw, clamp(740px, 58vw, 1120px))" draggable :close-on-click-modal="false" append-to-body destroy-on-close>
+    </template>
+
+    <!-- 会话对话框挂载到 body，作为浮层使用时不依赖下方页面。 -->
+    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" width="min(94vw, clamp(740px, 58vw, 1120px))" draggable :close-on-click-modal="false" append-to-body destroy-on-close @closed="emit('overlay-closed')">
       <el-alert
         v-if="sessionReadOnly"
         type="warning"
@@ -748,6 +751,9 @@ import { useAiCopilotStore } from '../../stores/aiCopilot'
 import { useWorkbenchDraftsStore } from '../../stores/workbenchDrafts'
 import AdminAction from '../../components/AdminAction.vue'
 import PageHeader from '../../components/v7b/PageHeader.vue'
+
+const props = defineProps<{ overlaySessionId?: number }>()
+const emit = defineEmits<{ 'overlay-closed': [] }>()
 const { isAdmin } = useCurrentUser()
 
 interface ModeFacts {
@@ -1279,7 +1285,7 @@ const sessionReadOnly = computed(() => {
 
 // 窄屏打开会话弹窗时收起助手，避免 dock 面板遮住弹窗右侧的主动作；用户可随时再展开。
 watch(showSessionDialog, (open) => {
-  if (open && window.innerWidth < 1600) copilot.setOpen(false)
+  if (open && props.overlaySessionId === undefined && window.innerWidth < 1600) copilot.setOpen(false)
   if (!open) invalidateSessionRequests()
 })
 
@@ -1454,14 +1460,16 @@ function formatDuration(sec: number | null) {
 }
 
 async function loadLabs() {
+  if (props.overlaySessionId !== undefined) return
   await labRequest.run(() => listLabs(), value => { labs.value = value as unknown as Lab[] })
 }
 
 async function loadSessions() {
+  if (props.overlaySessionId !== undefined) return
   await sessionRequest.run(() => listSessions(), value => { sessions.value = value as unknown as SessionSummary[] })
 }
 
-async function resumeSession(id: number) {
+async function resumeSession(id: number, fromHeader = false) {
   invalidateSessionRequests()
   const selection = sessionSelectionSeq
   try {
@@ -1478,8 +1486,8 @@ async function resumeSession(id: number) {
     if (selection !== sessionSelectionSeq) return
     currentLab.value = lab
     // A-04：只有进行中的会话才绑定终端/教练；已结束会话只读回看。
-    if (lab && session.status === 'in_progress') {
-      bindLabContext(lab, session.id, session)
+    if (session.status === 'in_progress') {
+      if (lab && !fromHeader) bindLabContext(lab, session.id, session)
     } else if (labCtx.sessionId === session.id) {
       labCtx.clearLab()
     }
@@ -1491,7 +1499,7 @@ async function resumeSession(id: number) {
 
 function onTrainingOpenSession(ev: Event) {
   const id = Number((ev as CustomEvent).detail?.sessionId || 0)
-  if (id) resumeSession(id)
+  if (id) void resumeSession(id, true)
 }
 
 async function submitCreate() {
@@ -1983,21 +1991,30 @@ async function handleLoadReport() {
 watch(
   () => route.query.session_id,
   (value) => {
+    if (props.overlaySessionId !== undefined || route.name !== '实训') return
     const id = Number(Array.isArray(value) ? value[0] : value)
     if (id) resumeSession(id)
   },
 )
 
 onMounted(async () => {
+  if (props.overlaySessionId !== undefined) {
+    void loadLabDevices()
+    await resumeSession(props.overlaySessionId, true)
+    if (!showSessionDialog.value) emit('overlay-closed')
+    return
+  }
+  window.addEventListener('training-open-session', onTrainingOpenSession)
+  const initialSelection = sessionSelectionSeq
   await Promise.all([loadLabs(), loadTopologies(), loadSessions(), loadLabDevices()])
+  if (initialSelection !== sessionSelectionSeq || route.name !== '实训') return
   const qid = Number(Array.isArray(route.query.session_id) ? route.query.session_id[0] : route.query.session_id)
   if (qid) await resumeSession(qid)
-  window.addEventListener('training-open-session', onTrainingOpenSession as EventListener)
 })
 
 onUnmounted(() => {
   invalidateSessionRequests()
-  window.removeEventListener('training-open-session', onTrainingOpenSession as EventListener)
+  window.removeEventListener('training-open-session', onTrainingOpenSession)
 })
 </script>
 
