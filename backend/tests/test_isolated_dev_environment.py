@@ -58,19 +58,24 @@ def test_reject_nested_linked_credentials(tmp_path, monkeypatch):
 
 
 def test_environment_drops_parent_configuration(monkeypatch, tmp_path):
-    # tmp_path is inside the offline runner's own .runtime directory.
+    project = tmp_path / 'project'
+    run = project / '.runtime' / 'isolation-test'
+    scripts = project / 'scripts'
+    scripts.mkdir(parents=True)
+    runner = 'run-offline-tests.py'
+    (scripts / runner).write_bytes((ROOT / 'scripts' / runner).read_bytes())
     for key in ('LLM_API_KEY', 'KNOWLEDGE_API_KEY', 'LLM_FALLBACK_API_KEY', 'DEVICE_DEFAULT_PASSWORD',
                 'DB_PASSWORD', 'VITE_SECRET', 'HTTP_PROXY', 'PYTHONPATH'):
         monkeypatch.setenv(key, 'poison')
     monkeypatch.setenv('DB_BACKEND', 'mysql')
     monkeypatch.setenv('DEVICE_MODE', 'ssh')
-    env = boundary.build_environment(ROOT, tmp_path, tmp_path / 'isolated.sqlite3', 'temporary-test-value', 'temporary-test-jwt')
+    env = boundary.build_environment(project, run, run / 'isolated.sqlite3', 'temporary-test-value', 'temporary-test-jwt')
     assert 'poison' not in env.values()
     assert env['DB_BACKEND'] == 'sqlite' and env['DEVICE_MODE'] == 'sim'
     assert env['MONITOR_SCHEDULER_ENABLED'] == 'false'
-    assert Path(env['KNOWLEDGE_CORPUS_DIR']) == ROOT / 'knowledge/corpus/huawei-ip'
+    assert Path(env['KNOWLEDGE_CORPUS_DIR']) == project / 'knowledge/corpus/huawei-ip'
     for key in ('LOG_DIR', 'TEMP', 'TMP', 'KNOWLEDGE_ANYTHINGLLM_STORAGE', 'AGENT_BUDGET_FILE'):
-        assert Path(env[key]).is_relative_to(tmp_path)
+        assert Path(env[key]).is_relative_to(run)
 
 
 def test_local_knowledge_uploads_and_cached_provider_cannot_cross_instance(tmp_path, monkeypatch):
