@@ -1,5 +1,5 @@
 """认证模块Schema"""
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -40,6 +40,10 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
+
+
+class TraineePasswordReset(BaseModel):
+    new_password: SecretStr
 
 
 class UserResponse(BaseModel):

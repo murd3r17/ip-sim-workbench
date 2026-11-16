@@ -77,6 +77,11 @@ class TestParseOspfNeighbors:
     def test_parse_ospf_empty(self):
         assert MetricCollector._parse_ospf_neighbors("") is None
 
+    def test_parse_ospf_explicit_zero_and_unknown_output(self):
+        assert MetricCollector._parse_ospf_neighbors("Total number of peer(s): 0") == 0
+        assert MetricCollector._parse_ospf_neighbors("Info: command not available") is None
+        assert MetricCollector._parse_ospf_neighbors("RouterId Address State\n-- More --") is None
+
 
 class TestParseTemperature:
     """P2-10：temperature 指标此前没有任何写入点。"""

@@ -22,6 +22,22 @@ from engines.sim_topology import DEMO_MANAGEMENT, interfaces_of, links_of, ospf_
 
 logger = get_logger("device")
 
+SIM_READ_COMMANDS = (
+    "display version",
+    "display interface brief",
+    "display ip interface brief",
+    "display lldp neighbor brief",
+    "display ospf peer",
+    "display ospf peer brief",
+    "display ospf routing",
+    "display ip routing-table",
+    "display bgp peer",
+    "display cpu-usage",
+    "display memory-usage",
+    "display temperature",
+    "display current-configuration",
+)
+
 
 def get_device_mode() -> str:
     """当前设备执行模式：ssh | sim。"""
@@ -306,19 +322,24 @@ class SimDeviceAdapter(BaseDeviceAdapter):
     # ── 统一接口 ──────────────────────────────────────────────────────
     async def run_command(self, command: str, timeout: int | None = None) -> str:
         cmd = re.sub(r"\s+", " ", (command or "").strip().lower())
+        prefix = f"<{self.hostname}>{command}\n"
+        if cmd == "help":
+            return prefix + "本地终端可查看以下只读样例：\n" + "\n".join(SIM_READ_COMMANDS)
+        if cmd not in SIM_READ_COMMANDS:
+            return prefix + "Error: 本地终端不支持这条命令，未执行。输入 help 查看可用命令。"
+
         if self._demo:
             observation = self._demo_observation(cmd)
             if observation is not None:
                 return observation
-        if "display version" in cmd:
+        if cmd == "display version":
             return _SIM_VERSION.format(hostname=self.hostname)
-        if "cpu-usage" in cmd:
+        if cmd == "display cpu-usage":
             return _SIM_CPU.format(hostname=self.hostname, cpu=self._cpu, maxcpu=min(self._cpu + self._rng.randint(1, 6), 99), mincpu=max(self._cpu - self._rng.randint(1, 6), 1))
-        if "memory-usage" in cmd:
+        if cmd == "display memory-usage":
             used = int(8192 * self._mem / 100)
             return _SIM_MEMORY.format(hostname=self.hostname, mem=self._mem, used=used)
-        # 先匹配更具体的完整命令，避免 brief/detail 互相遮蔽（L2 授权小修）
-        if "display ip interface brief" in cmd:
+        if cmd == "display ip interface brief":
             return (
                 f"<{self.hostname}>display ip interface brief\n"
                 "Interface                         PHY   Protocol  IP Address\n"
@@ -326,11 +347,11 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 "GigabitEthernet0/0/1  up  up  10.0.123.2/24\n"
                 "LoopBack0             up  up  10.0.0.1/24\n"
             )
-        if "display interface brief" in cmd:
+        if cmd == "display interface brief":
             return _SIM_INTERFACE.format(hostname=self.hostname)
-        if "display ospf peer brief" in cmd:
+        if cmd == "display ospf peer brief":
             return _SIM_OSPF.format(hostname=self.hostname)
-        if "display ospf peer" in cmd:
+        if cmd == "display ospf peer":
             return (
                 f"<{self.hostname}>display ospf peer\n"
                 "OSPF Process 1 with Router ID 10.0.0.1\n"
@@ -340,13 +361,11 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 "State: Full  Mode:Nbr is Master  Priority: 1\n"
                 "DR: 10.0.123.1  BDR: 10.0.123.2  MTU: 0\n"
             )
-        if "ospf peer" in cmd:
-            return _SIM_OSPF.format(hostname=self.hostname)
-        if "bgp peer" in cmd:
+        if cmd == "display bgp peer":
             return _SIM_BGP.format(hostname=self.hostname)
-        if "temperature" in cmd:
+        if cmd == "display temperature":
             return _SIM_TEMPERATURE.format(hostname=self.hostname)
-        if "lldp neighbor" in cmd:
+        if cmd == "display lldp neighbor brief":
             n1 = self._pick_neighbor(0)
             n2 = self._pick_neighbor(1) if len(self.neighbors) > 1 else self._pick_neighbor(0)
             return (
@@ -365,7 +384,7 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 "10.0.123.0/24 Direct 0 0 D 10.0.123.1 GigabitEthernet0/0/0\n"
                 "10.0.0.0/24 Direct 0 0 D 10.0.0.1 LoopBack0\n"
             )
-        if "display ospf routing" in cmd:
+        if cmd == "display ospf routing":
             return (
                 f"<{self.hostname}>display ospf routing\n"
                 "Destinations        : 3\n"
@@ -374,14 +393,9 @@ class SimDeviceAdapter(BaseDeviceAdapter):
                 "10.0.0.3/32        1     Stub       10.0.123.3      10.0.0.3        0.0.0.0\n"
                 "10.0.9.9/32        2     Stub       10.0.123.2      10.0.0.2        0.0.0.0\n"
             )
-        if "current-configuration" in cmd:
+        if cmd == "display current-configuration":
             return self._current_config()
-        if "sysname" in cmd or cmd.startswith("return") or cmd == "quit":
-            return f"<{self.hostname}>"
-        if cmd.startswith('display '):
-            return f"<{self.hostname}>{command}\nError: Command is not supported by the offline simulator."
-        # 其它命令：模拟 VRP 风格响应
-        return f"<{self.hostname}>{command}\nInfo: (sim) 已执行 {command}"
+        raise ValueError(f"No simulator response registered for {cmd!r}")
 
     async def send_config(self, commands: list[str]) -> str:
         applied = [c for c in commands if c.strip()]

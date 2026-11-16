@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logger import get_logger
 from core.time_utils import iso_utc
+from modules.training.environment_policy import lab_availability, lab_environment_id
 from modules.training.mode_facts import build_mode_snapshot, current_mode_facts
 from modules.device.models import Device
 from modules.training.models import (
@@ -225,9 +226,30 @@ class TrainingService:
     @staticmethod
     async def list_labs(db: AsyncSession) -> list[dict]:
         result = await db.execute(select(TrainingLab))
-        labs = result.scalars().all()
-        return [
-            {
+        return await TrainingService.describe_labs(db, result.scalars().all())
+
+    @staticmethod
+    async def describe_labs(db: AsyncSession, labs) -> list[dict]:
+        from modules.trust.models import EnvironmentProfile
+
+        environment_ids = {lab_environment_id(l.environment_spec) for l in labs} - {None}
+        environments = {}
+        if environment_ids:
+            rows = await db.scalars(select(EnvironmentProfile).where(EnvironmentProfile.id.in_(environment_ids)))
+            environments = {row.id: row for row in rows}
+        demo_topologies = {
+            l.topology_id for l in labs if isinstance(l.environment_spec, dict)
+            and l.environment_spec.get("kind") == "workflow_demo"
+        }
+        topologies_with_devices = set()
+        if demo_topologies:
+            topologies_with_devices = set(await db.scalars(
+                select(Device.topology_id).where(Device.topology_id.in_(demo_topologies)).distinct()
+            ))
+        descriptions = []
+        for l in labs:
+            modes = current_mode_facts(l)
+            descriptions.append({
                 "id": l.id,
                 "title": l.title,
                 "description": l.description,
@@ -239,11 +261,14 @@ class TrainingService:
                 "is_sandbox": l.is_sandbox,
                 "content_version": l.content_version,
                 "environment_spec": l.environment_spec,
-                "mode_facts": current_mode_facts(l),
+                "mode_facts": modes,
+                "availability": lab_availability(
+                    l, modes["device_mode"], environments.get(lab_environment_id(l.environment_spec)),
+                    has_local_devices=l.topology_id in topologies_with_devices,
+                ),
                 "created_at": iso_utc(l.created_at),
-            }
-            for l in labs
-        ]
+            })
+        return descriptions
 
     @staticmethod
     async def delete_lab(db: AsyncSession, lab_id: int) -> None:
@@ -313,12 +338,12 @@ class TrainingService:
         spec = lab.environment_spec or {}
         if not isinstance(spec, dict):
             return
-        env_id = spec.get("trust_environment_id") or spec.get("environment_id")
+        env_id = lab_environment_id(spec)
         if not env_id:
             return
         from modules.trust.models import EnvironmentProfile
         from modules.trust.service import serialize_environment
-        env = await db.get(EnvironmentProfile, int(env_id))
+        env = await db.get(EnvironmentProfile, env_id)
         if env is None:
             return
         content = serialize_environment(env)

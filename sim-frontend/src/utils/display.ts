@@ -41,8 +41,8 @@ const ALARM_STATUS_TAG: Record<string, string> = {
 
 const ALARM_STATUS_LABEL: Record<string, string> = {
   fired: '未处理',
-  acknowledged: '已确认',
-  resolved: '已解决',
+  acknowledged: '已接手',
+  resolved: '已解除',
   closed: '已关闭',
 }
 
@@ -113,14 +113,32 @@ export function taskStatusLabel(status?: string): string {
   return (status && TASK_STATUS_LABEL[status]) || status || '-'
 }
 
-export function deployTaskStatusLabel(status?: string): string {
+export function deployTaskStatusLabel(status?: string, phase?: string): string {
   const stages: Record<string, string> = {
-    pending: '待确认',
-    confirmed: '已确认，待执行',
-    deploying: '执行中或待验证',
-    success: '已完成',
+    pending: '待确认', awaiting_confirmation: '待确认', confirmed: '已确认，待执行',
+    deploying: '执行状态待确认', execution_unconfirmed: '执行状态待确认', execution_blocked: '缺少执行锁',
+    executing: '正在执行', awaiting_verification: '已执行，待核对', verifying: '正在核对',
+    simulation_complete: '模拟流程已完成', success: '已完成',
   }
-  return stages[status || ''] || taskStatusLabel(status)
+  return stages[phase || ''] || stages[status || ''] || taskStatusLabel(status)
+}
+
+export function deployNextAction(status?: string, phase?: string, mode?: string | null): string {
+  const statements: Record<string, string> = {
+    pending: '核对这台设备和配置内容，再确认变更。',
+    awaiting_confirmation: '核对这台设备和配置内容，再确认变更。',
+    confirmed: '本任务已取得设备执行锁，可以执行。',
+    execution_blocked: '本任务已失去执行锁。请核对任务状态和审计记录。',
+    executing: '正在执行。刷新任务可以查看最新阶段。',
+    awaiting_verification: mode === 'simulated' ? '查看并保存本次模拟流程结果。' : '核对设备回读与预期配置。',
+    verifying: '正在比对并保存结果。完成后可查看回读明细。',
+    execution_unconfirmed: '重新读取任务状态。执行结果仍不明确时，请核对审计与设备状态。',
+    simulation_complete: '已保存模拟流程结果，设备配置无变更。',
+    success: '查看已保存的处理结果。',
+    failed: '查看异常详情和变更记录，核对已完成的部分。',
+    rolled_back: '查看恢复结果和关联配置版本。',
+  }
+  return statements[phase || status || ''] || ''
 }
 
 export function taskStatusTagType(status?: string): string {
@@ -128,7 +146,13 @@ export function taskStatusTagType(status?: string): string {
 }
 
 export function alarmTypeLabel(kind?: string): string {
-  const labels: Record<string,string> = {interface_expected_down:'预期启用接口未Up',interface_review:'端口状态待核对',interface_down_high:'接口down总数（旧规则）',cpu_usage_high:'CPU使用率超限',memory_usage_high:'内存使用率超限',temperature_high:'温度超限',ospf_neighbor_count_low:'OSPF邻居数低于阈值'}
+  const labels: Record<string,string> = {
+    interface_expected_down: '预期启用接口未 Up', interface_review: '端口状态待核对',
+    interface_down_high: '接口 Down 总数（旧规则）', cpu_usage_high: 'CPU 使用率超限',
+    memory_usage_high: '内存使用率超限', temperature_high: '温度超限',
+    ospf_neighbor_count_review: 'OSPF 邻居基线待核对', ospf_neighbor_count_expected_low: 'OSPF 邻居少于预期',
+    ospf_neighbor_count_low: 'OSPF 邻居达到旧告警阈值', ospf_neighbor_count_high: 'OSPF 邻居达到旧告警阈值',
+  }
   return (kind && labels[kind]) || kind || '未知类型'
 }
 
@@ -142,7 +166,21 @@ export function alarmMeaning(kind?: string): string {
   if (kind === 'interface_down_high') return '旧规则按接口down总数触发，未区分闲置、预期状态或用途；历史等级保留，不等于当前业务严重故障。'
   if (kind === 'interface_expected_down') return '采样时登记为预期启用的接口未Up；需核对物理、协议与管理状态，尚未证明业务中断。'
   if (kind === 'interface_review') return '用途/预期、缺失接口、意外启用或解析覆盖待核对；不会按down总数升级为业务严重故障。'
+  if (kind === 'ospf_neighbor_count_review') return '这次采样触发了人工复核。先按网络设计确认该设备应有哪些邻居，再查看本机 OSPF 回显。'
+  if (kind === 'ospf_neighbor_count_expected_low') return '本次观察到的 Full 或 2-Way 邻居数量少于已登记下限。优先核对缺少的邻居、接口和协议状态。'
+  if (kind === 'ospf_neighbor_count_low' || kind === 'ospf_neighbor_count_high') return '旧版按全局阈值保留的历史告警。确认设备角色及应有邻居后，再判断当前影响。'
   return '该记录反映采样时的指标阈值判断；严重程度不代替业务影响核实，处理状态不证明当前已恢复。'
+}
+
+export function alarmTriggerLabel(alarm: { alarm_type?: string | null; metric_value?: number | string | null; threshold?: number | string | null }): string {
+  const kind = alarm.alarm_type
+  const observed = alarmMeasurementLabel(alarm.metric_value, kind)
+  if (kind === 'ospf_neighbor_count_review') return `观察到 ${observed} 个 OSPF 邻居，设备预期未登记`
+  if (alarm.metric_value == null || alarm.threshold == null) return '查看观察依据'
+  const target = alarmMeasurementLabel(alarm.threshold, kind)
+  if (kind === 'ospf_neighbor_count_expected_low') return `邻居 ${observed} < 本设备下限 ${target}`
+  if (kind?.endsWith('_low')) return `观察值 ${observed} ≤ 记录阈值 ${target}`
+  return `观察值 ${observed} ≥ 记录阈值 ${target}`
 }
 
 export function configSourceLabel(source?: string): string {
@@ -162,7 +200,8 @@ export function savedVerificationState(record: {execution_mode?:unknown;verified
 
 export function auditActionLabel(action?: string): string {
   const labels: Record<string,string>={deploy_task_confirmed:'确认下发任务',deploy_task_executed:'执行下发任务',deploy_task_verified:'核对设备回读',deploy_task_cancelled:'取消任务',device_write_lock_acquired:'取得设备写锁',device_write_lock_released:'释放设备写锁',port_expectations_updated:'更新本地端口期望',alarm_acknowledged:'接手告警',alarm_closed:'结束告警记录',login:'登录',logout:'退出登录',create:'创建记录',update:'更新记录',delete:'删除记录'}
-  Object.assign(labels,{create_config:'新增配置项',update_config:'更新配置项',delete_config:'删除配置项',llm_test:'测试模型连通性',health_check:'检查管理连接',device_health_check:'检查管理连接',capture_config:'采集配置快照'})
+  Object.assign(labels,{deploy_task_created:'提交变更任务',deploy_rollback_task_created:'提交恢复任务',create_config:'新增配置项',update_config:'更新配置项',delete_config:'删除配置项',llm_test:'测试模型连通性',health_check:'检查管理连接',device_health_check:'检查管理连接',capture_config:'采集配置快照'})
+  Object.assign(labels, { account_created: '创建账号', account_password_reset: '重置账号密码', account_password_changed: '修改个人密码' })
   return (action&&labels[action])||action||'未记录动作'
 }
 

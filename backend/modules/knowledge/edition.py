@@ -163,6 +163,7 @@ class KnowledgeEdition:
                 "doc_id": doc["doc_id"], "seq": doc["anchor"], "edition": doc["edition"],
                 "page_start": doc["page_start"], "page_end": doc["page_end"], "version": doc["sha256"],
                 "readable": True, "bundled": True, "section_count": len(self.nav[doc["id"]]),
+                "catalog_kind": "chapter" if doc["ingest"] else "subsection",
                 "source_status": "edition", "status": "ready"}
 
     def read(self, identifier: str, version: str | None = None) -> dict:
@@ -184,6 +185,7 @@ class KnowledgeEdition:
                       edition_version=self.version, bundled=True,
                       subsections=[self._entry(row) for row in self.nav[identifier]],
                       original_pages=[{"physical": item["physical"], "section_id": found.get(item["physical"]),
+                                       "printed_hint": item.get("printed_hint") or "",
                                        "preview": bool(item.get("preview") and (doc["book"], item["physical"]) in self.previews)}
                                       for item in page_map["pages"] if item["role"] not in ("navigation", "non-instruction")],
                       message="正文与目录使用同版原件页位。")

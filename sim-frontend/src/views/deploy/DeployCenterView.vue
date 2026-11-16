@@ -71,7 +71,17 @@
               @click="$router.push({ path: '/training', query: { session_id: String(labCtx.sessionId) } })"
             >返回实训</el-button>
           </el-form-item>
-          <p v-if="hasDraft" class="draft-lifetime">草稿保留在此标签页。刷新或退出会清除未提交内容，需留存时请先复制保存。</p>
+          <div v-if="hasDraft || savedDraft" class="draft-lifetime" aria-label="草稿暂存">
+            <p v-if="savedDraft">
+              {{ formatApiTime(new Date(savedDraft.savedAt).toISOString()) }} 已暂存
+              · {{ draftSaved ? '与当前内容一致' : '可恢复上次暂存内容' }}
+            </p>
+            <p v-else>可为当前账号在此标签页暂存配置，刷新或登录过期后可恢复。</p>
+            <el-button link type="primary" :disabled="!hasDraft || draftSaved || drafts.deploy.submitting" @click="saveCurrentDraft">暂存草稿</el-button>
+            <el-button v-if="savedDraft" link type="primary" :disabled="draftSaved || drafts.deploy.submitting" @click="restoreLocalDraft">恢复暂存草稿</el-button>
+            <el-button v-if="savedDraft" link :disabled="drafts.deploy.submitting" @click="forgetLocalDraft">清除暂存</el-button>
+            <small>保留 2 小时，主动退出时清除。暂存适用于无口令、密钥的配置。</small>
+          </div>
         </el-form>
         <el-card v-if="staticValidation" class="static-validation" shadow="never" aria-label="静态校验结果">
           <template #header>静态校验结果 · {{ staticValidation.model }} · 未执行</template>
@@ -124,7 +134,7 @@
           <el-table-column label="设备任务" min-width="210">
             <template #default="{ row }">
               <span style="color: var(--v7b-muted); font-size: 12px">
-                {{ batchStatusText(row.summary) }}
+                {{ batchStatusText(row.summary, row.phase_counts) }}
               </span>
             </template>
           </el-table-column>
@@ -178,7 +188,7 @@
         <el-descriptions-item label="任务名称">{{ currentTask?.name }}</el-descriptions-item>
         <el-descriptions-item label="来源">{{ currentTask?.source }}</el-descriptions-item>
         <el-descriptions-item label="批次汇总">
-          <span>{{ batchStatusText(currentTask?.summary) }}</span>
+          <span>{{ batchStatusText(currentTask?.summary, currentTask?.phase_counts) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatApiTime(currentTask?.created_at) }}</el-descriptions-item>
       </el-descriptions>
@@ -186,10 +196,10 @@
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap">
           <h4 style="margin: 0">设备 {{ deviceName(item.device_id) }}（任务项 #{{ item.id }}）</h4>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-            <el-tag :type="stageTagType(taskDisplayStage(item))" size="small">{{ stageLabel(taskDisplayStage(item)) }}</el-tag>
+            <el-tag :type="stageTagType(item.status)" size="small">{{ deployTaskStatusLabel(item.status, item.phase) }}</el-tag>
             <el-button v-if="['pending', 'awaiting_confirmation'].includes(item.status)" type="warning" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleTaskConfirmation(item)">确认变更</el-button>
-            <el-button v-if="item.status === 'confirmed'" type="success" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleExecution(item)">执行</el-button>
-            <el-button v-if="item.status === 'deploying'" type="primary" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleVerification(item)">核对回读</el-button>
+            <el-button v-if="item.status === 'confirmed' && item.phase !== 'execution_blocked'" type="success" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleExecution(item)">执行</el-button>
+            <el-button v-if="item.phase === 'awaiting_verification'" type="primary" size="small" :loading="actingTaskId === item.id" :disabled="!!actingTaskId && actingTaskId !== item.id" @click="handleVerification(item)">{{ item.execution_mode === 'simulated' ? '确认演练结果' : '核对回读' }}</el-button>
             <el-button v-if="['success', 'failed', 'rolled_back'].includes(item.status)" type="success" link size="small" @click="handleVerification(item)">查看结果</el-button>
             <!-- 取消并释放设备写锁：确认了却没执行的任务会一直占着锁，设备终端会被拒接 -->
             <el-button
@@ -204,17 +214,17 @@
         <p class="next-hint" v-if="item.started_at || item.completed_at">
           开始 {{ formatApiTime(item.started_at) }} · 结束 {{ formatApiTime(item.completed_at) }}
         </p>
-        <el-steps v-if="!['failed', 'rolled_back', 'cancelled'].includes(item.status)" :active="flowStageIndex(item.status)" simple class="deploy-steps">
+        <el-steps v-if="!['failed', 'rolled_back', 'cancelled'].includes(item.status)" :active="flowStageIndex(item.phase || item.status)" simple class="deploy-steps">
           <el-step v-for="name in DEPLOY_FLOW_STEPS" :key="name" :title="name" />
         </el-steps>
-        <div v-if="nextActionHint(item.status)" class="next-hint">{{ nextActionHint(item.status) }}</div>
+        <p class="next-hint">{{ deployNextAction(item.status, item.phase, item.execution_mode) }}</p>
         <pre style="background: #0d151e; color: #c5d4e0; padding: 12px; border-radius: 4px; max-height: 180px; overflow-y: auto; margin: 10px 0 0">{{ item.config_content }}</pre>
         <div v-if="item.status === 'success' || item.status === 'failed'" style="margin-top: 8px; color: var(--v7b-muted); font-size: 12px">
           <span v-if="item.status === 'success'">{{ item.execution_mode === 'real' ? '✅ 真实执行已完成；请核对回读与恢复状态。' : item.execution_mode === 'simulated' ? '✅ 模拟执行已完成（未改动设备）。' : '✅ 任务已完成，但执行模式未记录，不能推断是否改动了设备。' }}</span>
           <span v-else>❌ 任务失败{{ item.error_message ? `：${item.error_message}` : '' }}</span>
         </div>
         <!-- 失败时给出可点入口（后端已算好深链，此前前端从未渲染 → 学员不知道该去哪查） -->
-        <div v-if="item.links && (item.status === 'failed' || item.verify_diff)" class="link-row">
+        <div v-if="item.links && item.execution_mode" class="link-row">
           <el-button v-if="item.links.change_log" link type="primary" size="small" @click="goLink(item.links.change_log)">变更日志</el-button>
           <el-button v-if="item.links.snapshot" link type="primary" size="small" @click="goLink(item.links.snapshot)">设备快照</el-button>
           <el-button v-if="item.links.compare" link type="primary" size="small" @click="goLink(item.links.compare)">配置比对</el-button>
@@ -294,7 +304,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { notifyRequestError, requestErrorMessage } from '../../utils/requestError'
 import { formatApiTime } from '../../utils/datetime'
-import { executionModeLabel, savedVerificationState } from '../../utils/display'
+import { deployNextAction, deployTaskStatusLabel, executionModeLabel, savedVerificationState } from '../../utils/display'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
@@ -305,7 +315,10 @@ import { generateAndValidate, reviewConfig } from '../../api/ai'
 import { cancelDeployTask, confirmDeployTask, createDeployBatch, createTemplate, executeDeployTask, getDeployBatch, getDeployBatches, getDeployTask, getTemplates, renderTemplate, validateConfig, verifyDeployTask, type ConfigTemplateRecord, type DeployBatchRecord } from '../../api/deploy'
 import { useLabContextStore } from '../../stores/labContext'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
-import { emptyDeployDraft, useWorkbenchDraftsStore } from '../../stores/workbenchDrafts'
+import {
+  clearSavedDeployDraft, currentDraftOwner, deployDraftMatches, emptyDeployDraft,
+  readSavedDeployDraft, saveDeployDraft, useWorkbenchDraftsStore,
+} from '../../stores/workbenchDrafts'
 import { useAutoRefresh } from '../../utils/autoRefresh'
 import { resolveWorkbenchDeviceModel } from '../../utils/deviceModel'
 
@@ -341,7 +354,48 @@ const aiIntent = computed({
   get: () => drafts.deploy.intent,
   set: (value: string) => { drafts.deploy.intent = value },
 })
-const hasDraft = computed(() => Boolean(deployForm.value.name.trim() || deployForm.value.config_content.trim() || aiIntent.value.trim()))
+const hasDraft = computed(() => Boolean(deployForm.value.name.trim() || deployForm.value.device_ids.length || deployForm.value.config_content.trim() || aiIntent.value.trim()))
+const draftOwner = currentDraftOwner()
+const savedDraft = ref(readSavedDeployDraft(draftOwner))
+const draftSaved = computed(() => deployDraftMatches(drafts.deploy, savedDraft.value))
+
+function saveCurrentDraft() {
+  try {
+    savedDraft.value = saveDeployDraft(draftOwner, drafts.deploy)
+    ElMessage.success('此标签页已暂存草稿')
+  } catch (error) {
+    ElMessage.warning(error instanceof Error && error.name !== 'QuotaExceededError' && error.name !== 'SecurityError'
+      ? error.message : '浏览器无法暂存草稿。内容仍在编辑区。')
+  }
+}
+
+function forgetLocalDraft() {
+  clearSavedDeployDraft(draftOwner)
+  savedDraft.value = null
+}
+
+async function restoreLocalDraft() {
+  const saved = readSavedDeployDraft(draftOwner)
+  savedDraft.value = saved
+  if (!saved) {
+    ElMessage.info('暂存已过期或当前账号没有可恢复的草稿')
+    return
+  }
+  const draft = drafts.deploy
+  const formAtClick = JSON.stringify(draft.form)
+  const intentAtClick = draft.intent
+  if (hasDraft.value && !await confirmDraftReplacement('暂存草稿')) return
+  if (!viewActive || drafts.deploy !== draft || draft.submitting || formAtClick !== JSON.stringify(draft.form) ||
+    intentAtClick !== draft.intent || readSavedDeployDraft(draftOwner)?.savedAt !== saved.savedAt) return
+  drafts.deploy = {
+    ...emptyDeployDraft(),
+    form: { ...saved.form, device_ids: [...saved.form.device_ids] },
+    intent: saved.intent,
+  }
+  aiGenerateResult.value = null
+  aiReviewResult.value = null
+  ElMessage.success('已恢复暂存草稿，可继续编辑或重新校验')
+}
 const aiGenerateLoading = ref(false)
 const aiReviewLoading = ref(false)
 const aiGenerateResult = ref<any>(null)
@@ -428,6 +482,7 @@ const handleDeploy = async () => {
   }
   if (drafts.deploy !== draft) return
   const unchanged = submitted === JSON.stringify(draft.form) && intent === draft.intent
+  if (deployDraftMatches({ form: JSON.parse(submitted), intent }, readSavedDeployDraft(draftOwner))) forgetLocalDraft()
   ElMessage.success(unchanged ? '变更已提交，等待人工确认' : '上一份配置已提交。本次编辑仍在草稿中。')
   if (!unchanged) return
   drafts.deploy = emptyDeployDraft()
@@ -575,18 +630,10 @@ const refreshCurrentTask = async () => {
   }
 }
 
-const stageLabel = (stage: string) => ({
-  pending: '待确认', waiting: '已确认待执行', deploying: '执行阶段', readback: '回读验证中',
-  success: '已完成', failed: '执行或验证失败', cancelled: '已取消', rolled_back: '已回滚',
-}[stage] || '状态未记录')
-
 const stageTagType = (stage: string) => ({
-  pending: 'warning', waiting: 'info', deploying: 'primary', readback: 'primary',
+  pending: 'warning', awaiting_confirmation: 'warning', deploying: 'primary', verifying: 'primary',
   success: 'success', failed: 'danger', cancelled: 'info', rolled_back: 'warning',
 }[stage] || 'info') as '' | 'success' | 'warning' | 'info' | 'primary' | 'danger'
-
-const taskDisplayStage = (item: { status: string; stage?: string }) =>
-  ['cancelled', 'rolled_back'].includes(item.status) ? item.status : item.stage || item.status
 
 // ── 下发流程可视化（2026-10-05 用户反馈"得点很多个按钮，不知道下一步点哪个"）──
 const DEPLOY_FLOW_STEPS = ['提交变更', '确认变更', '执行', '验证', '完成']
@@ -594,26 +641,19 @@ const flowStageIndex = (status: string) => ({
   pending: 1,
   awaiting_confirmation: 1,
   confirmed: 2,
-  deploying: 3,
+  deploying: 2,
+  executing: 2,
+  execution_blocked: 2,
+  execution_unconfirmed: 2,
+  awaiting_verification: 3,
   verifying: 3,
   // success 要给 5：el-steps 的 active 是"当前进行到第几个"，给 4 会让第 5 步永远停在进行中
   success: 5,
+  simulation_complete: 5,
   failed: 4,
   rolled_back: 4,
   cancelled: 4,
 }[status] ?? 0)
-
-const nextActionHint = (status: string) => ({
-  pending: '下一步：核对设备与配置后点「确认变更」。',
-  awaiting_confirmation: '下一步：核对设备与配置后点「确认变更」。',
-  confirmed: '下一步：点「执行」，随后查看本次执行模式与结果。',
-  deploying: '执行结束后，点「核对回读」确认本次结果。',
-  verifying: '正在回读比对，稍等',
-  success: '已完成：需要复核时点「查看结果」',
-  failed: '已失败：看验证报告或变更日志定位原因',
-  cancelled: '本任务已取消。可在变更日志中查看取消记录。',
-  rolled_back: '已回滚',
-}[status] || '')
 
 // 验证报告里的英文 token 直接给学员看等于没说（审计：模拟模式下满是 not_performed/no_readback）
 const modeLabel = executionModeLabel
@@ -643,11 +683,13 @@ const goLink = (path: string) => {
   router.push(path)
 }
 
-const batchStatusText = (summary?: DeployBatchRecord['summary']) => {
+const batchStatusText = (summary?: DeployBatchRecord['summary'], phases?: DeployBatchRecord['phase_counts']) => {
   if (!summary) return '批次汇总暂不可用'
   if (!summary.total) return '该批次没有设备任务'
   const labels = [
-    ['待确认', summary.pending], ['待执行', summary.waiting], ['执行或验证中', summary.running],
+    ['待确认', summary.pending], ['待执行', Math.max(0, (summary.waiting ?? 0) - (phases?.execution_blocked ?? 0))],
+    ['缺少执行锁', phases?.execution_blocked], ['执行或核对中', phases?.executing ?? summary.running],
+    ['待核对', phases?.awaiting_verification], ['执行状态待确认', phases?.execution_unconfirmed],
     ['完成', summary.success], ['失败', summary.execution_failed],
     ['取消', summary.cancelled], ['回滚', summary.rolled_back],
   ] as const
@@ -1031,6 +1073,8 @@ onUnmounted(() => {
 .next-hint { color: var(--v7b-warn); font-size: 12px; line-height: 1.6; }
 .draft-alert { margin-bottom: 14px; }
 .draft-lifetime { color: var(--v7b-muted); font-size: 12px; }
+.draft-lifetime p { margin: 0 0 4px; }
+.draft-lifetime small { display: block; margin-top: 4px; font-size: inherit; }
 .link-row { margin-top: 8px; display: flex; gap: 4px; flex-wrap: wrap; }
 .verify-block { margin-top: 12px; }
 .verify-block .block-title { margin-bottom: 4px; color: var(--v7b-muted); font-size: 11px; }

@@ -48,6 +48,7 @@ class PortPolicyWrite(BaseModel):
     model_config = ConfigDict(extra='forbid')
     base_revision: str = Field(max_length=64)
     ports: list[PortExpectation] = Field(default_factory=list, max_length=256)
+    ospf_min_neighbors: int | None = Field(None, strict=True, ge=0, le=4096)
 
     @field_validator('ports')
     @classmethod
@@ -58,12 +59,14 @@ class PortPolicyWrite(BaseModel):
         return values
 
 
-def policy_payload(device_id: int, ports: list[dict], *, valid=True) -> dict:
+def policy_payload(device_id: int, ports: list[dict], *, ospf_min_neighbors: int | None = None, valid=True) -> dict:
     ports = sorted(ports, key=lambda p: interface_key(p['name']))
-    revision = hashlib.sha256(json.dumps({'version': VERSION, 'device_id': device_id, 'ports': ports},
-                                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    content = {'version': VERSION, 'device_id': device_id, 'ports': ports}
+    if ospf_min_neighbors is not None:
+        content['ospf_min_neighbors'] = ospf_min_neighbors
+    revision = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {'version': VERSION, 'device_id': device_id, 'ports': ports, 'revision': revision,
-            'valid': valid, 'source': 'local_expectation_only'}
+            'ospf_min_neighbors': ospf_min_neighbors, 'valid': valid, 'source': 'local_expectation_only'}
 
 
 async def load_policy(db: AsyncSession, device_id: int) -> dict:
@@ -75,8 +78,8 @@ async def load_policy(db: AsyncSession, device_id: int) -> dict:
         data = json.loads(row.config_value or '')
         if data.get('version') != VERSION or data.get('device_id') != device_id:
             raise ValueError('unknown version')
-        parsed = PortPolicyWrite(base_revision='', ports=data['ports'])
-        return policy_payload(device_id, [p.model_dump() for p in parsed.ports])
+        parsed = PortPolicyWrite(base_revision='', ports=data['ports'], ospf_min_neighbors=data.get('ospf_min_neighbors'))
+        return policy_payload(device_id, [p.model_dump() for p in parsed.ports], ospf_min_neighbors=parsed.ospf_min_neighbors)
     except (ValueError, TypeError, KeyError, AttributeError):
         return policy_payload(device_id, [], valid=False) | {'revision': 'invalid', 'reason': '端口期望格式无效，请管理员修复；未按闲置或正常处理。'}
 

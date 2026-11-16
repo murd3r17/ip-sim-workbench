@@ -24,6 +24,30 @@ async def _seed_topology_and_device(client, admin_token) -> tuple[int, int]:
     return topology_id, dev.json()["id"]
 
 
+@pytest.mark.asyncio
+async def test_trainee_password_reset_invalidates_prior_login_and_requires_admin(client, test_session_factory):
+    from modules.auth.models import AuditLog
+    from sqlalchemy import select
+
+    admin = await _setup_admin_user(test_session_factory)
+    old_password = "SyntheticOld1!"
+    new_password = "SyntheticNew2!"
+    user = await client.post("/api/v1/auth/users", headers=auth_header(admin), json={
+        "username": "classroom-reset-demo", "password": old_password,
+    })
+    assert user.status_code == 200
+    endpoint = f"/api/v1/auth/users/{user.json()['id']}/password"
+    login = await client.post("/api/v1/auth/login", json={"username": "classroom-reset-demo", "password": old_password})
+    old_headers = auth_header(login.json()["access_token"])
+    assert (await client.put(endpoint, headers=old_headers, json={"new_password": new_password})).status_code == 403
+    assert (await client.put(endpoint, headers=auth_header(admin), json={"new_password": new_password})).status_code == 200
+    assert (await client.get("/api/v1/auth/me", headers=old_headers)).status_code == 401
+    assert (await client.post("/api/v1/auth/login", json={"username": "classroom-reset-demo", "password": new_password})).status_code == 200
+    async with test_session_factory() as db:
+        audit = (await db.execute(select(AuditLog).where(AuditLog.action == "account_password_reset"))).scalar_one()
+        assert old_password not in audit.detail and new_password not in audit.detail
+
+
 class TestKnowledgeAuthorization:
     @pytest.mark.asyncio
     async def test_upload_requires_admin(self, client, test_session_factory):

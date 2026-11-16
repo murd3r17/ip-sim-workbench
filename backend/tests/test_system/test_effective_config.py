@@ -86,6 +86,42 @@ async def test_effective_configuration_requires_admin(client,test_session_factor
 
 
 @pytest.mark.asyncio
+async def test_connection_setup_saves_encrypted_secret_and_keeps_existing_on_blank(client, test_session_factory, configured, monkeypatch):
+    from cryptography.fernet import Fernet
+    from modules.system import service
+
+    cipher = Fernet(Fernet.generate_key())
+    class TestEncryptor:
+        configured = True
+        def encrypt(self, value):
+            return cipher.encrypt(value.encode()).decode()
+        def decrypt(self, value):
+            return cipher.decrypt(value.encode()).decode()
+    monkeypatch.setattr(service, "credential_encryptor", TestEncryptor())
+    async with test_session_factory() as db:
+        admin = User(username="model-setup-admin", role=UserRole.ADMIN, hashed_password="unused")
+        db.add(admin)
+        await db.commit()
+        header = {"Authorization": "Bearer " + create_access_token(admin.id, admin.username, "admin")}
+    endpoint = "/api/v1/system/model-connection"
+    update = {"base_url": "https://example.invalid/v1", "model": "demonstration-model"}
+    missing = await client.put(endpoint, headers=header, json=update)
+    assert missing.status_code == 422
+    credential = "SYNTHETIC_MODEL_CREDENTIAL"
+    saved = await client.put(endpoint, headers=header, json={**update, "api_key": credential})
+    assert saved.status_code == 200 and credential not in saved.text
+    preserved = await client.put(endpoint, headers=header, json={"model": "model-revised", "api_key": ""})
+    assert preserved.status_code == 200
+    snapshot = await client.get("/api/v1/system/effective-config", headers=header)
+    assert snapshot.status_code == 200 and credential not in snapshot.text
+    async with test_session_factory() as db:
+        stored = await SystemService.get_config(db, "llm.api_key")
+        assert stored.config_value.startswith("encrypted:v1:") and credential not in stored.config_value
+        runtime = await SystemService.get_llm_runtime_config(db)
+        assert runtime["llm_api_key"] == credential and runtime["llm_model"] == "model-revised"
+
+
+@pytest.mark.asyncio
 async def test_model_connectivity_only_probes_llm_and_audits(client,test_session_factory,configured,monkeypatch):
     from unittest.mock import AsyncMock
     import core.health as health

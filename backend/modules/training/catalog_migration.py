@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from core.time_utils import iso_utc
 from modules.training.builtin_catalog import CATALOG_VERSION, builtin_labs, workflow_demo_lab
+from modules.training.environment_policy import lab_environment_id
 from modules.training.models import TrainingLab
 
 FIELDS = ('title','description','objectives','time_limit_minutes','is_sandbox','content_version','environment_spec')
@@ -46,10 +47,19 @@ async def upgrade(db, *, dry_run=True, backup_path=None, fail_after=None):
                                        'ids':[r.id for r in candidates]})
             continue
         row = candidates[0]
+        prior = managed(row)
+        target = managed(target)
+        spec = prior.get('environment_spec')
+        binding_id = lab_environment_id(spec)
+        if binding_id and target['environment_spec'].get('devices'):
+            # Compare the managed teaching content without the separate, user-selected binding.
+            spec.pop('trust_environment_id', None)
+            spec.pop('environment_id', None)
+            target['environment_spec']['trust_environment_id'] = binding_id
         if digest(row)==digest(target):
             report['already_current'].append(row.id)
             continue
-        if digest(row) not in known.get(row.title,[]):
+        if digest(prior) not in known.get(row.title,[]):
             report['skipped'].append({'id':row.id,'title':row.title,'reason':'modified_or_unknown_managed_identity'})
             continue
         planned.append((row,target))

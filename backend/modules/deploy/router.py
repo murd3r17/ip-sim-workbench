@@ -15,7 +15,7 @@ from core.record_origin import declared_origin
 from modules.deploy.service import DeployService
 from modules.deploy.config_template_engine import ConfigTemplateEngine, TemplateRenderError
 from modules.deploy.config_verifier import ConfigVerifier
-from modules.deploy.models import DeployBatch, DeployTask, DeployStatus, ChangeLevel, ConfigTemplate, ConfigVersion
+from modules.deploy.models import DeployBatch, DeployTask, DeployStatus, ChangeLevel, ConfigTemplate, ConfigVersion, DeviceWriteLock
 from modules.deploy.schemas import (
     DeployRequest, DeployResponse, TemplateCreate, TemplateResponse,
     ConfigVersionResponse, VerifyBatchRequest, TemplateRenderRequest,
@@ -23,7 +23,7 @@ from modules.deploy.schemas import (
 )
 from modules.deploy.vrp_validator import VRPValidator
 from modules.auth.service import AuditService
-from modules.auth.models import AuditLog
+from modules.auth.models import AuditLog, User
 from modules.device.models import Device
 from core.exceptions import DeviceLockError
 from modules.deploy.schemas import ExecuteResponse
@@ -52,6 +52,7 @@ async def create_deploy_batch(
             items=data.items,
             engine=data.engine,
             operator_id=current_user["user_id"],
+            operator_username=current_user.get("username", ""),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -71,6 +72,28 @@ def _task_stage(task: DeployTask) -> str:
     return "pending"
 
 
+def _task_phase(task: DeployTask, lock_type: str | None) -> str:
+    if task.status == DeployStatus.DEPLOYING:
+        if lock_type in {"deploy_ready", "deploy_simulated_ready"}:
+            return "awaiting_verification"
+        if lock_type == "deploy_executing":
+            return "executing"
+        return "execution_unconfirmed"
+    if task.status == DeployStatus.CONFIRMED and not lock_type:
+        return "execution_blocked"
+    if task.status == DeployStatus.SUCCESS and task.execution_mode == "simulated":
+        return "simulation_complete"
+    return task.status.value
+
+
+async def _task_lock_types(db: AsyncSession, tasks: list[DeployTask]) -> dict[int, str]:
+    if not tasks:
+        return {}
+    rows = await db.execute(select(DeviceWriteLock.task_id, DeviceWriteLock.lock_type)
+                            .where(DeviceWriteLock.task_id.in_([task.id for task in tasks])))
+    return {row.task_id: row.lock_type for row in rows}
+
+
 def _batch_summary(tasks: list[DeployTask]) -> dict[str, int]:
     stages = [_task_stage(task) for task in tasks]
     return {
@@ -83,6 +106,16 @@ def _batch_summary(tasks: list[DeployTask]) -> dict[str, int]:
         "execution_failed": sum(task.status == DeployStatus.FAILED for task in tasks),
         "cancelled": sum(task.status == DeployStatus.CANCELLED for task in tasks),
         "rolled_back": sum(task.status == DeployStatus.ROLLED_BACK for task in tasks),
+    }
+
+
+def _batch_phase_counts(tasks: list[DeployTask], locks: dict[int, str]) -> dict[str, int]:
+    phases = [_task_phase(task, locks.get(task.id)) for task in tasks]
+    return {
+        "executing": phases.count("executing") + phases.count("verifying"),
+        "awaiting_verification": phases.count("awaiting_verification"),
+        "execution_unconfirmed": phases.count("execution_unconfirmed"),
+        "execution_blocked": phases.count("execution_blocked"),
     }
 
 
@@ -102,6 +135,7 @@ async def list_deploy_batches(
     tasks = (await db.execute(
         select(DeployTask).where(DeployTask.batch_id.in_(batch_ids))
     )).scalars().all()
+    locks = await _task_lock_types(db, tasks)
     by_batch: dict[int, list[DeployTask]] = {}
     for task in tasks:
         by_batch.setdefault(task.batch_id, []).append(task)
@@ -124,11 +158,13 @@ async def list_deploy_batches(
                     "config_content": task.config_content,
                     "status": task.status.value,
                     "stage": _task_stage(task),
+                    "phase": _task_phase(task, locks.get(task.id)),
                     "execution_mode": task.execution_mode,
                 }
                 for task in items
             ],
             "summary": _batch_summary(items),
+            "phase_counts": _batch_phase_counts(items, locks),
         })
     return redact_payload(result)
 
@@ -147,6 +183,7 @@ async def get_deploy_batch(
     tasks = (await db.execute(
         select(DeployTask).where(DeployTask.batch_id == batch.id).order_by(DeployTask.id)
     )).scalars().all()
+    locks = await _task_lock_types(db, tasks)
     from modules.device.models import Device as _Device
     device_rows = (await db.execute(select(_Device.id, _Device.hostname))).all()
     device_names = {row[0]: row[1] for row in device_rows}
@@ -159,6 +196,7 @@ async def get_deploy_batch(
         "planned_at": iso_utc(batch.planned_at),
         "created_at": batch.created_at,
         "summary": _batch_summary(tasks),
+        "phase_counts": _batch_phase_counts(tasks, locks),
         "items": [
             {
                 "id": task.id, "device_id": task.device_id, "config_content": task.config_content,
@@ -167,6 +205,7 @@ async def get_deploy_batch(
                 "hostname": device_names.get(task.device_id, ""),
                 "error_message": task.error_message,
                 "status": task.status.value, "stage": _task_stage(task),
+                "phase": _task_phase(task, locks.get(task.id)),
                 "execution_mode": task.execution_mode,
                 "started_at": iso_utc(task.started_at),
                 "completed_at": iso_utc(task.completed_at),
@@ -183,14 +222,19 @@ async def get_deploy_batch(
 
 @router.get("/deploy/change-logs", response_model=None)
 async def list_deploy_change_logs(task_id: int | None = None, db: AsyncSession = Depends(get_async_session), current_user: dict = Depends(get_current_user)) -> list[Any]:
-    query = select(AuditLog).where(AuditLog.module == "deploy")
+    query = select(AuditLog, User.username).outerjoin(User, User.id == AuditLog.user_id).where(AuditLog.module == "deploy")
     if task_id:
         query = query.where(AuditLog.resource_id == str(task_id))
     if current_user["role"] != "admin":
         # 非管理员只能看到自己的下发审计
         query = query.where(AuditLog.user_id == current_user["user_id"])
-    logs = (await db.execute(query.order_by(AuditLog.created_at.desc()))).scalars().all()
-    return redact_payload([{"id": log.id, "task_id": log.resource_id, "action": log.action, "result": log.result, "created_at": iso_utc(log.created_at), "detail": log.detail} for log in logs])
+    logs = (await db.execute(query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()))).all()
+    return redact_payload([
+        {"id": log.id, "task_id": log.resource_id, "action": log.action, "result": log.result,
+         "created_at": iso_utc(log.created_at), "detail": log.detail,
+         "actor": log.username.strip() or linked_name, "actor_id": log.user_id}
+        for log, linked_name in logs
+    ])
 
 
 @router.post("/deploy", response_model=DeployResponse, dependencies=[Depends(_DEPLOY_RATE_LIMIT)])
@@ -277,9 +321,7 @@ async def list_deploy_tasks(status: str = None, db: AsyncSession = Depends(get_a
     sources = {row.id: row.source for row in batch_rows}
     names = {(row.id, row.operator_id): row.name for row in batch_rows}
 
-    from modules.deploy.models import DeviceWriteLock
-    lock_rows = (await db.execute(select(DeviceWriteLock.device_id, DeviceWriteLock.task_id))).all()
-    locked_tasks = {row[1] for row in lock_rows}
+    locks = await _task_lock_types(db, tasks)
 
     return [
         {
@@ -293,7 +335,8 @@ async def list_deploy_tasks(status: str = None, db: AsyncSession = Depends(get_a
             "engine": t.engine,
             "change_level": t.change_level.value,
             "error_message": redact_sensitive(t.error_message),
-            "has_lock": t.id in locked_tasks,
+            "has_lock": t.id in locks,
+            "phase": _task_phase(t, locks.get(t.id)),
             "execution_mode": t.execution_mode,
             "created_at": iso_utc(t.created_at),
         }
@@ -309,9 +352,10 @@ async def get_deploy_task(task_id: int, db: AsyncSession = Depends(get_async_ses
         raise HTTPException(status_code=404, detail="任务不存在")
     if current_user["role"] != "admin" and task.operator_id != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="无权查看此任务（仅创建者或管理员）")
-    from modules.deploy.models import DeviceWriteLock as _Lock
-    lock = await db.get(_Lock, task.device_id)
+    lock = await db.get(DeviceWriteLock, task.device_id)
+    lock_type = lock.lock_type if lock and lock.task_id == task.id else None
     batch = await db.get(DeployBatch,task.batch_id) if task.batch_id else None
+    confirmer = await db.get(User, task.confirmed_by) if task.confirmed_by else None
     return redact_payload({
         "id": task.id, "transaction_id": task.transaction_id, "device_id": task.device_id,
         "batch_id": task.batch_id,
@@ -320,12 +364,14 @@ async def get_deploy_task(task_id: int, db: AsyncSession = Depends(get_async_ses
         "record_origin": declared_origin(batch.source if batch else None),
         # change_level/has_lock：审批详情要显示风险级别与是否持锁（此前详情恒显 "-"，与列表标签矛盾）
         "change_level": task.change_level.value,
-        "has_lock": bool(lock and lock.task_id == task.id),
+        "has_lock": lock_type is not None,
+        "phase": _task_phase(task, lock_type),
         "status": task.status.value, "engine": task.engine, "config_content": task.config_content,
         "result_output": task.result_output, "error_message": task.error_message,
         "backup_config": task.backup_config, "verified": task.verified, "verify_diff": task.verify_diff,
         "rollback_output": task.rollback_output,
-        "confirmed_by": task.confirmed_by, "confirmed_at": iso_utc(task.confirmed_at),
+        "confirmed_by": task.confirmed_by, "confirmed_username": confirmer.username if confirmer else None,
+        "confirmed_at": iso_utc(task.confirmed_at),
         "risk_confirmed_by": task.risk_confirmed_by, "risk_confirmed_at": iso_utc(task.risk_confirmed_at),
         "started_at": iso_utc(task.started_at), "completed_at": iso_utc(task.completed_at),
         "execution_mode": task.execution_mode,

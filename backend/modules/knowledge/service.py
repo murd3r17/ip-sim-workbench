@@ -271,6 +271,14 @@ class KnowledgeService:
         workspace = self.resolve_workspace_id(workspace_id)
         limit = top_k or get_settings().knowledge_top_k
         edition = self.edition()
+        if edition and (self.provider.name == "local"
+                        or (self.provider.name == "anythingllm" and workspace == edition.vector["workspace"])):
+            from .query_focus import focused_queries
+            focuses = focused_queries(query)
+            if focuses:
+                focused = await self._focused_originals(edition, workspace, focuses, limit)
+                if focused:
+                    return focused
         references = await self._reviewed_learning_hits(query, workspace, edition)
         if references and edition is None:
             return references[:limit]
@@ -305,6 +313,47 @@ class KnowledgeService:
         # 部分 provider（如 RAGFlow v0.26 retrieval）可能返回超过 top_k 的 chunk，
         # 统一在契约层截断，保证所有路由（/ask、/copilot/*、/knowledge/search）遵守 top_k。
         return (learning + sources)[:limit]
+
+    async def _focused_originals(self, edition, workspace, focuses, limit):
+        from .local_provider import _query_tokens
+        from .query_focus import subject_pattern
+
+        async def originals(focus):
+            hits = await edition.keyword_index.search(focus.query, workspace, max(8, limit))
+            subject = subject_pattern(focus.subject) if focus.subject else None
+            terms = set(_query_tokens(focus.facet))
+            ranked = []
+            for hit in hits:
+                body = hit.get("text") or ""
+                if subject and not subject.search(body):
+                    continue
+                overlap = len(terms.intersection(_query_tokens(body)))
+                exact = focus.facet in body
+                if not exact and (subject is None or overlap < max(1, (len(terms) + 1) // 2)):
+                    continue
+                ranked.append((exact, overlap, hit))
+            ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            mapped = await asyncio.to_thread(edition.resolve_hits, [hit for _, _, hit in ranked],
+                                             edition.keyword_index, workspace)
+            return [hit for hit in mapped if hit.get("document_version") and hit.get("section_id")]
+
+        groups = await asyncio.gather(*(originals(focus) for focus in focuses))
+        seen = set()
+        evidence = []
+        # Include the best supported page for each part before filling extra slots.
+        for index in range(max(map(len, groups), default=0)):
+            for focus, group in zip(focuses, groups, strict=True):
+                if index >= len(group):
+                    continue
+                hit = group[index]
+                identity = (hit["document_id"], hit["section_id"])
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                evidence.append({**hit, "retriever": "focused_original", "query_focus": focus.query})
+                if len(evidence) == limit:
+                    return evidence
+        return evidence
 
     async def _reviewed_learning_hits(self, query: str, workspace: str | None, edition=None) -> list[dict]:
         """Locate a reviewed passage in this provider's active, readable corpus."""

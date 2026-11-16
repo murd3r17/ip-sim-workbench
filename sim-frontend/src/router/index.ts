@@ -21,6 +21,7 @@ const routes = [
       { path: 'training', name: '实训', component: () => import('../views/training/TrainingLabView.vue') },
       { path: 'system/info', name: '系统信息', component: () => import('../views/system/SystemInfoView.vue') },
       { path: 'system/config', name: '系统配置', component: () => import('../views/system/SystemConfigView.vue') },
+      { path: 'system/accounts', name: '账号管理', component: () => import('../views/system/AccountView.vue') },
       { path: 'system/audit', name: '审计日志', component: () => import('../views/system/AuditLogView.vue') },
       { path: 'system/tasks', name: '后台任务', component: () => import('../views/system/BackgroundTaskView.vue') },
       { path: 'system/logs', name: '日志文件', component: () => import('../views/system/LogFileView.vue') },

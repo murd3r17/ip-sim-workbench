@@ -1,6 +1,6 @@
 <template>
   <div class="background-task v7b-page">
-    <div class="v7b-card task-entry-help"><strong>按任务类型进入对应页面</strong><p>这里展示接入后台任务表的记录；网络下发、巡检与实训各有独立进度入口。</p><div><el-button @click="$router.push({path:'/deploy',query:{tab:'tasks'}})">下发任务管理</el-button><el-button @click="$router.push('/monitor')">采集与巡检</el-button><el-button @click="$router.push('/training')">实训会话</el-button></div></div>
+    <div class="v7b-card task-entry-help"><strong>查看进度</strong><p>配置变更、采集巡检和实训会话的进度可从这里打开。下方列表显示系统后台作业。</p><div><el-button @click="$router.push({path:'/deploy',query:{tab:'tasks'}})">配置批次</el-button><el-button @click="$router.push('/monitor')">采集与巡检</el-button><el-button @click="$router.push('/training')">实训会话</el-button></div></div>
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
@@ -19,7 +19,6 @@
       </template>
       <RecordOriginFilter v-model="originFilter" :records="tasks" :unavailable="!!loadError" />
       <el-alert v-if="loadError" :title="loadError" type="warning" :closable="false" show-icon />
-      <p class="source-note">旧后台表没有来源字段；只有明确测试类型归为测试，其余保留为来源未明。名称和模拟模式不决定分类。</p>
       <el-table :data="pagedTasks" v-loading="loading">
         <template #empty>
           <el-empty :description="loadError || (tasks.length ? '当前来源筛选没有匹配记录，可恢复全部来源。' : '暂无后台任务')" :image-size="72" />

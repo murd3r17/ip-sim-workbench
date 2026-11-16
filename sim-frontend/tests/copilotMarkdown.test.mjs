@@ -7,7 +7,7 @@ const source = await readFile(new URL('../src/utils/markdownLite.ts', import.met
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } })
 const module = { exports: {} }
 new Function('module', 'exports', outputText)(module, module.exports)
-const { renderMarkdown } = module.exports
+const { referencedSourceIndices, renderMarkdown } = module.exports
 
 test('full document deep headings render safely without activating embedded markup', () => {
   const html = renderMarkdown('#### 四级 <img src=x onerror=alert(1)>\n##### 五级\n###### 六级\n\n[恶意](javascript:alert(1))')
@@ -85,4 +85,14 @@ test('real model n-prefixed citations map to the same bounded source without tou
   assert.match(html, /999 · 无对应来源/)
   assert.match(html, /<code class="md-inline">a\[n:2\]<\/code>/)
   assert.ok(!renderMarkdown('生成中[n:2]').includes('data-source-index'))
+})
+
+test('real model equals citations share numbering between the answer and source list', () => {
+  const text = '内容[n=2]，补充[n:1审校]，重复[来源2]，错误[n=9]；`array[n=7]`'
+  const html = renderMarkdown(text, 2)
+  assert.equal((html.match(/data-source-index="1"/g) || []).length, 2)
+  assert.match(html, /data-source-index="0"/)
+  assert.match(html, /9 · 无对应来源/)
+  assert.match(html, /<code class="md-inline">array\[n=7\]<\/code>/)
+  assert.deepEqual([...referencedSourceIndices(text)], [1, 0, 8])
 })

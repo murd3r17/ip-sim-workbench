@@ -64,6 +64,9 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
             continue
         title = str(hit.get("filename") or hit.get("title") or "参考文档")
         prefix = f"[{title[:160]}]\n"
+        topic = hit.get("query_focus")
+        if topic:
+            prefix += f"本片段用于核对 {str(topic)[:100]}。\n"
         limit = min(document_limit, remaining)
         if limit <= len(prefix):
             break
@@ -97,7 +100,7 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
             "truncated": truncated,
             **({"reviewed_notes": notes} if notes else {}),
             **({"page": hit["page"]} if isinstance(hit.get("page"), int) and hit["page"] > 0 else {}),
-            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path", "document_version", "section_id") if hit.get(key)},
+            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path", "document_version", "section_id", "query_focus") if hit.get(key)},
         })
         remaining -= len(prompt_text)
         if len(sources) == document_count or not remaining:

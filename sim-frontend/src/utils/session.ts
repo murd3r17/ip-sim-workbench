@@ -1,6 +1,6 @@
 import { useAiCopilotStore } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
-import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
+import { clearSavedDeployDraft, currentDraftOwner, useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
 
 const PREFIXES = ['lab_ctx_', 'ai_copilot_', 'deploy_ai_draft']
 
@@ -13,7 +13,8 @@ export function clearLocalAuth() {
   for (const key of toRemove) localStorage.removeItem(key)
 }
 
-export function clearClientSession() {
+export function clearClientSession(reason: 'expired' | 'logout' = 'expired') {
+  if (reason === 'logout') clearSavedDeployDraft(currentDraftOwner())
   clearLocalAuth()
   try {
     useLabContextStore().clearAll()

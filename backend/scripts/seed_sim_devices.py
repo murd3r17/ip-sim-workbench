@@ -150,7 +150,7 @@ async def main() -> int:
                 objectives=demo['objectives'],
                 content_version=demo['content_version'],
                 environment_spec=demo['environment_spec'],
-                time_limit_minutes=60,
+                time_limit_minutes=demo['time_limit_minutes'],
                 is_sandbox=False,
             )
             db.add(lab)
@@ -162,13 +162,10 @@ async def main() -> int:
 
     await close_db()
     print("")
-    print("[seed] 完成。离线模拟演示步骤：")
-    print("  1) 默认使用 bootstrap-local.ps1 的 minimal 模式（DEVICE_MODE=sim）")
-    print("  2) 打开 http://127.0.0.1:8000（账号见根 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD）")
-    print("  3) 设备页 → SSH 健康检查（模拟设备全部 ONLINE）；拓扑页 → LLDP 运行态校验")
-    print("  4) 监控页 → 触发采集/巡检；配置管理 → 快照采集/差异比对/AI 分析")
-    print("  5) 实训页 → 开始「模拟网络巡检实训」→ 记录操作/注入故障/提示/复盘/汇总（技能未验证）")
-    print("  6) 接入 eNSP 时：DEVICE_MODE 改回 ssh 并配置设备凭据，业务代码无需改动")
+    print("[seed] 本地练习数据已准备。启动后使用实际输出的地址。")
+    print("  部署者可在本机根目录 .env 查看管理员账号信息。")
+    print("  登录后从「工作台」点「入门巡检」，查看拓扑并选择一台设备。")
+    print("  在「设备」做「只读观察」，记录接口与观察时间，再保存实训笔记并回到历史检查。")
     return 0
 
 

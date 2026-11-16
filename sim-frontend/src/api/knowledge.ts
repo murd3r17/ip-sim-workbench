@@ -40,6 +40,7 @@ export interface KnowledgeDocument {
   page_end?: number
   edition?: string
   bundled?: boolean
+  catalog_kind?: 'chapter' | 'subsection'
   metadata?: Record<string, string | null>
 }
 
@@ -60,7 +61,7 @@ export interface KnowledgeFullDocument extends KnowledgeDocument {
   source_kind: string
   warnings?: string[]
   reviewed_notes?: KnowledgeReviewNote[]
-  original_pages?: { physical: number; section_id?: string | null; preview: boolean }[]
+  original_pages?: { physical: number; section_id?: string | null; preview: boolean; printed_hint?: string }[]
   subsections?: KnowledgeDocument[]
 }
 

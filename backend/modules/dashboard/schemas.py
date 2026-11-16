@@ -161,6 +161,7 @@ class ActivityItem(BaseModel):
 class TrainingSummary(BaseModel):
     active: int = 0
     total: int = 0
+    intro_lab_id: int | None = None
 
 
 class DashboardSummary(BaseModel):

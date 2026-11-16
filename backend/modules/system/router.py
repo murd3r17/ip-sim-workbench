@@ -2,12 +2,13 @@ from typing import Any
 """系统管理模块路由"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 from core.database import get_async_session
 from core.dependencies import require_role, get_current_user
 from core.config import get_settings
 from modules.auth.models import AuditLog
 from modules.system.schemas import (
-    SystemConfigCreate, SystemConfigUpdate, SystemConfigResponse,
+    SystemConfigCreate, SystemConfigUpdate, SystemConfigResponse, ModelConnectionUpdate,
     AuditLogResponse, AuditLogListResponse,
     BackgroundTaskResponse, BackgroundTaskListResponse,
     SystemInfoResponse, LogFileResponse,
@@ -39,6 +40,22 @@ async def list_config(db: AsyncSession = Depends(get_async_session), current_use
 async def get_effective_config(db: AsyncSession = Depends(get_async_session), current_user: dict = Depends(require_role("admin"))) -> dict:
     from .runtime_config import effective_config
     return await effective_config(db)
+
+
+@router.put("/model-connection")
+async def update_model_connection(
+    data: ModelConnectionUpdate,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: dict = Depends(require_role("admin")),
+) -> dict:
+    try:
+        keys = await SystemService.update_model_connection(db, data, current_user)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "有其他管理员正在保存配置，请刷新后核对") from exc
+    return {"saved_keys": keys, "activation": "next_provider"}
 
 
 @router.get("/config/{key}", response_model=SystemConfigResponse)

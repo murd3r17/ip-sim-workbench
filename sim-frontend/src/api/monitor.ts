@@ -66,7 +66,7 @@ export interface PortObservationRow extends PortExpectation {
 export interface PortState {
   device_id: number
   hostname: string
-  policy: { revision: string; ports: PortExpectation[]; valid: boolean; reason?: string }
+  policy: { revision: string; ports: PortExpectation[]; valid: boolean; reason?: string; ospf_min_neighbors?: number | null }
   fresh: boolean
   policy_changed: boolean
   mode_changed: boolean
@@ -74,8 +74,10 @@ export interface PortState {
   observation?: { ports: PortObservationRow[]; complete: boolean; observed_at: string; reason?: string; missing_expected_ports: string[]; expected_down: number; review_count: number; policy_revision: string }
 }
 export const getPortState = (deviceId: number) => request.get<PortState, PortState>(`/monitor/ports/${deviceId}`, { silent: true })
-export const savePortExpectations = (deviceId: number, baseRevision: string, ports: PortExpectation[]) =>
-  request.put(`/monitor/ports/${deviceId}/expectations`, { base_revision: baseRevision, ports }, { silent: true })
+export const savePortExpectations = (deviceId: number, baseRevision: string, ports: PortExpectation[], ospfMinimum?: number | null) =>
+  request.put(`/monitor/ports/${deviceId}/expectations`, {
+    base_revision: baseRevision, ports, ospf_min_neighbors: ospfMinimum,
+  }, { silent: true })
 
 // 监控指标
 export const getDeviceMetrics = (deviceId: number, params?: { metric_type?: string; limit?: number }) =>

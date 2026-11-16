@@ -1,7 +1,27 @@
 <template>
   <div class="system-config v7b-page">
-    <header class="v7b-page-header"><div><h1>系统配置</h1><p class="sub">查看当前读取值，再决定修改启动配置或数据库覆盖。</p></div><el-button type="primary" @click="showAddDialog">新增配置</el-button></header>
-    <div class="config-groups"><el-radio-group v-model="activeGroup" size="small" aria-label="配置分组"><el-radio-button v-for="group in GROUPS" :key="group.key" :value="group.key">{{group.label}} <span class="group-count">{{countOf(group.key)}}</span></el-radio-button></el-radio-group><el-button v-if="showLlmTest" :loading="llmTesting" @click="testLlm">测试模型连通性</el-button></div>
+    <header class="v7b-page-header"><div><h1>系统配置</h1><p class="sub">管理模型连接，查看采集与其他配置的当前生效值。</p></div><el-button @click="showAddDialog">新增高级键值</el-button></header>
+    <div class="settings-tasks">
+      <el-card shadow="never">
+        <h2>模型连接</h2>
+        <p>{{ runtimeText('llm.model') || '模型名称未登记' }} · {{ modelCredentialText }}</p>
+        <div class="settings-actions">
+          <el-button type="primary" :disabled="!effective || !!effectiveError" @click="openModelSetup">配置模型连接</el-button>
+          <el-button :loading="llmTesting" @click="testLlm">测试模型连通性</el-button>
+        </div>
+      </el-card>
+      <el-card shadow="never">
+        <h2>采集设置</h2>
+        <p v-if="scheduler?.value === true">定时采集已启用 · 每 {{ runtimeText('monitor.collect_interval') }} 秒</p>
+        <p v-else>{{ scheduler ? '定时采集未启用，可在监控页手动采集。' : '正在读取定时采集设置。' }}</p>
+        <details class="secret-tip">
+          <summary>修改定时采集</summary>
+          <p>在工作台的启动配置中调整 MONITOR_SCHEDULER_ENABLED 和 MONITOR_COLLECT_INTERVAL，重启后在此核对。</p>
+        </details>
+        <el-button link type="primary" @click="$router.push('/monitor')">打开监控</el-button>
+      </el-card>
+    </div>
+    <div class="config-groups"><el-radio-group v-model="activeGroup" size="small" aria-label="配置分组"><el-radio-button v-for="group in GROUPS" :key="group.key" :value="group.key">{{group.label}} <span class="group-count">{{countOf(group.key)}}</span></el-radio-button></el-radio-group></div>
     <el-alert v-if="llmTestResult" :title="llmTestResult" :type="llmTestOk?'success':'warning'" :closable="false" show-icon />
     <EffectiveConfiguration :data="effective" :loading="loading" :error="effectiveError" :group="activeGroup" @refresh="loadConfigs" />
     <el-card shadow="never"><template #header><div class="card-header"><strong>已保存数据库键值（{{visibleConfigs.length}}）</strong><span>保存与实际生效分别核对</span></div></template>
@@ -20,12 +40,44 @@
     <el-dialog v-model="dialogVisible" class="v7b-record-dialog config-editor" top="4vh" :title="editingKey?'编辑配置':'新增配置'" width="min(620px,94vw)" draggable>
       <el-form :model="form" label-position="top">
         <el-form-item label="配置键"><el-input v-model="form.config_key" :disabled="!!editingKey" placeholder="例如: llm.model" /></el-form-item>
-        <el-alert :title="consumer(form.config_key.trim()).note" type="info" :closable="false" show-icon />
+        <el-alert v-if="form.config_key.trim()" :title="consumer(form.config_key.trim()).note" type="info" :closable="false" show-icon />
         <el-form-item label="配置值"><el-input v-if="formIsSecret" v-model="form.config_value" type="password" autocomplete="new-password" :placeholder="editingKey?'留空保留已保存值':'输入新凭据（不会回显）'" /><el-input v-else v-model="form.config_value" type="textarea" :rows="3" placeholder="配置值" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="form.description" placeholder="配置说明" /></el-form-item>
         <p v-if="formIsSecret" class="secret-tip">凭据内容隐藏；编辑已有项时留空会保留原值。空的模型覆盖不关闭进程配置。</p>
         <el-alert v-if="saveNotice||saveError" :title="saveError||saveNotice" :type="saveError?'warning':'info'" :closable="false" show-icon />
       </el-form><template #footer><el-button @click="dialogVisible=false">取消</el-button><el-button type="primary" :loading="saving" :disabled="saving||!form.config_key.trim()" @click="saveConfig">保存</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="modelSetupOpen" title="配置模型连接" class="v7b-record-dialog config-editor" top="4vh" width="min(620px, 94vw)"
+      :show-close="!savingModel" :close-on-click-modal="!savingModel" :close-on-press-escape="!savingModel" @closed="modelForm.api_key = ''">
+      <el-form label-position="top" @submit.prevent="saveModelConnection">
+        <el-form-item label="服务类型">
+          <el-select v-model="modelForm.provider" :disabled="savingModel">
+            <el-option label="OpenAI 兼容（如 DeepSeek）" value="openai_compatible" />
+            <el-option label="OpenAI" value="openai" />
+            <el-option label="Ollama" value="ollama" />
+            <el-option label="本地模型" value="local" />
+            <el-option label="内部服务" value="internal" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="服务地址">
+          <el-input v-model="modelForm.base_url" placeholder="如 https://api.deepseek.com/v1" :disabled="savingModel" />
+          <small>当前来源 {{ sourceName('llm.base_url') }}</small>
+        </el-form-item>
+        <el-form-item label="模型名称">
+          <el-input v-model="modelForm.model" :disabled="savingModel" />
+          <small>当前来源 {{ sourceName('llm.model') }}</small>
+        </el-form-item>
+        <el-form-item label="认证密钥">
+          <el-input v-model="modelForm.api_key" type="password" placeholder="留空保留当前密钥" autocomplete="new-password" :disabled="savingModel" />
+          <small>{{ modelCredentialText }} · 当前来源 {{ sourceName('llm.api_key') }}</small>
+        </el-form-item>
+        <p class="secret-tip">保存后，新模型请求读取更新值。可用性请另点「测试模型连通性」检查。</p>
+        <el-alert v-if="modelError" :title="modelError" type="error" :closable="false" />
+      </el-form>
+      <template #footer>
+        <el-button :disabled="savingModel" @click="modelSetupOpen = false">取消</el-button>
+        <el-button type="primary" :loading="savingModel" @click="saveModelConnection">保存连接设置</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -35,7 +87,7 @@ import {ElMessage} from 'element-plus/es/components/message/index'
 import {formatApiTime} from '../../utils/datetime'
 import {notifyRequestError,requestErrorMessage} from '../../utils/requestError'
 import EffectiveConfiguration from '../../components/EffectiveConfiguration.vue'
-import {listSystemConfigs,getEffectiveSystemConfig,testModelConnectivity,createSystemConfig,updateSystemConfig,deleteSystemConfig as deleteConfigApi,type EffectiveConfig,type ConfigConsumer} from '../../api/system'
+import {listSystemConfigs,getEffectiveSystemConfig,testModelConnectivity,updateModelConnection,createSystemConfig,updateSystemConfig,deleteSystemConfig as deleteConfigApi,type EffectiveConfig,type ConfigConsumer} from '../../api/system'
 interface ConfigItem {id:number;config_key:string;config_value:string|null;description:string|null;updated_by:string|null;updated_at:string;is_secret?:boolean}
 const GROUPS=[{key:'all',label:'全部',prefix:''},{key:'llm',label:'AI 模型',prefix:'llm.'},{key:'knowledge',label:'知识库',prefix:'knowledge.'},{key:'monitor',label:'监控',prefix:'monitor.'},{key:'deploy',label:'配置下发',prefix:'deploy.'},{key:'other',label:'其他',prefix:''}]
 const configs=ref<ConfigItem[]>([]),effective=ref<EffectiveConfig|null>(null),loading=ref(false),loadError=ref(''),effectiveError=ref(''),activeGroup=ref('all')
@@ -48,7 +100,52 @@ watch(dialogVisible,v=>{if(!v)editorEpoch++},{flush:'sync'})
 const inGroup=(item:ConfigItem,key:string)=>key==='all'?true:key==='other'?!GROUPS.some(g=>g.prefix&&item.config_key.startsWith(g.prefix)):item.config_key.startsWith(GROUPS.find(g=>g.key===key)?.prefix||'__unknown__')
 const visibleConfigs=computed(()=>configs.value.filter(x=>inGroup(x,activeGroup.value)))
 const countOf=(key:string)=>configs.value.filter(x=>inGroup(x,key)).length
-const showLlmTest=computed(()=>['all','llm'].includes(activeGroup.value))
+const effectiveField = (key: string) => effective.value?.fields.find(field => field.key === key)
+const sourceName = (key: string) => effectiveField(key)?.source === 'database' ? '数据库覆盖' : '服务启动配置'
+const runtimeText = (key: string) => String(effectiveField(key)?.value ?? '')
+const scheduler = computed(() => effectiveField('monitor.scheduler_enabled'))
+const modelCredentialText = computed(() => {
+  const field = effectiveField('llm.api_key')
+  if (field?.override_status === 'unreadable_secret') return '已存密钥无法读取'
+  return field?.configured ? '认证密钥已配置' : '认证密钥未配置'
+})
+const modelSetupOpen = ref(false)
+const savingModel = ref(false)
+const modelError = ref('')
+const modelForm = ref({ provider: '', base_url: '', model: '', api_key: '' })
+let openingModelValues = { provider: '', base_url: '', model: '' }
+function openModelSetup() {
+  openingModelValues = { provider: runtimeText('llm.provider'), base_url: runtimeText('llm.base_url'), model: runtimeText('llm.model') }
+  modelForm.value = { ...openingModelValues, api_key: '' }
+  modelError.value = ''
+  modelSetupOpen.value = true
+}
+async function saveModelConnection() {
+  if (savingModel.value) return
+  const form = modelForm.value
+  const changes = {
+    provider: form.provider !== openingModelValues.provider ? form.provider : undefined,
+    base_url: form.base_url !== openingModelValues.base_url ? form.base_url : undefined,
+    model: form.model !== openingModelValues.model ? form.model : undefined,
+    api_key: form.api_key || undefined,
+  }
+  savingModel.value = true
+  modelError.value = ''
+  try {
+    const result = await updateModelConnection(changes)
+    if (result.saved_keys.length) {
+      probeEpoch++
+      llmTestResult.value = ''
+      ElMessage.success('连接设置已保存。可测试模型连通性。')
+      await loadConfigs()
+    }
+    modelSetupOpen.value = false
+  } catch (error) {
+    modelError.value = requestErrorMessage(error, '配置未保存，请核对连接信息后重试。')
+  } finally {
+    savingModel.value = false
+  }
+}
 const consumer=(key:string):ConfigConsumer=>effective.value?.stored_items.find(x=>x.key===key)||effective.value?.known_items.find(x=>x.key===key)||{key,consumer:'unregistered',activation:'unknown',note:key.startsWith('llm.')?'仅支持已登记的LLM覆盖键，具体生效方式以有效配置快照为准。':'此键尚无已确认消费者；保存键值不证明已改变当前服务。'}
 const activationLabel=(value:string)=>({next_provider:'后续新模型请求',next_collection:'后续采集读取',not_applied:'仅保存，未覆盖运行值',unknown:'未确认何处读取'}[value]||value)
 const deleteMessage=(key:string)=>consumer(key).activation==='next_provider'?'删除此数据库覆盖后，后续新模型请求回退到进程启动配置；在途请求不改。':'只删除此数据库键值；不会修改启动环境或直接修复设备。是否继续？'
@@ -78,6 +175,11 @@ const testLlm=async()=>{if(llmTesting.value)return;const epoch=++probeEpoch;llmT
 onMounted(loadConfigs)
 </script>
 <style scoped>
+.settings-tasks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 12px; }
+.settings-tasks h2 { font-size: 16px; margin: 0; }
+.settings-tasks p { color: var(--v7b-muted); line-height: 1.55; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-actions .el-button { margin-left: 0; }
 .system-config{--el-text-color-primary:var(--v7b-text);--el-text-color-regular:var(--v7b-muted);--el-border-color:var(--v7b-line);--el-border-color-light:var(--v7b-line);--el-border-color-lighter:var(--v7b-line)}.config-groups,.card-header{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}.config-groups :deep(.el-radio-group){display:flex;flex-wrap:wrap;gap:4px}.config-groups :deep(.el-radio-button__inner){border:1px solid var(--v7b-line);border-radius:4px}.group-count{opacity:.7;margin-left:4px}.card-header span,small,.secret-tip{color:var(--v7b-muted);font-size:12px;line-height:1.7}small{display:block}.system-config :deep(.el-card){border-color:var(--v7b-line)}.system-config :deep(.el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--warning):not(.is-link)){background:#fff;color:var(--v7b-text);border-color:var(--v7b-line)}.system-config :deep(.el-button.is-disabled){color:#778396;background:var(--v7b-surface-2)}
 </style>
 <style scoped>

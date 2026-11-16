@@ -7,7 +7,7 @@
     <div class="knowledge-health">
       <el-tag :type="knowledgeHealth?.available ? 'success' : 'warning'">{{ knowledgeHealth?.available ? '知识服务可用' : '知识服务待检查' }}</el-tag>
       <span>{{ knowledgeHealth?.provider || catalog?.provider || '提供方未知' }}</span>
-      <span>{{ catalog ? `${catalog.count} 篇资料 · ${catalog.readable_count} 篇可读全文` : docsError ? '目录暂不可用' : '目录待加载' }}</span>
+      <span>{{ catalog ? catalogSummary : docsError ? '目录暂不可用' : '目录待加载' }}</span>
       <span v-if="catalog">核对 {{ localTime(catalog.checked_at) }}</span>
     </div>
     <el-alert v-if="docsError || knowledgeHealth?.error" :title="docsError || knowledgeHealth?.error || ''" type="error" show-icon :closable="false" />
@@ -18,13 +18,14 @@
           <el-select v-model="book" clearable placeholder="全部教材" aria-label="教材分组">
             <el-option v-for="group in books" :key="group.key" :label="`${group.label}（${group.count}）`" :value="group.key" />
           </el-select>
-          <span>{{ catalog ? `${filteredDocuments.length} / ${catalog.count} 篇` : '数量未知' }}</span>
+          <el-checkbox v-if="subsectionsCount" v-model="showSubsections">显示小节入口</el-checkbox>
+          <span v-if="catalog">{{ filteredDocuments.length }} 条</span>
           <el-button plain @click="searchBody">按正文检索</el-button>
         </div>
         <el-table :data="filteredDocuments" v-loading="docsLoading" row-key="id" class="catalog-table">
           <template #empty><el-empty :description="docsError || (filter || book ? '没有符合筛选条件的资料' : '当前没有资料，请管理员核对同步。')" :image-size="72" /></template>
           <el-table-column label="章节 / 资料" min-width="250">
-            <template #default="{ row }"><el-button link type="primary" class="document-title" @click="openDocument(row)">{{ row.title || row.filename }}</el-button><div class="document-secondary" v-if="row.page_start">PDF 第 {{ row.page_start }}–{{ row.page_end }} 页</div><div class="document-secondary" v-else-if="row.readable">{{ row.section_count ?? 0 }} 节</div></template>
+            <template #default="{ row }"><el-button link type="primary" class="document-title" @click="openDocument(row)">{{ row.title || row.filename }}</el-button><div class="document-secondary" v-if="row.page_start">{{ row.catalog_kind === 'subsection' ? '小节 · ' : '' }}PDF 第 {{ row.page_start }}–{{ row.page_end }} 页</div><div class="document-secondary" v-else-if="row.readable">{{ row.section_count ?? 0 }} 节</div></template>
           </el-table-column>
           <el-table-column label="教材" min-width="210"><template #default="{ row }">{{ row.book_title || row.book || '其他资料' }}</template></el-table-column>
           <el-table-column label="操作" width="125"><template #default="{ row }">
@@ -35,13 +36,15 @@
         <p class="knowledge-tip">目录筛选用于找章节。查询概念或命令时可按正文检索，来源和版本可在全文中查看。</p>
       </el-tab-pane>
       <el-tab-pane label="检索资料" name="search">
+        <p class="knowledge-tip">检索范围为全部可检索教材及资料。</p>
         <div class="search-form"><el-input v-model="searchQuery" type="textarea" :rows="2" placeholder="输入关键词（Ctrl+Enter 检索）" aria-label="检索关键词" @keydown.ctrl.enter.prevent="handleSearch" @keydown.meta.enter.prevent="handleSearch" /><el-button type="primary" :loading="searchLoading" @click="handleSearch">检索</el-button></div>
         <el-alert v-if="searchError" :title="searchError" type="error" show-icon :closable="false" />
         <el-empty v-if="searched && !searchResults.length && !searchLoading && !searchError" description="未检索到相关片段，可换关键词或查看资料目录。" :image-size="72" />
         <el-card v-for="(result, i) in searchResults" :key="i" shadow="never" class="search-result">
           <header><strong>{{ result.title || result.filename || '检索片段' }}</strong><el-button link type="primary" @click="openCitation(result)">片段详情</el-button></header>
+          <p v-if="result.page" class="document-secondary">原教材 PDF 第 {{ result.page }} 页</p>
           <p v-for="note in result.reviewed_notes" :key="note.id"><strong>{{ note.title }}</strong> · {{ note.content }}</p>
-          <pre>{{ result.text || result.content || '未附片段' }}</pre>
+          <p class="search-excerpt">{{ resultExcerpt(result) }}</p>
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -71,6 +74,7 @@ import AdminAction from '../../components/AdminAction.vue'
 import KnowledgeDocumentReader from '../../components/KnowledgeDocumentReader.vue'
 const copilot = useAiCopilotStore()
 const activeTab = ref('docs'), filter = ref(''), book = ref('')
+const showSubsections = ref(false)
 const catalog = ref<KnowledgeCatalog | null>(null), knowledgeHealth = ref<KnowledgeHealth | null>(null)
 const docsLoading = ref(false), healthLoading = ref(false), docsError = ref('')
 const citationVisible = ref(false), citation = ref<KnowledgeSearchResult | null>(null)
@@ -80,12 +84,21 @@ let alive = true, docsEpoch = 0, searchEpoch = 0
 const books = computed(() => {
   const groups = new Map<string, { key: string; label: string; count: number }>()
   for (const d of catalog.value?.documents || []) {
+    if (d.catalog_kind === 'subsection') continue
     const key = d.book || 'other', group = groups.get(key) || { key, label: d.book_title || d.book || '其他资料', count: 0 }
     group.count++; groups.set(key, group)
   }
   return [...groups.values()]
 })
-const filteredDocuments = computed(() => (catalog.value?.documents || []).filter(d => (!book.value || (d.book || 'other') === book.value)
+const subsectionsCount = computed(() => catalog.value?.documents.filter(doc => doc.catalog_kind === 'subsection').length || 0)
+const catalogSummary = computed(() => {
+  const chapters = catalog.value?.documents.filter(doc => doc.catalog_kind === 'chapter').length || 0
+  return chapters
+    ? `${chapters} 个教材章节 · ${subsectionsCount.value} 个章内阅读入口`
+    : `${catalog.value?.count || 0} 篇资料 · ${catalog.value?.readable_count || 0} 篇可读全文`
+})
+const filteredDocuments = computed(() => (catalog.value?.documents || []).filter(d => (showSubsections.value || filter.value.trim() || d.catalog_kind !== 'subsection')
+  && (!book.value || (d.book || 'other') === book.value)
   && (!filter.value.trim() || [d.title, d.filename, d.book_title, d.book].join(' ').toLowerCase().includes(filter.value.trim().toLowerCase()))))
 function localTime(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '时间未知' }
 function openDocument(doc: KnowledgeDocument) {
@@ -93,6 +106,11 @@ function openDocument(doc: KnowledgeDocument) {
   readerExcerpt.value = ''; readerSection.value = ''; readerVisible.value = true
 }
 function openCitation(result: KnowledgeSearchResult) { citation.value = result; citationVisible.value = true }
+function resultExcerpt(result: KnowledgeSearchResult) {
+  const raw = result.text || result.content || ''
+  const text = raw.replace(/^\s*#{1,6}\s+.*$/gm, '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
+  return text ? text.slice(0, 360) + (text.length > 360 ? '…' : '') : '查看片段详情'
+}
 function openSearchDocument() {
   const source = citation.value
   if (!source) return

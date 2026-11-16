@@ -25,6 +25,8 @@ export interface EffectiveConfig {
 }
 export const getEffectiveSystemConfig=()=>request.get<EffectiveConfig,EffectiveConfig>('/system/effective-config',{silent:true})
 export const testModelConnectivity=()=>request.post<unknown,any>('/system/llm-health',undefined,{silent:true})
+export const updateModelConnection = (data: { provider?: string; base_url?: string; model?: string; api_key?: string }) =>
+  request.put<{ saved_keys: string[] }, { saved_keys: string[] }>('/system/model-connection', data, { silent: true })
 
 export function getSystemConfig(key: string) {
   return request.get(`/system/config/${key}`)

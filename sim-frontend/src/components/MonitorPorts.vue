@@ -24,6 +24,7 @@
         </div>
         <p v-if="state.observation">{{ state.observation.reason }}；预期启用未 Up {{ state.observation.expected_down }}，待核对 {{ state.observation.review_count }}。用途来自采样时的本地期望，管理未关闭不代表已核实管理配置。</p>
         <p v-else>本次没有可用端口明细；旧汇总指标不能补造端口状态。</p>
+        <p v-if="!editing">OSPF 邻居数量下限 · {{ state.policy.ospf_min_neighbors ?? '未登记，异常计数仅供人工核对' }}</p>
         <el-table :data="rows" border max-height="340" empty-text="暂无端口明细，仍可由管理员登记预期" class="port-table">
           <el-table-column prop="name" label="接口" min-width="135" />
           <el-table-column prop="physical" label="物理" width="90" />
@@ -36,6 +37,12 @@
         <details v-if="!editing"><summary>当前期望、版本与采样来源</summary><p v-for="p in state.policy.ports" :key="p.name">{{ p.name }} · {{ purposeLabels[p.purpose] }} · 预期{{ expectedLabel(p.expected_enabled) }}</p><p v-if="!state.policy.ports.length">尚未登记端口期望。</p><p class="revision">当前期望 {{ state.policy.revision }}<br>采样期望 {{ state.observation?.policy_revision || '未知' }}<br>观察超过五分钟、模式变化或期望改变均需重新采集；端口 Up 不证明业务可达。</p></details>
         <section v-if="editing" class="port-editor">
           <h3>登记本地期望</h3><p>保存后须重新采集，再与新期望核对。移除一行只撤销本地登记。</p>
+          <label class="port-snapshot">
+            OSPF 邻居数量下限
+            <el-input-number v-model="ospfMinimum" aria-label="OSPF 邻居数量下限" :min="0" :max="4096" :step="1"
+              step-strictly :controls="false" placeholder="未登记" :disabled="saving" />
+          </label>
+          <p class="port-help">按设计填写此设备至少应看到的 Full 或 2-Way 邻居数。0 代表此设备允许没有邻居，留空表示还不知道预期数量。</p>
           <div v-for="(port, index) in draft" :key="index" class="port-edit-row">
             <el-input v-model="port.name" aria-label="接口名称" placeholder="如 GE0/0/1" :disabled="saving" />
             <el-select v-model="port.purpose" aria-label="端口用途" :disabled="saving"><el-option v-for="(label, key) in purposeLabels" :key="key" :label="label" :value="key" /></el-select>
@@ -72,6 +79,7 @@ const deviceError = ref(''), now = ref(Date.now())
 const clock = window.setInterval(() => { now.value = Date.now() }, 1000)
 const visible = ref(false), loading = ref(false), saving = ref(false), editing = ref(false)
 const state = ref<PortState | null>(null), error = ref(''), draft = ref<PortExpectation[]>([])
+const ospfMinimum = ref<number | undefined>()
 let epoch = 0, deviceEpoch = 0
 const purposeLabels = { unknown: '用途未知', unused: '闲置', business: '业务', uplink: '上联', management: '管理' }
 const assessmentLabels: Record<string,string> = {expected_up:'符合端口Up预期',expected_down:'预期启用但未Up',expected_inactive:'符合闲置/停用预期',unexpected_up:'预期停用但观察到Up',unknown_up:'Up，用途/预期待核对',review_down:'down，用途/预期待核对'}
@@ -96,6 +104,7 @@ const reload = async () => {
 const open = () => { visible.value = true; editing.value = false; reload() }
 const edit = () => {
   if (!state.value) return
+  ospfMinimum.value = state.value.policy.ospf_min_neighbors ?? undefined
   draft.value = state.value.policy.ports.map(p => ({ ...p }))
   for (const p of rows.value) if (!draft.value.some(x => x.name.toLowerCase() === p.name.toLowerCase())) draft.value.push({name:p.name,purpose:'unknown',expected_enabled:null})
   editing.value = true
@@ -105,7 +114,7 @@ const save = async () => {
   saving.value = true; error.value = ''
   const token = epoch, id = selected.value
   try {
-    await savePortExpectations(id, state.value.policy.revision, draft.value)
+    await savePortExpectations(id, state.value.policy.revision, draft.value, ospfMinimum.value ?? null)
     if (token === epoch) { editing.value = false; ElMessage.success('本地期望已保存，请重新采集核对'); await reload() }
   } catch (e) { if (token === epoch) error.value = requestErrorMessage(e, '保存失败，编辑内容已保留') }
   finally { saving.value = false }

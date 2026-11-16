@@ -44,7 +44,7 @@
             </details>
             <section v-for="part in parts" :id="part.id" :key="part.id" :ref="el => remember(part.id, el)"
               :class="{ 'reader-located': part.id === matchedPart }">
-              <p v-if="part.id === matchedPart" class="reader-message">本次引用所在章节</p>
+              <p v-if="part.id === matchedPart" class="reader-message">本次引用所在段落</p>
               <pre v-if="mode === 'raw'">{{ part.content }}</pre>
               <div v-else class="reader-markdown" v-html="renderMarkdown(formatted(part.content))" />
               <el-button v-if="previewPages.has(part.id)" link type="primary" @click="showFigure(previewPages.get(part.id)!)">查看这页原图</el-button>
@@ -54,7 +54,7 @@
               <p>页号从 PDF 第一页计数。可预览的页带有原图入口。</p>
               <div class="reader-pages">
                 <template v-for="page in document.original_pages" :key="page.physical">
-                  <el-button v-if="page.preview" size="small" plain @click="showFigure(page.physical)">查看第 {{ page.physical }} 页</el-button>
+                  <el-button v-if="page.preview" size="small" plain :title="page.printed_hint" @click="showFigure(page.physical)">查看第 {{ page.physical }} 页</el-button>
                   <el-button v-else-if="page.section_id" size="small" text @click="jump(page.section_id)">第 {{ page.physical }} 页正文</el-button>
                   <span v-else>第 {{ page.physical }} 页</span>
                 </template>

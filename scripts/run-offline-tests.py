@@ -61,6 +61,7 @@ def isolated_environment(run_dir: Path, device_mode: str) -> dict[str, str]:
         "KNOWLEDGE_ANYTHINGLLM_STORAGE": str(run_dir / "knowledge-storage"),
         "LOG_DIR": str(run_dir / "logs"),
         "AGENT_BUDGET_FILE": str(run_dir / "agent-budget.json"),
+        "TERMINAL_RELEASE_OUTBOX": str(run_dir / "terminal-release-pending.jsonl"),
         "TEMP": str(run_dir / "temp"), "TMP": str(run_dir / "temp"),
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
         # aiomysql resolves getpass.getuser() at import time. Windows has no

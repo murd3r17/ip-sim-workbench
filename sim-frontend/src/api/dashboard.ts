@@ -96,7 +96,7 @@ export interface DashboardSummary {
   }>
   activity: Array<{ id: number; module: string; action: string; result: string; created_at: string }>
   monitor_scheduler_enabled?: boolean
-  training?: { active: number; total: number }
+  training?: { active: number; total: number; intro_lab_id?: number | null }
 }
 
 export const getDashboardSummary = () => request.get<DashboardSummary, DashboardSummary>('/dashboard/summary', { params: { include_service_health: false } })

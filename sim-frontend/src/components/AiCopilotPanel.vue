@@ -96,6 +96,9 @@
               :title="store.selection.detail || store.selection.label"
               @click="askAboutSelection"
             >{{ store.selection.label }}</button>
+            <button class="sel-pin" type="button" :aria-pressed="store.selectionPinned" @click="store.setSelectionPinned(!store.selectionPinned)">
+              {{ store.selectionPinned ? '解除固定' : '固定对象' }}
+            </button>
             <button
               class="sel-x"
               type="button"
@@ -157,6 +160,9 @@
             :title="store.selection.detail || store.selection.label"
             @click="askAboutSelection"
           >{{ store.selection.label }}</button>
+          <button class="sel-pin" type="button" :aria-pressed="store.selectionPinned" @click="store.setSelectionPinned(!store.selectionPinned)">
+            {{ store.selectionPinned ? '解除固定' : '固定对象' }}
+          </button>
           <button
             class="sel-x"
             type="button"
@@ -189,6 +195,7 @@
           :class="msg.role"
         >
           <div class="bubble" :class="{ streaming: msg.streaming }" @click="onBubbleClick($event, msg)">
+            <div v-if="msg.sentContext" class="msg-time sent-context">提问时 · {{ msg.sentContext }}</div>
             <div v-if="msg.role === 'assistant' && msg.streaming && !msg.content" class="thinking-line" role="status">
               {{ toolStatus || progressStatus }}
             </div>
@@ -222,11 +229,14 @@
                 :title="`打开引用：${s.title || s.filename || '文档'}${s.version ? `（片段 ${s.version}）` : ''}`"
                 @click="openCitation(msg, i)"
               >
-                [{{ i + 1 }}] {{ s.title || s.filename || '文档' }}
+                [{{ i + 1 }}] {{ s.title || s.filename || '文档' }}<template v-if="s.page"> · PDF 第 {{ s.page }} 页</template>
               </button>
             </div>
             <div v-else-if="msg.role === 'assistant' && !msg.streaming && ['degraded', 'empty'].includes(msg.knowledgeStatus || '')" class="sources">
-              <div class="sources-title">{{ msg.knowledgeStatus === 'degraded' ? '知识库降级，本回答未附教材引用' : '未命中知识库，回答未附教材引用' }}</div>
+              <div class="sources-title">{{ msg.knowledgeStatus === 'degraded' ? '本次未能连接知识服务' : '本次检索没有找到可引用的片段' }}</div>
+            </div>
+            <div v-else-if="msg.role === 'assistant' && !msg.streaming && msg.knowledgeStatus === 'ok'" class="sources">
+              <div class="sources-title">已检索资料，正文没有引用检索片段。</div>
             </div>
             <div v-if="msg.draftRefused && !msg.streaming" class="draft-refused">
               未生成配置草稿：{{ msg.draftRefused }}
@@ -382,7 +392,7 @@ import { ElMessage } from 'element-plus/es/components/message/index'
 import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest, getCopilotSession } from '../api/ai'
 import { useAiCopilotStore, type CopilotAttachment, type CopilotMessage } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
-import { renderMarkdown } from '../utils/markdownLite'
+import { referencedSourceIndices, renderMarkdown } from '../utils/markdownLite'
 import KnowledgeDocumentReader from './KnowledgeDocumentReader.vue'
 import { resolvePageMeta } from '../utils/copilotContext'
 import { buildPageDataContext } from '../utils/pageDataContext'
@@ -507,7 +517,7 @@ watch(
   () => {
     store.setPageContext(route.path, String(route.name || pageMeta.value.title))
   },
-  { immediate: true }
+  { immediate: true, flush: 'sync' }
 )
 
 async function scrollBottom() {
@@ -520,7 +530,7 @@ function go(path: string) {
 }
 
 function clearSelection() {
-  store.setSelection(null)
+  store.clearSelection()
 }
 
 function clearLab() {
@@ -568,9 +578,9 @@ function onSwitch(id: string) {
 const carryContextHint = computed(() => {
   const bits: string[] = []
   if (labLinked.value) bits.push(`实训「${labCtx.label}」`)
-  if (store.selection?.label) bits.push(`选中「${store.selection.label}」`)
+  if (store.selection?.label) bits.push(`${store.selectionPinned ? '已固定' : '跟随本页'}「${store.selection.label}」`)
   if (!bits.length) return ''
-  return `当前仍带着 ${bits.join('、')} 上下文，下一条提问会带上它们。`
+  return `下次提问 · ${bits.join('、')}`
 })
 
 function onDelete(id: string) {
@@ -928,8 +938,7 @@ const citation = ref<null | { title?: string; filename?: string; document_id?: s
 
 function answerSources(message: CopilotMessage) {
   if (!message.sources?.length || message.streaming) return []
-  const prose = message.content.replace(/```[\s\S]*?(?:```|$)/g, '').replace(/`[^`\n]+`/g, '')
-  const numbers = new Set(Array.from(prose.matchAll(/\[(\d{1,2})\]/g), match => Number(match[1]) - 1))
+  const numbers = referencedSourceIndices(message.content)
   return message.sources.flatMap((source, index) => numbers.has(index) ? [{ source, index }] : [])
 }
 const citationPanel = ref<HTMLElement | null>(null)
@@ -1028,6 +1037,7 @@ async function send(preset?: string, forceDraft = false) {
   }
   const snapshotContext = JSON.parse(JSON.stringify(pageCtx()))
   const evidenceId = store.evidenceId
+  const sentContext = [context.page_name, store.selection?.label, snapshotContext.labTitle].filter(Boolean).join(' · ')
   const requestedDraft = forceDraft || (!preset && wantDraft.value)
   const deviceModel = resolveWorkbenchDeviceModel(store.selection?.model || snapshotContext.device?.model)
   const labId = snapshotContext.labId
@@ -1060,6 +1070,7 @@ async function send(preset?: string, forceDraft = false) {
   const assistantId = store.pushMessage({
     role: 'assistant',
     content: '',
+    sentContext,
     streaming: true,
     draftTarget: null,
     requestId,
@@ -1136,6 +1147,7 @@ async function send(preset?: string, forceDraft = false) {
               content: s.content,
               version: s.version,
               captured_at: s.captured_at,
+              page: s.page,
             })),
             knowledgeStatus: event.knowledge_status || (['empty', 'degraded'].includes(event.status || '') ? event.status : undefined),
             draftRefused: event.draft_refused_reason || undefined,
@@ -1343,7 +1355,7 @@ function onExternalPrefill(e: Event) {
   transition: width 0.18s ease;
   overflow: hidden;
 }
-.copilot { max-width: 380px; }
+.copilot { max-width: min(42vw, 560px); }
 .copilot.collapsed { border-left: 0; }
 @media (max-width: 1500px) {
   .copilot:not(.collapsed) { max-width: 480px; }
@@ -1352,7 +1364,7 @@ function onExternalPrefill(e: Event) {
   .copilot:not(.collapsed) { max-width: 340px; }
 }
 .copilot.focused { max-width: 560px !important; }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .copilot:not(.collapsed) {
     position: fixed;
     z-index: 24;
@@ -1516,9 +1528,11 @@ function onExternalPrefill(e: Event) {
 .live-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 12px 8px;
-  overflow-x: auto;
+  max-height: 5.5rem;
+  overflow: auto;
   scrollbar-width: thin;
 }
 .live-bar {
@@ -1568,11 +1582,25 @@ function onExternalPrefill(e: Event) {
 .lab-pill:hover { border-color: #9a6400; color: #9a6400; }
 .sel-pill { border-color: #b7e4c7; color: #197a4b; background: #effaf4; display: inline-flex; align-items: center; gap: 4px; }
 /* 上下文胶囊 + 独立关闭按钮：关闭是独立可聚焦控件，点标签本体才会发送消息。 */
-.ctx-chip { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ctx-chip { display: inline-flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.ctx-chip .lab-pill,
+.ctx-chip .sel-pill { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sel-pin {
+  border: 0;
+  background: transparent;
+  color: var(--el-color-primary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 3px;
+  white-space: nowrap;
+}
+.sent-context { margin: 0 0 6px; }
 .sel-x {
   display: inline-grid;
   place-items: center;
   width: 24px;
+  flex: 0 0 24px;
   height: 24px;
   padding: 0;
   border: 1px solid #b7e4c7;
@@ -2040,7 +2068,7 @@ function onExternalPrefill(e: Event) {
   cursor: pointer;
 }
 .stop-btn:hover { background: #a55a38; }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .copilot-header { padding-block: 5px !important; }
   .display-settings { display: none; }
   .starter { padding-block: 5px; }
@@ -2050,7 +2078,7 @@ function onExternalPrefill(e: Event) {
   .composer textarea { min-height: 42px; height: 48px; }
   .composer .attach-hint-off { display: none; }
 }
-@media (max-width: 900px) and (max-height: 540px) {
+@media (max-width: 1100px) and (max-height: 540px) {
   .copilot:not(.collapsed) { flex-basis: min(64dvh, 350px); }
 }
 

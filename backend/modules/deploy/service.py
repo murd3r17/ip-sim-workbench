@@ -103,6 +103,7 @@ class DeployService:
         items: list,
         engine: str,
         operator_id: int,
+        operator_username: str = "",
     ) -> dict:
         """创建具名父任务和每设备独立执行项，不连接或操作设备。"""
         devices: dict[int, Device] = {}
@@ -137,7 +138,7 @@ class DeployService:
             db.add(task)
             await db.flush()
             await AuditService.log(
-                db, operator_id, "", "deploy", "deploy_task_created", "deploy_task", str(task.id),
+                db, operator_id, operator_username, "deploy", "deploy_task_created", "deploy_task", str(task.id),
                 {"task_id": task.id, "device_id": task.device_id, "batch_id": batch.id, "result": "pending"},
             )
             results.append({

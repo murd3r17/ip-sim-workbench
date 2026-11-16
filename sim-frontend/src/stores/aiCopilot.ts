@@ -18,7 +18,7 @@ export interface CopilotMessage {
   content: string
   reasoning?: string
   reasoningOpen?: boolean
-  sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string }>
+  sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
   knowledgeStatus?: string
   draftCommands?: string[]
   draftTarget?: { deviceId: number; label: string; alarmId?: number | string; verifiedByServer?: boolean } | null
@@ -29,6 +29,7 @@ export interface CopilotMessage {
   streaming?: boolean
   requestId?: string
   requestState?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'unconfirmed'
+  sentContext?: string
   recovered?: boolean
   createdAt: number
 }
@@ -52,6 +53,7 @@ export interface CopilotConversation {
   conflicted?: boolean
   syncError?: string
   labSessionId?: number | null
+  selectionPinned?: boolean
   selection?: CopilotSelection | null
   evidenceId?: number | null
 }
@@ -222,9 +224,12 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
 
   const routePath = ref('')
   const pageName = ref('')
-  const initialConversation = boot.conversations.find((c) => c.id === boot.activeId)
-  const evidenceId = ref<number | null>(initialConversation?.evidenceId ?? null)
-  const selection = ref<CopilotSelection | null>(initialConversation?.selection ?? null)
+  const activeConversation = computed(() => conversations.value.find((c) => c.id === activeId.value))
+  const pageSelection = ref<CopilotSelection | null>(null)
+  const pageEvidenceId = ref<number | null>(null)
+  const selectionPinned = computed(() => Boolean(activeConversation.value?.selectionPinned && activeConversation.value.selection))
+  const selection = computed(() => selectionPinned.value ? activeConversation.value?.selection ?? null : pageSelection.value)
+  const evidenceId = computed(() => selectionPinned.value ? activeConversation.value?.evidenceId ?? null : pageEvidenceId.value)
   const notes = ref('')
   const linkedLabSession = computed(() =>
     conversations.value.find((c) => c.id === activeId.value)?.labSessionId ?? null)
@@ -473,8 +478,6 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       createdAt: idx >= 0 ? conversations.value[idx].createdAt : now,
       updatedAt: now,
       messages: sanitizeMessages(messages.value),
-      selection: selection.value,
-      evidenceId: evidenceId.value,
       pendingSync: true,
     }
     if (idx >= 0) conversations.value[idx] = payload
@@ -510,8 +513,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     conversations.value = []
     activeId.value = null
     messages.value = []
-    selection.value = null
-    evidenceId.value = null
+    setSelection(null)
     notes.value = ''
     historyOpen.value = false
     localStorage.removeItem(STORAGE_KEY)
@@ -544,33 +546,41 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   }
 
   function setPageContext(path: string, name: string) {
-    if (routePath.value !== path) notes.value = ''
+    if (routePath.value !== path) {
+      notes.value = ''
+      setSelection(null)
+    }
     routePath.value = path
     pageName.value = name
   }
 
-  function saveSelection() {
-    const conversation = conversations.value.find((c) => c.id === activeId.value)
-    if (!conversation || (conversation.selection === selection.value && conversation.evidenceId === evidenceId.value)) return
-    conversation.selection = selection.value
-    conversation.evidenceId = evidenceId.value
-    persist()
-  }
-
   function setEvidenceId(v: number | null) {
-    evidenceId.value = v
-    saveSelection()
+    pageEvidenceId.value = v
   }
 
   function setSelection(sel: CopilotSelection | null) {
-    const previous = selection.value
+    const previous = pageSelection.value
     if (sel && previous?.kind === sel.kind && previous.id === sel.id && previous.label === sel.label &&
         previous.detail === sel.detail && previous.model === sel.model) return
-    if (!sel || sel.kind !== selection.value?.kind || sel.id !== selection.value?.id) {
-      evidenceId.value = null
+    if (!sel || sel.kind !== previous?.kind || sel.id !== previous?.id) {
+      pageEvidenceId.value = null
     }
-    selection.value = sel
-    saveSelection()
+    pageSelection.value = sel
+  }
+
+  function setSelectionPinned(pinned: boolean) {
+    if (!selection.value || pinned === selectionPinned.value) return
+    ensureActiveConversation()
+    const conversation = activeConversation.value!
+    conversation.selection = pinned ? { ...selection.value } : null
+    conversation.evidenceId = pinned ? evidenceId.value : null
+    conversation.selectionPinned = pinned
+    persist()
+  }
+
+  function clearSelection() {
+    setSelectionPinned(false)
+    setSelection(null)
   }
 
   function linkLab(sessionId: number | null) {
@@ -603,7 +613,6 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     })
     activeId.value = id
     messages.value = []
-    setSelection(null)
     notes.value = ''
     persist()
     historyOpen.value = false
@@ -624,8 +633,6 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     if (!target) return
     activeId.value = id
     messages.value = sanitizeMessages(target.messages)
-    selection.value = target.selection ?? null
-    evidenceId.value = target.evidenceId ?? null
     notes.value = ''
     persist()
     historyOpen.value = false
@@ -653,12 +660,9 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       if (next) {
         activeId.value = next.id
         messages.value = sanitizeMessages(next.messages)
-        selection.value = next.selection ?? null
-        evidenceId.value = next.evidenceId ?? null
       } else {
         activeId.value = null
         messages.value = []
-        setSelection(null)
         ensureActiveConversation()
       }
     }
@@ -683,6 +687,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       streaming: msg.streaming,
       requestId: msg.requestId,
       requestState: msg.requestState,
+      sentContext: msg.sentContext,
       createdAt: Date.now(),
     })
     syncActiveToList()
@@ -745,6 +750,9 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     routePath,
     pageName,
     selection,
+    selectionPinned,
+    setSelectionPinned,
+    clearSelection,
     notes,
     contextLabel,
     selectionText,

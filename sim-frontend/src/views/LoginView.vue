@@ -12,9 +12,10 @@
           type="warning"
           :closable="false"
           show-icon
-          title="登录已过期，请重新登录（未保存的输入已丢失）"
+          title="登录已过期。请用同一账号继续，已保存的记录和此标签页的临时草稿可在原页面查看。"
           style="margin-bottom: 12px"
         />
+        <el-alert v-else-if="route.query.password_changed === '1'" title="密码已修改，请使用新密码登录。" type="success" :closable="false" />
         <el-form :model="form" label-position="top" size="large" @submit.prevent="handleLogin">
           <el-form-item label="用户名">
             <el-input v-model="form.username" name="username" autocomplete="username" placeholder="用户名" :prefix-icon="UserIcon" />
@@ -24,6 +25,7 @@
           </el-form-item>
           <el-button class="login-submit" type="primary" native-type="submit" :loading="loading">登录</el-button>
         </el-form>
+        <p class="login-help">首次使用请向工作台管理员领取账号。忘记密码时，管理员可在「账号管理」重置普通账号。</p>
       </section>
     </div>
   </main>
@@ -35,8 +37,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { login } from '../api/auth'
-import { loginRedirectTarget } from '../utils/session'
-import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
+import { clearClientSession, loginRedirectTarget } from '../utils/session'
+import { currentDraftOwner, useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
 
 const router = useRouter()
 const route = useRoute()
@@ -61,9 +63,12 @@ const handleLogin = async () => {
       ElMessage.error('登录响应缺少 access_token，请联系管理员检查后端版本')
       return
     }
-    useWorkbenchDraftsStore().$reset()
-    localStorage.setItem('token', token)
+    const previousOwner = currentDraftOwner()
+    if (previousOwner && previousOwner !== `${data.user?.id}:${data.user?.username}`) clearClientSession()
+    else useWorkbenchDraftsStore().$reset()
     localStorage.setItem('user', JSON.stringify(data.user ?? {}))
+    localStorage.setItem('token', token)
+    form.value.password = ''
     ElMessage.success('登录成功')
     router.push(loginRedirectTarget(route.query.redirect))
   } catch {
@@ -75,6 +80,7 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
+.login-help { margin: 14px 0 0; color: var(--v7b-muted); font-size: 13px; line-height: 1.55; }
 .login-container {
   height: 100dvh;
   overflow: auto;

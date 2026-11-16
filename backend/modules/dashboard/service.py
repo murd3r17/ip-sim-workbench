@@ -13,7 +13,7 @@ from modules.device.models import Device, DeviceStatus, Topology, TopologyLink, 
 from modules.device.service import TopologyService
 from modules.monitor.models import Alarm, AlarmStatus, MonitorJob
 from modules.system.models import BackgroundTask
-from modules.training.models import TrainingLab, TrainingSession
+from modules.training.models import LabStatus, TrainingLab, TrainingSession
 
 
 def _value(value):
@@ -114,6 +114,17 @@ class DashboardService:
         deploy_batches = (await db.execute(batch_count_query)).scalar_one()
         training_rows = (await db.execute(training_query)).all()
         training_sessions = [session for session, _ in training_rows]
+        intro_lab_id = None
+        if (settings.device_mode or "").strip().lower() == "sim" and device_topo_ids:
+            published = await db.execute(
+                select(TrainingLab.id, TrainingLab.environment_spec)
+                .where(TrainingLab.status == LabStatus.READY, TrainingLab.topology_id.in_(device_topo_ids))
+                .order_by(TrainingLab.id)
+            )
+            intro_lab_id = next(
+                (lab_id for lab_id, spec in published if isinstance(spec, dict) and spec.get("kind") == "workflow_demo"),
+                None,
+            )
         background_tasks = []
         if full_scope:
             background_tasks = (await db.scalars(
@@ -368,6 +379,7 @@ class DashboardService:
             "training": {
                 "active": sum(session.status == "in_progress" for session in training_sessions),
                 "total": len(training_sessions),
+                "intro_lab_id": intro_lab_id,
             },
         }
 

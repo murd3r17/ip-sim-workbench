@@ -56,12 +56,21 @@ def test_bfd_timing_and_ldp_withdrawal_need_actual_evidence_not_up_words():
     assert all(s['verification']['kind'] == 'manual_review' for s in ldp['objectives'])
 
 
-def test_bgp_reference_declares_own_prefix_lengths_instead_of_reusing_ospf_24():
+def test_bgp_uses_bound_roles_and_keeps_the_exact_prefix_requirement():
     bgp = next(l for l in builtin_labs() if 'BGP' in l['title'])
-    assert all(d['loopback_address'].endswith('/32') for d in bgp['environment_spec']['devices'])
+    assert bgp['environment_spec']['loopback_prefix_length'] == 32
+    assert bgp['environment_spec']['devices'] == [{'role': 'R1'}, {'role': 'R2'}]
     assert '精确' in bgp['objectives'][2]['goal']
-    assert 'GigabitEthernet3/0/4' in bgp['objectives'][3]['config_hint']
     assert bgp['objectives'][1]['verification']['kind'] == 'manual_review'
+
+
+def test_current_steps_leave_historical_interface_names_and_addresses_to_the_source():
+    for lab in builtin_labs():
+        assert lab['environment_spec']['devices']
+        assert all(set(device) == {'role'} for device in lab['environment_spec']['devices'])
+        for step in lab['objectives']:
+            fields = [step[key] for key in ('goal', 'config_hint', 'verify_command', 'expected')]
+            assert all('GigabitEthernet3/0/' not in value and '10.0.123.' not in value for value in fields)
 
 
 def test_existing_workflow_demo_has_structured_version_and_no_fake_fault_repair_grade():
@@ -70,3 +79,4 @@ def test_existing_workflow_demo_has_structured_version_and_no_fake_fault_repair_
     assert demo['environment_spec']['supports_binding'] is False
     assert all(s['verification']['kind']=='manual_review' for s in demo['objectives'])
     assert '不连SSH、不改设备' in demo['objectives'][1]['config_hint']
+    assert demo['objectives'][0]['record_example']

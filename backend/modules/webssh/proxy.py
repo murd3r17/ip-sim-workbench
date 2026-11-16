@@ -171,7 +171,7 @@ class SSHProxySession:
         try:
             await self.websocket.send_text(json.dumps({
                 "type": "connected",
-                "message": f"已连接到 {self.device_ip}（模拟终端 DEVICE_MODE=sim）",
+                "message": f"已打开 {sim.hostname} 的模拟终端（本地只读）。输入 help 查看可用命令。",
             }))
         except Exception:
             return

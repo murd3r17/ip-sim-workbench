@@ -14,6 +14,7 @@ import re
 
 from core.logger import get_logger
 from core.rate_limiter import rate_limit
+from core.redaction import redact_payload
 from core.time_utils import iso_utc
 from modules.ai_text.llm_service import LLMService
 from modules.ai_text.context_bundle import prepare_sources, source_documents
@@ -22,6 +23,7 @@ from modules.system.service import SystemService
 from modules.training import reports as report_store
 from modules.training.content_source import content_brief, resolve_session_content
 from modules.training.environment_policy import lab_environment, safe_environment_answer
+from modules.training.environment_policy import lab_availability, lab_binding_issue
 from modules.training.mode_facts import current_mode_facts, session_mode_facts
 from modules.training.schemas import (
     FaultInjectRequest, LabCreate, LabUpdate, OperationLogCreate,
@@ -127,16 +129,7 @@ async def get_lab(
     status = lab.status.value if hasattr(lab.status, "value") else str(lab.status)
     if current_user["role"] != "admin" and status == "draft":
         raise HTTPException(status_code=404, detail="Lab不存在")
-    return {
-        "id": lab.id, "title": lab.title, "description": lab.description,
-        "status": lab.status.value, "topology_id": lab.topology_id,
-        "objectives": lab.objectives, "scoring_rules": lab.scoring_rules,
-        "time_limit_minutes": lab.time_limit_minutes, "is_sandbox": lab.is_sandbox,
-        "content_version": lab.content_version,
-        "environment_spec": lab.environment_spec,
-        "mode_facts": current_mode_facts(lab),
-        "created_at": iso_utc(lab.created_at),
-    }
+    return (await TrainingService.describe_labs(db, [lab]))[0]
 
 
 @router.put("/labs/{lab_id}", response_model=None)
@@ -188,15 +181,14 @@ async def bind_lab_environment(
     spec = deepcopy(lab.environment_spec or {})
     if not lab.content_version or not isinstance(spec, dict) or not spec.get('devices'):
         raise HTTPException(status_code=409, detail='请先完成实验内容版本与角色要求配置')
+    env = None
     if data.environment_id is not None:
         env = await db.get(EnvironmentProfile, data.environment_id)
         if env is None:
             raise HTTPException(status_code=404, detail='环境不存在')
-        roles = [d.get('role') for d in spec['devices'] if isinstance(d, dict)]
-        mapped = [d for d in env.devices or [] if isinstance(d, dict) and d.get('role') in roles]
-        if (len(mapped) != len(roles) or len({d.get('role') for d in mapped}) != len(roles)
-                or len({d.get('device_id') for d in mapped}) != len(roles)):
-            raise HTTPException(status_code=409, detail='环境需为实验每个角色绑定唯一的独立设备')
+        issue = lab_binding_issue(spec, env.devices)
+        if issue:
+            raise HTTPException(status_code=409, detail=issue)
         spec['trust_environment_id'] = env.id
     else:
         spec.pop('trust_environment_id', None)
@@ -204,12 +196,14 @@ async def bind_lab_environment(
     # Profile readiness never certifies protocol-specific prerequisites or authorizes writes.
     spec['binding_status'] = 'unverified'
     lab.environment_spec = spec
+    availability = lab_availability(lab, current_mode_facts(lab)['device_mode'], env, has_local_devices=False)
     await AuditService.log(db, user_id=current_user['user_id'], username=current_user.get('username','unknown'),
                            module='training', action='bind_environment', resource_type='training_lab',
                            resource_id=str(lab.id), detail={'environment_id': data.environment_id,
                            'scope': 'new_sessions_only'}, result='success', commit=False)
     await db.commit()
     return {'lab_id': lab.id, 'environment_id': data.environment_id, 'scope': 'new_sessions_only',
+            'environment_spec': spec, 'availability': availability,
             'detail': '后续新会话冻结所选环境；已有会话保持原绑定，协议先修与写入权限单独核对'}
 
 
@@ -578,6 +572,7 @@ async def get_training_hint(
             ]),
             current_step="未验证；最近命令不代表当前步骤，不能据日志条数宣称步骤达标",
             history="\n".join([str(item) for item in snapshot["logs"][-10:]]),
+            device_mode=current_mode_facts(content_lab)["device_mode"],
         )
         return {
             "session_id": snapshot["session"].id,
@@ -659,6 +654,14 @@ async def _generate_training_report(
         summary = {**summary, "knowledge_status": knowledge_status, "source_count": len(knowledge_sources)}
 
         objective_brief = content_brief(resolved)
+        mode = current_mode_facts(content_lab)
+        evidence = redact_payload(input_payload["evidence"])
+        safe_commands = mode.get("terminal_read_commands") or []
+        next_command_scope = (
+            "本地模拟终端只支持以下命令，请按原样列出；具体接口请写成在采集结果中筛选，不附加命令参数。"
+            + "、".join(safe_commands)
+            if safe_commands else "后续命令需与用户核对设备和版本；避免虚构回显。"
+        )
         source_lines = [
             f"训练目标: {content_lab.title}",
             f"训练要求: {objective_brief}",
@@ -667,9 +670,11 @@ async def _generate_training_report(
             resolved["warning"] or "",
             f"实验内容版本: {summary.get('content_version') or '未记录'}",
             UNVERIFIED_NOTE,
-            f"历史参考分（未经验证）: {snapshot['session'].score}",
-            "操作记录:",
-            *[str(item) for item in snapshot["logs"]],
+            f"历史参考分（未经验证）: {snapshot['session'].score if snapshot['session'].score is not None else '暂无'}",
+            "操作记录（按 trust 区分证据来源）:",
+            *[str(item) for item in evidence["logs"]],
+            "演练故障登记（会话记录）:",
+            *[str(item) for item in evidence["faults"]],
             f"知识检索状态: {knowledge_status}。unavailable 表示检索失败，不是知识库为空。",
             "以下是检索参考材料，不是现场证据，也不保证每个片段都支持本次结论。仅使用与结论有关的内容，指出对应来源；无依据的根因应列为待验证。",
             "检索参考片段（后续界面保留相同片段供核对）:",
@@ -694,7 +699,14 @@ async def _generate_training_report(
             report = await ai_service.generate_report(
                 title=f"{content_lab.title} 复盘报告",
                 source_text="\n".join(source_lines),
-                context="训练复盘与过程记录",
+                context=(
+                    "用学员能理解的语言说明已记录的观察、判断与下一步。"
+                    "client_reported 或缺少来源的操作在摘要与详情中都写成「学员记录了命令」及上报结果，"
+                    "没有服务端执行证据时不要写成已执行、已下发或具体设备状态。"
+                    "没有步骤核对结果时，不根据操作行数推断已完成哪些步骤。"
+                    "用页面术语表达状态，省略数据库字段名、枚举值和诊断对象。"
+                    + next_command_scope
+                ),
             )
             body = {
                 "title": report.get("title", f"{content_lab.title} 复盘报告"),

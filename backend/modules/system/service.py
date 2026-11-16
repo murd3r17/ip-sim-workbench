@@ -6,13 +6,16 @@ import sys
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
 from core.health import _app_start_time, get_health_status
 from core.logger import get_logger
 from core.llm_provider import cached_llm_health_check, create_llm_provider, llm_health_checked_at
+from core.security import credential_encryptor
 from modules.system.models import SystemConfig, BackgroundTask, TaskStatus
+from modules.system.schemas import AuditLogResponse, ModelConnectionUpdate
 from modules.auth.models import User, AuditLog
 from modules.device.models import Device
 from .runtime_config import safe_value
@@ -47,6 +50,14 @@ SECRET_CONFIG_KEYS = {
     "device_default_enable",
 }
 SECRET_VALUE_PLACEHOLDER = "******"
+_MODEL_CREDENTIAL_PREFIX = "encrypted:v1:"
+
+
+def _endpoint_origin(value: str) -> tuple[str, str, int]:
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError("请填写不含账号、查询参数或片段的 HTTP(S) 模型服务地址")
+    return parts.scheme, parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
 
 
 class SystemService:
@@ -98,9 +109,19 @@ class SystemService:
         runtime_configs = {item.config_key: item.config_value for item in result.scalars().all()}
         runtime: dict[str, Any] = {}; fields = {}
         for config_key, setting_key in LLM_CONFIG_KEYS.items():
+            saved = runtime_configs.get(config_key)
+            if config_key in {"llm.api_key", "llm.fallback_api_key"} and saved and saved.startswith(_MODEL_CREDENTIAL_PREFIX):
+                try:
+                    if not credential_encryptor.configured:
+                        raise RuntimeError("Credential encryption unavailable")
+                    saved = credential_encryptor.decrypt(saved.removeprefix(_MODEL_CREDENTIAL_PREFIX))
+                except RuntimeError:
+                    runtime[setting_key] = ""
+                    fields[config_key] = {"source": "database", "override_status": "unreadable_secret"}
+                    continue
             runtime[setting_key],fields[config_key] = resolve_value(
                 config_key,
-                runtime_configs.get(config_key),
+                saved,
                 getattr(settings, setting_key),
             )
             if config_key in runtime_configs and runtime_configs[config_key] is None:
@@ -122,6 +143,49 @@ class SystemService:
     async def build_llm_provider(db: AsyncSession):
         runtime_config = await SystemService.get_llm_runtime_config(db)
         return create_llm_provider(runtime_config)
+
+    @staticmethod
+    async def update_model_connection(db: AsyncSession, request: ModelConnectionUpdate, actor: dict) -> list[str]:
+        current = await SystemService.get_llm_runtime_config(db)
+        changes: dict[str, str] = {}
+        if request.provider is not None:
+            provider = request.provider.strip().lower().replace("-", "_")
+            if provider not in {"openai_compatible", "openai", "ollama", "local", "internal"}:
+                raise ValueError("请选择受支持的模型服务类型")
+            changes["llm.provider"] = provider
+        secret = request.api_key.get_secret_value().strip() if request.api_key is not None else ""
+        if request.base_url is not None:
+            url = request.base_url.strip()
+            new_origin = _endpoint_origin(url)
+            if current["llm_api_key"] and not secret:
+                try:
+                    previous_origin = _endpoint_origin(current["llm_base_url"])
+                except ValueError:
+                    previous_origin = None
+                if new_origin != previous_origin:
+                    raise ValueError("模型服务地址已换到另一服务，请填写新服务的认证密钥")
+            changes["llm.base_url"] = url
+        if request.model is not None:
+            model = request.model.strip()
+            if not model:
+                raise ValueError("请填写模型名称")
+            changes["llm.model"] = model
+        if secret:
+            if len(secret) > 2048:
+                raise ValueError("认证密钥超过本工作台可保存的长度")
+            if not credential_encryptor.configured:
+                raise ValueError("当前服务未配置凭据加密。请先在部署环境设置 FERNET_KEY 并重启服务")
+            changes["llm.api_key"] = _MODEL_CREDENTIAL_PREFIX + credential_encryptor.encrypt(secret)
+        if not changes:
+            return []
+
+        for key, value in changes.items():
+            await SystemService.set_config(db, key, value, None, actor["username"])
+        from modules.auth.service import AuditService
+        await AuditService.log(db, actor["user_id"], actor["username"], "system", "model_connection_updated",
+                               "system_config", "model_connection", {"changed_fields": list(changes)}, commit=False)
+        await db.commit()
+        return list(changes)
 
     @staticmethod
     async def get_system_info(db: AsyncSession) -> dict:
@@ -227,7 +291,7 @@ class SystemService:
 
     @staticmethod
     async def get_audit_logs(db: AsyncSession, page: int = 1, page_size: int = 20, module: str | None = None, user_id: int | None = None) -> dict:
-        query = select(AuditLog)
+        query = select(AuditLog, User.username).outerjoin(User, User.id == AuditLog.user_id)
         count_query = select(func.count(AuditLog.id))
 
         if module:
@@ -240,9 +304,12 @@ class SystemService:
         total_result = await db.execute(count_query)
         total = total_result.scalar() or 0
 
-        query = query.order_by(AuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        query = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size)
         result = await db.execute(query)
-        items = list(result.scalars().all())
+        items = [
+            AuditLogResponse.model_validate(log).model_copy(update={"linked_username": username if not log.username.strip() else None})
+            for log, username in result.all()
+        ]
 
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 

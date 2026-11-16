@@ -574,18 +574,69 @@ class MetricCollector:
 
     @staticmethod
     def _parse_ospf_neighbors(output: str) -> int | None:
-        if not output.strip() or re.search(r"Error:|Unrecognized command|Incomplete command", output, re.I):
+        if not output.strip() or re.search(r"Error:|Unrecognized command|Incomplete command|--\s*More\s*--|truncated", output, re.I):
             return None
-        count = 0
-        for line in output.strip().splitlines():
-            if "Full" in line or "2-Way" in line:
-                count += 1
-        return count
+        if not re.search(r"(?im)^.*\b(?:area\s+id|router\s*id|neighbor\s*(?:id|router))\b.*\bstate\b", output):
+            if re.search(r"(?im)^\s*Total number of peer(?:s|\(s\))?\s*:\s*0\s*$", output):
+                return 0
+            return None
+        return sum(bool(re.search(r"^\s*\d+(?:\.\d+){3}\s+.*?\b(?:Full|2-Way)\b", line, re.I)) for line in output.splitlines())
 
 
 class AlarmService:
+    @staticmethod
+    async def _evaluate_ospf(db: AsyncSession, device: Device, value: float, *, commit: bool) -> Alarm | None:
+        from modules.monitor.ports import load_policy
+
+        policy = await load_policy(db, device.id)
+        minimum = policy.get("ospf_min_neighbors") if policy.get("valid") else None
+        thresholds = (await load_thresholds(db))["ospf_neighbor_count"] if minimum is None else {}
+        review_level = _severity_for(value, thresholds)
+        baseline_kind = "ospf_neighbor_count_expected_low"
+        review_kind = "ospf_neighbor_count_review"
+        rows = (await db.execute(select(Alarm).where(
+            Alarm.device_id == device.id,
+            Alarm.alarm_type.in_([baseline_kind, review_kind]),
+            Alarm.status.in_([AlarmStatus.FIRED, AlarmStatus.ACKNOWLEDGED]),
+        ))).scalars().all()
+        if minimum is None:
+            kind, severity = review_kind, "warning"
+            threshold = thresholds[review_level] if review_level else None
+            reference = "≤" if thresholds.get("direction") == "low" else "≥"
+            detail = f"未登记本设备的 OSPF 邻居数量下限。采样为 {value:g}，触发人工复核参考（{reference} {threshold:g}）。" if review_level else ""
+            active = bool(review_level)
+        else:
+            kind, severity, threshold = baseline_kind, "major", minimum
+            active = value < minimum
+            detail = f"观察到 {value:g} 个 Full 或 2-Way 邻居，低于本设备登记下限 {minimum}。请核对预期邻居和接口。"
+        existing = next((alarm for alarm in rows if alarm.alarm_type == kind), None)
+        for row in rows:
+            if row.alarm_type == review_kind and (kind != review_kind or not active):
+                row.status = AlarmStatus.RESOLVED
+                row.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            if row.alarm_type == baseline_kind and minimum is not None and not active and row.threshold == minimum:
+                row.status = AlarmStatus.RESOLVED
+                row.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        if active:
+            alarm = existing or Alarm(device_id=device.id, alarm_type=kind, status=AlarmStatus.FIRED)
+            alarm.severity = severity
+            alarm.metric_value = value
+            alarm.threshold = threshold
+            alarm.message = f"{device.hostname} · {detail}"
+            if existing is None:
+                db.add(alarm)
+        else:
+            alarm = None
+        if commit:
+            await db.commit()
+            if alarm is not None:
+                await db.refresh(alarm)
+        return alarm
+
     @classmethod
     async def evaluate_and_alarm(cls, db: AsyncSession, device: Device, metric_type: str, value: float, *, commit: bool = True) -> Alarm | None:
+        if metric_type == "ospf_neighbor_count":
+            return await cls._evaluate_ospf(db, device, value, commit=commit)
         if metric_type == 'interface_down':
             # Legacy callers without a parsed port snapshot have no business-impact evidence.
             # Do not mutate/auto-resolve historic aggregate-count alarms under a new rule.

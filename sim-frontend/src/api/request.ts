@@ -42,10 +42,13 @@ request.interceptors.response.use(
 
     if (status === 401) {
       const onLogin = window.location.pathname.startsWith('/login')
-      clearClientSession()
       if (onLogin) {
         if (!silent) ElMessage.error(message === '请求失败' ? '用户名或密码错误' : message)
       } else {
+        const token = localStorage.getItem('token')
+        const sent = error.config?.headers?.Authorization
+        if ((token ? `Bearer ${token}` : undefined) !== sent) return Promise.reject(error)
+        clearClientSession()
         const redirect = currentRedirectPath()
         // 带上 expired=1：登录页会提示"登录已过期"，否则用户只看到被整页刷回登录页
         const query = new URLSearchParams({ expired: '1' })

@@ -7,7 +7,7 @@
       <template #actions>
         <el-button :loading="loading" @click="loadSummary">刷新状态</el-button>
         <el-button @click="router.push('/devices')">去设备</el-button>
-        <el-button type="primary" @click="goTraining">{{ labCtx.isActive ? '继续实训' : '进入实训' }}</el-button>
+        <el-button type="primary" @click="goTraining">{{ labCtx.isActive ? '继续实训' : summary?.training?.intro_lab_id ? '入门巡检' : '进入实训' }}</el-button>
       </template>
     </PageHeader>
 
@@ -447,6 +447,7 @@ const taskKindLabel = (kind: string) => ({ deploy: '配置', background: '后台
 const formatTime = (value: string, onlyTime = false) => formatApiTime(value, onlyTime ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : {})
 const goTraining = () => {
   if (labCtx.isActive && labCtx.sessionId) router.push({ path: '/training', query: { session_id: String(labCtx.sessionId) } })
+  else if (summary.value?.training?.intro_lab_id) router.push({ path: '/training', query: { lab_id: String(summary.value.training.intro_lab_id) } })
   else router.push('/training')
 }
 const openTask = (task: DashboardTask) => {

@@ -38,7 +38,7 @@ $env:LLM_FALLBACK_API_KEY = ''
 
 if ($Upgrade -or $NoStart -or -not (Test-Path -LiteralPath $Db) -or -not (Test-Path -LiteralPath (Join-Path $Root 'backend\.venv\Scripts\python.exe'))) {
   & (Join-Path $PSScriptRoot 'bootstrap-local.ps1') -Mode minimal -NoStart -MinimalDbPath $Db `
-    -BackupDir (Join-Path $Runtime 'backups') -SkipDependencyInstall:$ReuseDependencies
+    -BackupDir (Join-Path $Runtime 'backups') -SkipDependencyInstall:$ReuseDependencies -BackendPort $Port
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 if ($NoStart) { return }

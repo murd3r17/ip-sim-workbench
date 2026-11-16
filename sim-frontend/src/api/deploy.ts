@@ -5,6 +5,7 @@ export interface DeployTaskItem {
   id: number
   device_id: number
   stage?: string
+  phase?: string
   config_content: string
   status: string
   started_at?: string | null
@@ -21,6 +22,7 @@ export interface DeployBatchRecord {
   created_at?: string
   items?: DeployTaskItem[]
   summary?: Partial<Record<'total' | 'pending' | 'waiting' | 'running' | 'success' | 'failed' | 'execution_failed' | 'cancelled' | 'rolled_back', number>>
+  phase_counts?: Partial<Record<'executing' | 'awaiting_verification' | 'execution_unconfirmed' | 'execution_blocked', number>>
 }
 
 // 配置模板

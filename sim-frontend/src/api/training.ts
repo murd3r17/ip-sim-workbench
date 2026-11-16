@@ -26,7 +26,7 @@ export function updateLab(id: number, data: Record<string, unknown>) {
 }
 
 export function bindLabEnvironment(id: number, environmentId: number | null) {
-  return request.put(`/training/labs/${id}/environment`, { environment_id: environmentId })
+  return request.put(`/training/labs/${id}/environment`, { environment_id: environmentId }, { silent: true })
 }
 
 export function verifyTrainingStep(sessionId: number, stepId: number, observationIds: number[]) {

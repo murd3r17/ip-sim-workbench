@@ -22,19 +22,16 @@
         <template #empty>
           <el-empty :description="loadError || '暂无审计日志。'" :image-size="72" />
         </template>
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="username" label="用户" width="100" />
+        <el-table-column label="操作人" min-width="128">
+          <template #default="{ row }"><span :title="row.linked_username ? '按记录中的账号 ID 匹配到当前账号名' : ''">{{ actorLabel(row) }}</span></template>
+        </el-table-column>
         <el-table-column prop="module" label="模块" width="110">
           <template #default="{ row }">
             <el-tag size="small" :title="row.module">{{ auditModuleLabel(row.module) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" min-width="150"><template #default="{row}">{{ auditActionLabel(row.action) }}</template></el-table-column>
-        <el-table-column prop="resource_type" label="资源类型" width="100" />
-        <el-table-column prop="resource_id" label="资源ID" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="detail" label="摘要" min-width="220" show-overflow-tooltip />
-        <el-table-column label="详情" width="85" fixed="right"><template #default="{row}"><el-button type="primary" link @click="currentLog=row; detailVisible=true">查看</el-button></template></el-table-column>
-        <el-table-column prop="ip_address" label="IP地址" width="130" />
+        <el-table-column label="对象" min-width="155" show-overflow-tooltip><template #default="{ row }">{{ resourceLabel(row) }}</template></el-table-column>
         <el-table-column prop="result" label="结果" width="80">
           <template #default="{ row }">
             <el-tag :type="row.result === 'success' ? 'success' : ['failed','error'].includes(row.result) ? 'danger' : 'info'" size="small" :title="row.result">{{ auditResultLabel(row.result) }}</el-tag>
@@ -43,6 +40,7 @@
         <el-table-column prop="created_at" label="时间" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
+        <el-table-column label="详情" width="85"><template #default="{row}"><el-button type="primary" link @click="currentLog=row; detailVisible=true">查看</el-button></template></el-table-column>
       </el-table>
       <el-pagination
         v-if="!loadError || logs.length"
@@ -58,15 +56,18 @@
       <template v-if="currentLog">
         <el-descriptions :column="2" border>
           <el-descriptions-item label="记录">#{{ currentLog.id }}</el-descriptions-item>
-          <el-descriptions-item label="用户">{{ currentLog.username }}</el-descriptions-item>
+          <el-descriptions-item label="操作人">{{ actorLabel(currentLog) }}<small v-if="currentLog.linked_username">（按账号 ID 补全）</small></el-descriptions-item>
           <el-descriptions-item label="操作">{{ auditActionLabel(currentLog.action) }}</el-descriptions-item>
-          <el-descriptions-item label="对象">{{ currentLog.resource_type || '未记录' }}{{ currentLog.resource_id ? ` #${currentLog.resource_id}` : '' }}</el-descriptions-item>
+          <el-descriptions-item label="对象">{{ resourceLabel(currentLog) }}</el-descriptions-item>
           <el-descriptions-item label="记录时间">{{ formatTime(currentLog.created_at) }}</el-descriptions-item>
         </el-descriptions>
         <p v-if="actionHelp[currentLog.action]">{{ actionHelp[currentLog.action] }}</p>
+        <el-button v-if="currentLog.resource_type === 'deploy_task' && Number(currentLog.resource_id) > 0" link type="primary"
+          @click="$router.push({ path: '/approvals', query: { task_id: currentLog.resource_id } })">查看变更任务</el-button>
         <details class="audit-raw">
           <summary>诊断详情</summary>
           <p>原始动作码 {{ currentLog.action }}</p>
+          <p>账号 ID {{ currentLog.user_id || '未记录' }} · 来源 IP {{ currentLog.ip_address || '未记录' }}</p>
           <pre class="audit-detail">{{ formatDetail(currentLog.detail) }}</pre>
         </details>
       </template>
@@ -83,7 +84,7 @@ import { getAuditLogs } from '@/api/system'
 import { auditActionLabel, auditModuleLabel, auditResultLabel } from '../../utils/display'
 
 interface AuditLog {
-  id: number; user_id: number; username: string; module: string; action: string
+  id: number; user_id: number; username: string; linked_username?: string; module: string; action: string
   resource_type: string | null; resource_id: string | null; detail: string | null
   ip_address: string | null; result: string; created_at: string
 }
@@ -94,6 +95,17 @@ const loading = auditRequest.loading
 const loadError = auditRequest.error
 const detailVisible=ref(false),currentLog=ref<AuditLog|null>(null)
 const formatDetail=(value:string|null)=>{try{return JSON.stringify(JSON.parse(value||''),null,2)}catch{return value||'无附加详情'}}
+const actorLabel = (record: AuditLog) => record.username === 'system' ? '系统' :
+  record.username?.trim() || record.linked_username || (record.user_id ? `账号 #${record.user_id}` : '未记录')
+const resourceLabel = (record: AuditLog) => {
+  const labels: Record<string, string> = {
+    deploy_task: '变更任务', device: '设备', topology: '拓扑', monitor_job: '采集任务',
+    config_template: '配置模板', config_version: '配置版本', system_config: '系统配置',
+    user: '账号', alarm: '告警', training_session: '实训会话',
+  }
+  const label = labels[record.resource_type || ''] || auditModuleLabel(record.module)
+  return record.resource_id ? `${label} #${record.resource_id}` : label
+}
 const actionHelp: Record<string, string> = {
   device_health_check: '这次检查探测设备管理连接。各设备上次可达时间和新的探测结果在设备页查看。',
   deploy_task_confirmed: '该动作记录人工确认。实际执行、保存与回读请在配置下发的任务详情中查看。',

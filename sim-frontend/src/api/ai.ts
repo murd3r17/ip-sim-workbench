@@ -38,7 +38,7 @@ export type CopilotStreamEvent =
   | {
       type: 'meta'
       request_id?: string
-      sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string }>
+      sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
       provider?: string
       status?: string
       knowledge_status?: string
@@ -94,7 +94,7 @@ export async function copilotChatStream(
   })
 
   if (!res.ok) {
-    if (res.status === 401) {
+    if (res.status === 401 && localStorage.getItem('token') === token) {
       const { clearClientSession } = await import('../utils/session')
       clearClientSession()
       const path = `${window.location.pathname}${window.location.search}`
@@ -167,7 +167,7 @@ export interface CopilotRecovery {
   response: {
     knowledge_status?: string
     answer?: string
-    sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string }>
+    sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
     draft_commands?: string[]
     draft_refused_reason?: string
     draft_target?: { device_id: number; hostname: string; alarm_id?: number } | null

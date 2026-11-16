@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import re
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.security import hash_password, verify_password, create_access_token
 from core.logger import get_logger
@@ -46,7 +47,12 @@ class AuthService:
         }
 
     @staticmethod
-    async def create_user(db: AsyncSession, username: str, password: str, display_name: str = None, role: str = "user") -> User:
+    async def create_user(db: AsyncSession, username: str, password: str, display_name: str = None, role: str = "user", *, actor: dict | None = None) -> User:
+        username = username.strip()
+        if not username or len(username) > 64:
+            raise ValueError("用户名须填写，最多 64 个字符")
+        if display_name is not None and len(display_name) > 128:
+            raise ValueError("显示名称最多 128 个字符")
         _validate_password(password)
 
         existing = await db.execute(select(User).where(User.username == username))
@@ -55,7 +61,16 @@ class AuthService:
 
         user = User(username=username, hashed_password=hash_password(password), display_name=display_name or username, role=UserRole(role))
         db.add(user)
-        await db.commit()
+        try:
+            if actor:
+                await db.flush()
+                await AuditService.log(db, actor["user_id"], actor.get("username", ""), "auth",
+                                       "account_created", "user", str(user.id),
+                                       {"account": username, "role": role}, commit=False)
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise ValueError("用户名已存在") from exc
         await db.refresh(user)
         return user
 
@@ -72,6 +87,26 @@ class AuthService:
         if changed.rowcount != 1:
             await db.rollback()
             raise ValueError("账户已变更，请重新登录后重试")
+        await AuditService.log(db, user.id, user.username, "auth", "account_password_changed", "user",
+                               str(user.id), commit=False)
+        await db.commit()
+
+    @staticmethod
+    async def reset_trainee_password(db: AsyncSession, user_id: int, new_password: str, actor: dict) -> None:
+        _validate_password(new_password)
+        user = await db.get(User, user_id)
+        if user is None:
+            raise LookupError("账号不存在")
+        if user.role != UserRole.USER:
+            raise PermissionError("管理员密码请使用本人改密或部署端恢复")
+        result = await db.execute(update(User).where(User.id == user_id, User.role == UserRole.USER).values(
+            hashed_password=hash_password(new_password), token_version=User.token_version + 1,
+        ))
+        if result.rowcount != 1:
+            raise ValueError("该账号已有变更，请刷新后重试")
+        await AuditService.log(db, actor["user_id"], actor.get("username", ""), "auth",
+                               "account_password_reset", "user", str(user_id),
+                               {"account": user.username}, commit=False)
         await db.commit()
 
 

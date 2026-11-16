@@ -3,7 +3,7 @@ from datetime import datetime
 
 from core.time_utils import UtcDatetime
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator, computed_field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, computed_field
 
 
 class SystemConfigCreate(BaseModel):
@@ -15,6 +15,15 @@ class SystemConfigCreate(BaseModel):
 class SystemConfigUpdate(BaseModel):
     config_value: Optional[str] = Field(None, max_length=4096)
     description: Optional[str] = Field(None, max_length=256)
+
+
+class ModelConnectionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str | None = Field(None, max_length=64)
+    base_url: str | None = Field(None, max_length=1024)
+    model: str | None = Field(None, max_length=256)
+    api_key: SecretStr | None = None
 
 
 class SystemConfigResponse(BaseModel):
@@ -34,6 +43,7 @@ class AuditLogResponse(BaseModel):
     id: int
     user_id: int
     username: str
+    linked_username: Optional[str] = None
     module: str
     action: str
     resource_type: Optional[str]

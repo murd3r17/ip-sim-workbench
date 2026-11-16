@@ -1,5 +1,12 @@
 /** Minimal Markdown → safe HTML for Copilot bubbles (no external deps). */
 
+const SOURCE_REFERENCE = /\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?(\d{1,6})([ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]/gi
+
+export function referencedSourceIndices(text: string): Set<number> {
+  const prose = text.replace(/```[\s\S]*?(?:```|$)|`[^`\n]+`/g, '')
+  return new Set(Array.from(prose.matchAll(SOURCE_REFERENCE), match => Number(match[1]) - 1))
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -19,7 +26,7 @@ function inlineMarkdown(text: string, sourceCount?: number): string {
   // Only validated source indices in prose become controls. Never interpret HTML,
   // URLs or a numeric expression inside inline/fenced code as a citation.
   s = s.split(/(<code\b[^>]*>[\s\S]*?<\/code>)/g).map(part => part.startsWith('<code') ? part
-    : part.replace(/\[(?:n:?\s*)?(\d{1,6})([ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]/gi, (match, number, review) => {
+    : part.replace(SOURCE_REFERENCE, (match, number, review) => {
       const index = Number(number)
       const label = `${index}${review || ''}`
       if (sourceCount === undefined) return match

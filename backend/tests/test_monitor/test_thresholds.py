@@ -119,18 +119,41 @@ class TestEvaluateAndAlarm:
             assert alarm is not None and alarm.alarm_type == "interface_review" and alarm.severity == 'warning'
 
     @pytest.mark.asyncio
-    async def test_ospf_neighbors_uses_low_direction_and_resolves(self, test_session_factory):
+    async def test_ospf_zero_without_expectation_only_requests_review(self, test_session_factory):
         async with test_session_factory() as db:
             device = await _device(db, "thr-ospf")
             alarm = await AlarmService.evaluate_and_alarm(db, device, "ospf_neighbor_count", 0)
             assert alarm is not None
-            assert alarm.alarm_type == "ospf_neighbor_count_low"
-            assert alarm.severity == "critical"
+            assert alarm.alarm_type == "ospf_neighbor_count_review"
+            assert alarm.severity == "warning"
+            assert "未登记本设备" in alarm.message
 
             # 邻居恢复 → 自动恢复（方向为 low 的告警此前永远不会被 auto-resolve）
             await AlarmService.evaluate_and_alarm(db, device, "ospf_neighbor_count", 3)
             refreshed = await db.get(Alarm, alarm.id)
             assert refreshed.status == AlarmStatus.RESOLVED
+
+    @pytest.mark.asyncio
+    async def test_ospf_baseline_zero_and_positive_follow_device_expectation(self, test_session_factory):
+        from modules.monitor.ports import PortPolicyWrite, load_policy
+        from modules.monitor.port_service import save_port_policy
+        from modules.auth.models import User, UserRole
+
+        async with test_session_factory() as db:
+            device = await _device(db, "thr-ospf-expected")
+            admin = User(username="ospf-policy-admin", hashed_password="test", role=UserRole.ADMIN, is_active=True)
+            db.add(admin)
+            await db.commit()
+            actor = {"user_id": admin.id, "username": admin.username}
+            policy = await load_policy(db, device.id)
+            policy = await save_port_policy(db, device.id, PortPolicyWrite(base_revision=policy["revision"], ospf_min_neighbors=0), actor)
+            assert await AlarmService.evaluate_and_alarm(db, device, "ospf_neighbor_count", 0) is None
+            policy = await save_port_policy(db, device.id, PortPolicyWrite(base_revision=policy["revision"], ospf_min_neighbors=2), actor)
+            alarm = await AlarmService.evaluate_and_alarm(db, device, "ospf_neighbor_count", 1)
+            assert alarm is not None and alarm.alarm_type == "ospf_neighbor_count_expected_low"
+            assert alarm.threshold == 2 and alarm.severity == "major"
+            await AlarmService.evaluate_and_alarm(db, device, "ospf_neighbor_count", 2)
+            assert alarm.status == AlarmStatus.RESOLVED
 
     @pytest.mark.asyncio
     async def test_metric_without_threshold_is_ignored(self, test_session_factory):

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from core.config import get_settings
+from engines.device_adapter import SIM_READ_COMMANDS
 
 DEVICE_LABELS = {
     "sim": "模拟设备（不连接真实网络）",
@@ -57,7 +58,7 @@ def _facts(device_mode: str, deploy_mode: str, binding: str, teaching: str) -> d
     else:
         risk = "unknown"
         summary = "设备连接或下发方式未记录，不能推断为模拟或真实。"
-    return {
+    facts = {
         "teaching_mode": teaching,
         "device_mode": device_mode,
         "device_label": DEVICE_LABELS[device_mode],
@@ -68,6 +69,9 @@ def _facts(device_mode: str, deploy_mode: str, binding: str, teaching: str) -> d
         "webssh_write_risk": risk,
         "summary": summary,
     }
+    if device_mode == "sim":
+        facts["terminal_read_commands"] = list(SIM_READ_COMMANDS)
+    return facts
 
 
 def _current_deploy_mode() -> str:

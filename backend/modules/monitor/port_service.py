@@ -65,18 +65,21 @@ async def save_port_policy(db, device_id: int, body: PortPolicyWrite, actor: dic
     current = await load_policy(db, device_id)
     if current['revision'] != body.base_revision:
         raise HTTPException(409, '端口期望已由其他操作更新，请重新加载后核对；当前编辑尚未保存')
-    policy = policy_payload(device_id, [p.model_dump() for p in body.ports])
+    minimum = body.ospf_min_neighbors if 'ospf_min_neighbors' in body.model_fields_set else current.get('ospf_min_neighbors')
+    policy = policy_payload(device_id, [p.model_dump() for p in body.ports], ospf_min_neighbors=minimum)
     if row is None:
         row = SystemConfig(config_key=key)
         db.add(row)
-    row.config_value = json.dumps({'version': VERSION, 'device_id': device_id, 'ports': policy['ports']}, ensure_ascii=False)
-    row.description = '本地端口用途与预期状态，不向设备写配置'
+    row.config_value = json.dumps({
+        'version': VERSION, 'device_id': device_id, 'ports': policy['ports'], 'ospf_min_neighbors': minimum,
+    }, ensure_ascii=False)
+    row.description = '本地端口用途、预期状态与 OSPF 邻居数量下限'
     row.updated_by = str(actor.get('username') or actor['user_id'])
     try:
         await AuditService.log(db, actor['user_id'], str(actor.get('username') or actor['user_id']),
                                'monitor', 'port_expectations_updated', 'device', str(device_id),
                                {'from_revision': current['revision'], 'to_revision': policy['revision'],
-                                'ports': len(policy['ports']), 'device_effect': 'none'}, commit=False)
+                                'ports': len(policy['ports']), 'ospf_min_neighbors': minimum, 'device_effect': 'none'}, commit=False)
         await db.commit()
     except IntegrityError:
         await db.rollback()

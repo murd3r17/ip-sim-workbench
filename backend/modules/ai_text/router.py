@@ -22,9 +22,9 @@ from modules.ai_text.cancel import registry as cancel_registry
 from modules.knowledge.service import KnowledgeService
 from modules.system.service import SystemService
 from modules.ai_text.draft_guard import enforce as enforce_draft_guard
-from modules.ai_text.trusted_context import load_verified_evidence, resolve_task_targets, resolve_draft_target, sanitize as sanitize_page_data
+from modules.ai_text.trusted_context import TrustedPageData, load_verified_evidence, resolve_task_targets, resolve_draft_target, sanitize as sanitize_page_data
 from modules.ai_text.draft_environment import resolve_draft_environment, blocked_draft_policy
-from modules.ai_text.skills import select_skill
+from modules.ai_text.skills import request_evidence_scope, select_skill
 from modules.ai_text.kb_cache import cached_search
 from modules.ai_text.retrieval import clean_chunk, expand_query, rerank
 from modules.ai_text.context_bundle import prepare_sources, source_documents
@@ -455,14 +455,16 @@ async def _generate_copilot_chat(
 ) -> Any:
     """右侧常驻 Copilot：上下文感知 + RAG + 可选配置草稿（不执行）。"""
     try:
-        page = await _resolve_page_data(db, data, current_user)
+        scope = request_evidence_scope(data.message)
+        page = TrustedPageData(None) if scope.provided_only else await _resolve_page_data(db, data, current_user)
+        history = [] if scope.provided_only else data.history
         policy = await _lab_draft_policy(db, data, current_user)
-        lab_steps = policy.get('lab_steps',[])
+        lab_steps = [] if scope.provided_only else policy.get('lab_steps',[])
         attachments = await _copilot_attachments(db, data, current_user) if policy["allow_model"] else []
         try:
             # C-04：检索与生成解耦。ask 会触发 AnythingLLM 内部再生成一次（慢且重复计费），
             # 改为只做检索，把命中片段交给同一次模型生成，来源仍可逐条追溯。
-            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=data.history,
+            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=history,
                                   has_attachments=bool(attachments),
                                   saved_observation=page.meta.get("record_origin") == "server_observation_record"
                                   and "device_mismatch" not in page.meta.get("reasons", []),
@@ -511,12 +513,13 @@ async def _generate_copilot_chat(
                     "message": "模型服务初始化失败，本次未调用模型；请稍后重试或联系管理员检查模型配置。",
                 },
             ) from exc
-        ui = _apply_policy_note(data.context.model_dump() if data.context else {}, policy)
+        ui = _apply_policy_note(data.context.model_dump() if data.context and not scope.provided_only else {}, policy)
+        ui['provided_material_only'] = scope.provided_only
         # C-05：把已认证角色带入上下文，避免普通用户被引导到管理员专属页面
         ui["role"] = current_user.get("role") or "user"
         ui["page_data_trusted"] = page.trusted
         ui['server_page_validation'] = page
-        ui['server_lab_content'] = policy.get('lab_content')
+        ui['server_lab_content'] = None if scope.provided_only else policy.get('lab_content')
         ui['server_knowledge_status'] = knowledge.get('status')
         if page.meta.get("trusted") is False:
             reasons = ",".join(page.meta.get("reasons") or [])
@@ -527,7 +530,7 @@ async def _generate_copilot_chat(
         skill = select_skill(
             data.message,
             want_draft=data.want_draft and policy["allow_draft"],
-            lab_steps=lab_steps, history=data.history,
+            lab_steps=lab_steps, history=history,
             has_attachments=bool(attachments),
             saved_observation=page.meta.get("record_origin") == "server_observation_record"
             and "device_mismatch" not in page.meta.get("reasons", []),
@@ -539,7 +542,7 @@ async def _generate_copilot_chat(
         ui["skill_prompt"] = skill.prompt
         ui["skill_id"] = skill.id
         ui["skill_version"] = skill.version
-        if skill.id in {'live_evidence','troubleshooting','lab_coach'}:
+        if not scope.provided_only and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
             from .owned_history import load_owned_history
             ui['server_history'] = await load_owned_history(db, data.history, current_user)
         if draft_target:
@@ -560,7 +563,7 @@ async def _generate_copilot_chat(
             message=data.message,
             context_docs=context_docs,
             ui_context=ui,
-            history=data.history,
+            history=history,
             want_draft=data.want_draft and policy["allow_draft"],
             device_model=data.device_model,
             page_data=page.text,
@@ -709,13 +712,16 @@ async def _generate_copilot_stream(
     draft_target = None
     draft_environment = None
     cancelled_during_setup = False
-    page = sanitize_page_data(data.page_data, selection=data.context.selection if data.context else None)
+    scope = request_evidence_scope(data.message)
+    history = [] if scope.provided_only else data.history
+    page = TrustedPageData(None) if scope.provided_only else sanitize_page_data(data.page_data, selection=data.context.selection if data.context else None)
     try:
         if factory is not None:
             try:
                 async with factory() as setup_db:
                     policy = await run_cancellable(_lab_draft_policy(setup_db, data, current_user), cancel_event, release_registration)
-                    page = await run_cancellable(_resolve_page_data(setup_db, data, current_user), cancel_event, release_registration)
+                    if not scope.provided_only:
+                        page = await run_cancellable(_resolve_page_data(setup_db, data, current_user), cancel_event, release_registration)
                     if policy["allow_model"]:
                         attachments = await run_cancellable(
                             _copilot_attachments(setup_db, data, current_user), cancel_event, release_registration
@@ -741,10 +747,10 @@ async def _generate_copilot_stream(
                     draft_target = None
         elif data.want_draft or data.lab_id or data.lab_session_id or data.lab_steps:
             policy = blocked_draft_policy(policy,'环境核验暂不可用，不能生成具体设备配置。')
-        lab_steps = policy.get('lab_steps',[])
+        lab_steps = [] if scope.provided_only else policy.get('lab_steps',[])
         try:
             # CF-02：流式与同步统一走 search，来源/状态/provider 归一，避免 ask 的隐藏二次生成。
-            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=data.history,
+            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=history,
                                   has_attachments=bool(attachments),
                                   saved_observation=page.meta.get("record_origin") == "server_observation_record"
                                   and "device_mismatch" not in page.meta.get("reasons", []),
@@ -807,7 +813,8 @@ async def _generate_copilot_stream(
 
     sources = knowledge.get("sources", [])[: data.top_k]
     context_docs = _copilot_context_docs(sources)
-    ui = _apply_policy_note(data.context.model_dump() if data.context else {}, policy)
+    ui = _apply_policy_note(data.context.model_dump() if data.context and not scope.provided_only else {}, policy)
+    ui['provided_material_only'] = scope.provided_only
     # CF-02：流式入口同样使用后端认证角色，客户端自报角色不参与。
     ui["role"] = current_user.get("role") or "user"
     protected: list[str] = []
@@ -820,7 +827,7 @@ async def _generate_copilot_stream(
     ui['server_protected_interfaces']=tuple(protected)
     ui["page_data_trusted"] = page.trusted
     ui['server_page_validation'] = page
-    ui['server_lab_content'] = policy.get('lab_content')
+    ui['server_lab_content'] = None if scope.provided_only else policy.get('lab_content')
     ui['server_knowledge_status'] = knowledge.get('status')
     if page.meta.get("trusted") is False:
         reasons = ",".join(page.meta.get("reasons") or [])
@@ -831,7 +838,7 @@ async def _generate_copilot_stream(
     skill = select_skill(
         data.message,
         want_draft=data.want_draft and policy["allow_draft"],
-        lab_steps=lab_steps, history=data.history,
+        lab_steps=lab_steps, history=history,
         has_attachments=bool(attachments),
         saved_observation=page.meta.get("record_origin") == "server_observation_record"
         and "device_mismatch" not in page.meta.get("reasons", []),
@@ -843,7 +850,7 @@ async def _generate_copilot_stream(
     ui["skill_prompt"] = skill.prompt
     ui["skill_id"] = skill.id
     ui["skill_version"] = skill.version
-    if factory is not None and not cancelled_during_setup and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
+    if factory is not None and not scope.provided_only and not cancelled_during_setup and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
         from .owned_history import load_owned_history
         try:
             async with factory() as history_db:
@@ -928,7 +935,7 @@ async def _generate_copilot_stream(
                 message=data.message,
                 context_docs=context_docs,
                 ui_context=ui,
-                history=data.history,
+                history=history,
                 want_draft=data.want_draft and policy["allow_draft"],
                 device_model=data.device_model,
                 page_data=page.text,

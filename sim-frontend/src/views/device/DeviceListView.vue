@@ -326,7 +326,10 @@ function openLinkedObservation() {
   if (route.path !== '/devices' || !Number.isSafeInteger(id) || id < 1) return
   if (showObservation.value && observationDeviceId.value === id) return
   const device = devices.value.find(item => item.id === id)
-  if (device) void openObservation(device)
+  if (device) {
+    observationAction.value = route.query.observe_action === 'ospf_peer' ? 'ospf_peer' : 'interface_brief'
+    void openObservation(device)
+  }
 }
 
 watch(() => route.query.observe_device, openLinkedObservation)
@@ -334,7 +337,7 @@ watch(() => route.query.observe_device, openLinkedObservation)
 function closeObservation() {
   invalidateObservation()
   if (route.path !== '/devices' || !route.query.observe_device) return
-  const { observe_device: _observe, ...query } = route.query
+  const { observe_device: _observe, observe_action: _action, ...query } = route.query
   void router.replace({ path: '/devices', query })
 }
 
@@ -357,8 +360,19 @@ function observationHelp(result: ObservationRecord) {
 
 function askAboutObservation() {
   if (!observation.value || !observationDevice.value) return
-  const prompt = `请解读 ${observationDevice.value.hostname} 的「${observationActionLabel(observation.value.action_id)}」观察（记录 #${observation.value.id}）。我能从结果判断什么，接下来应该核对什么？`
-  copilot.setEvidenceId(observation.value.id)
+  const device = observationDevice.value
+  const result = observation.value
+  const label = observationActionLabel(result.action_id)
+  const prompt = `请解读 ${device.hostname} 的「${label}」观察（记录 #${result.id}）。我能从结果判断什么，接下来应该核对什么？`
+  const wasPinned = copilot.selectionPinned
+  copilot.setSelectionPinned(false)
+  bindDevice(device)
+  copilot.setSelection({
+    kind: 'device', id: device.id, label: device.hostname, model: device.model,
+    detail: `${label} · 采集于 ${formatApiTime(result.collected_at)} · 记录 #${result.id}`,
+  })
+  copilot.setEvidenceId(result.id)
+  if (wasPinned) copilot.setSelectionPinned(true)
   showObservation.value = false
   window.dispatchEvent(new CustomEvent('copilot-prefill', { detail: { prompt } }))
 }

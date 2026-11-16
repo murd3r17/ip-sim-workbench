@@ -2,7 +2,7 @@
   <details class="step-check-panel">
     <summary>步骤核对 <span class="muted">按服务端观察比较，不改变技能成绩</span></summary>
     <div class="step-check-body">
-      <p v-if="bindingSupported === false" class="muted">这是流程演示，步骤由人工回看记录；现场核验请使用网络实验。</p>
+      <p v-if="bindingSupported === false" class="muted">本课以保存观察和判读记录为完成条件。可在复盘中检查笔记是否写清设备、回显和判断。</p>
       <p v-else-if="!environmentId" class="muted">本会话未绑定环境。可阅读步骤；请管理员在实验步骤中绑定环境，预检后新开会话再核对。</p>
       <p v-if="!active" class="muted">该会话已结束。历史内容保留，新核对请新开会话。</p>
       <label>核对步骤</label>
@@ -11,16 +11,18 @@
       </el-select>
       <template v-if="currentStep">
         <p class="muted">{{ currentStep.expected || currentStep.goal }}</p>
-        <p class="muted">{{ currentStep.verification?.limitations || '该版本没有自动核验规则，请教员复核。' }}</p>
+        <p v-if="bindingSupported !== false" class="muted">{{ currentStep.verification?.limitations || '该版本没有自动核验规则，请教员复核。' }}</p>
+        <template v-if="environmentId && actions.length && bindingSupported !== false">
         <div class="check-actions">
           <el-button :loading="collecting" :disabled="!active || !environmentId || !actions.length || loading || checking" @click="collect">采集当前观察</el-button>
           <el-button :loading="loading" :disabled="collecting || checking || !environmentId" @click="load">刷新记录</el-button>
         </div>
-        <label>选择本次观察 <small class="muted">每角色、每类选择一份；前后比较需同设备两份路由</small></label>
+        <label>选择本次观察 <small class="muted">{{ observationInstructions }}</small></label>
         <el-select v-model="selectedIds" multiple collapse-tags collapse-tags-tooltip aria-label="选择核对观察" class="full-width" @change="invalidateSelection">
           <el-option v-for="row in relevantObservations" :key="row.id" :value="row.id" :label="observationLabel(row)" />
         </el-select>
-        <el-button type="primary" :loading="checking" :disabled="!active || collecting || loading" @click="verify">核对本步</el-button>
+        <el-button type="primary" :loading="checking" :disabled="!active || collecting || loading || !selectedIds.length" @click="verify">核对本步</el-button>
+        </template>
       </template>
       <p v-else class="muted">该会话版本没有可核对的结构化步骤，仍可记录笔记与查阅原文。</p>
       <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
@@ -73,6 +75,12 @@ const actions = computed(() => {
   return (rule.components || ['neighbors', 'routes']).map((c) => c === 'neighbors' ? 'ospf_peer' : 'ospf_route')
 })
 const relevantObservations = computed(() => observations.value.filter((r) => actions.value.includes(r.action_id)))
+const observationInstructions = computed(() => {
+  if (currentStep.value?.verification?.kind === 'route_filter_effect') return '选择同一设备变更前后的两份 OSPF 路由观察'
+  if (actions.value.length === 2) return '每个目标角色各选一份邻居观察和一份 OSPF 路由观察'
+  if (actions.value[0] === 'interface_brief') return '每个目标角色选择一份接口状态与地址观察'
+  return '每个目标角色选择一份对应的观察'
+})
 const resultLabel = computed(() => ({ satisfied: '本步事实符合预期', not_matched: '本步事实不符合预期', stale: '观察已过期', manual_review: '本步需人工复核' }[result.value?.status || ''] || '当前无法判断'))
 function componentLabel(value: string) { return ({ neighbors: '邻居', routes: '路由', link: '互联接口', loopback: '环回接口' }[value] || value) }
 function resetResult() { result.value = null; error.value = '' }

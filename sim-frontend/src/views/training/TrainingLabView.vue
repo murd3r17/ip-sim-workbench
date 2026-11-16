@@ -1,5 +1,5 @@
 <template>
-  <div v-show="overlaySessionId === undefined" class="training-lab v7b-page">
+  <div v-show="overlaySessionId === undefined" ref="labPage" class="training-lab v7b-page">
     <template v-if="overlaySessionId === undefined">
     <PageHeader
       title="实训"
@@ -14,45 +14,11 @@
     </PageHeader>
     <el-alert v-if="labLoadError" :title="labLoadError" type="error" :closable="false" show-icon />
     <el-alert v-if="topologyLoadError" :title="topologyLoadError" type="error" :closable="false" show-icon><el-button @click="loadTopologies">重试拓扑列表</el-button></el-alert>
-    <!-- 顶部统计 -->
-    <el-row class="training-stats" :gutter="16" style="margin-bottom: 16px">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-value">{{ labLoadError ? '—' : stats.totalLabs }}</div>
-            <div class="stat-label">Lab总数</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-value" style="color: var(--v7b-ok)">{{ labLoadError ? '—' : stats.readyLabs }}</div>
-            <div class="stat-label">可开始学习的课程</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-value" style="color: #409eff">{{ sessionLoadError ? '—' : stats.activeSessions ?? '-' }}</div>
-            <div class="stat-label">进行中会话</div>
-          </div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <div class="stat-card">
-            <div class="stat-value" style="color: var(--v7b-warn)">{{ sessionLoadError ? '—' : stats.completedSessions }}</div>
-            <div class="stat-label">已结束会话</div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
-    <div class="training-note">
-      关闭「实训会话」窗口不会结束实验。进行中的会话列在下方，也可从页面顶部实训条重新打开。
-      历史会话只读回看，不再绑定终端或教练。
-    </div>
+    <dl class="training-stats">
+      <div><dt>可在本地完成</dt><dd>{{ labLoadError ? '—' : stats.readyLabs }}</dd></div>
+      <div><dt>进行中会话</dt><dd>{{ sessionLoadError ? '—' : stats.activeSessions }}</dd></div>
+      <div><dt>已结束会话</dt><dd>{{ sessionLoadError ? '—' : stats.completedSessions }}</dd></div>
+    </dl>
 
     <!-- 操作栏：创建/刷新已在页头，避免重复；此处只保留搜索与拓扑缺口的说明。 -->
     <div class="lab-toolbar">
@@ -65,31 +31,34 @@
 
     <!-- Lab列表 -->
     <el-card>
-      <el-table :data="filteredLabs" row-key="id" v-loading="loading" max-height="420">
+      <el-table :data="filteredLabs" row-key="id" v-loading="loading" :max-height="compactLayout ? undefined : 420">
         <template #empty>
           <el-empty :description="labLoadError || '暂无实训实验。管理员可创建 Lab，无拓扑时请先到拓扑页导入基线。'" :image-size="72">
             <el-button v-if="!labLoadError" type="primary" @click="$router.push('/topology')">去拓扑页</el-button>
           </el-empty>
         </template>
-        <el-table-column label="实验" min-width="230">
+        <el-table-column label="实验" :min-width="compactLayout ? 156 : 230">
           <template #default="{ row }">
             <button type="button" class="lab-title-link" @click="showSteps(row)">{{ row.title }}</button>
             <p class="lab-intro">{{ labReadiness(row) }}</p>
+            <p v-if="compactLayout" class="lab-intro lab-facts">
+              {{ row.availability?.label || statusLabel(row.status) }} · {{ row.is_sandbox ? '自由练习' : '引导实验' }} · {{ deviceTagLabel(row) }}
+            </p>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="110">
+        <el-table-column v-if="!compactLayout" label="当前可做" min-width="155">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <el-tag :type="labStatusType(row)">{{ row.availability?.label || statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="教学方式" width="110">
+        <el-table-column v-if="!compactLayout" label="教学方式" width="110">
           <template #default="{ row }">
             <el-tag :type="row.is_sandbox ? 'warning' : 'info'" size="small">
               {{ row.is_sandbox ? '自由练习' : '引导实验' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="环境" width="120">
+        <el-table-column v-if="!compactLayout" label="环境" width="120">
           <template #default="{ row }">
             <el-tooltip :content="modeSummary(row)" placement="top">
               <el-tag :type="deviceTagType(factsOf(row))" effect="plain" size="small">
@@ -98,7 +67,7 @@
             </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="步骤" width="90" class-name="hide-narrow">
+        <el-table-column v-if="!compactLayout" label="步骤" width="90">
           <template #default="{ row }">
             <el-button
               v-if="Array.isArray(row.objectives) && row.objectives.length"
@@ -110,11 +79,11 @@
             <span v-else style="color: var(--el-text-color-secondary)">未设置</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" :width="compactLayout ? 121 : 180" :fixed="compactLayout ? false : 'right'">
           <template #default="{ row }">
             <div class="lab-actions">
               <el-button v-if="activeSessionOf(row)" size="small" type="primary" @click="resumeLab(row)">继续实训</el-button>
-              <el-button v-else-if="row.status !== 'draft' || isAdmin" size="small" type="primary" :loading="startingLab === row.id" :disabled="startingLab !== null" @click="handleStart(row)">开始实训</el-button>
+              <el-button v-else-if="row.status !== 'draft' || isAdmin" size="small" type="primary" :loading="startingLab === row.id" :disabled="startingLab !== null" @click="handleStart(row)">{{ labStartLabel(row) }}</el-button>
               <span v-else class="muted">等待发布</span>
               <el-dropdown trigger="click">
                 <el-button size="small" aria-label="更多实验操作">更多操作</el-button>
@@ -169,6 +138,9 @@
     <!-- 实验步骤大纲弹窗 -->
     <el-dialog v-model="showStepsDialog" title="实验步骤" width="min(760px, 94vw)" draggable>
       <div v-if="stepsLab" class="steps-panel">
+        <h3>{{ stepsLab.title }}</h3>
+        <p v-if="stepsLab.description">{{ stepsLab.description }}</p>
+        <p><strong>{{ stepsLab.availability?.label }}</strong> {{ labReadiness(stepsLab) }}</p>
         <el-alert
           type="info"
           :closable="false"
@@ -179,16 +151,24 @@
         <div v-if="stepsLab.environment_spec" class="lab-requirements">
           <strong>先修与环境 · {{ stepsLab.content_version || '版本未登记' }}</strong>
           <ul><li v-for="(item, index) in stepsLab.environment_spec.prerequisites || []" :key="index">{{ item }}</li></ul>
-          <p>环境绑定：{{ stepsLab.environment_spec.supports_binding === false ? '流程演示；现场核对请使用旁边的版本化网络实验' : stepsLab.environment_spec.trust_environment_id ? `#${stepsLab.environment_spec.trust_environment_id}，新会话冻结该环境` : '未绑定；可阅读，核对前需管理员绑定与预检' }}</p>
+          <p v-if="stepsLab.environment_spec.devices?.length">设备角色 {{ stepsLab.environment_spec.devices.map(d => d.role).join('、') }}</p>
           <div v-if="isAdmin && stepsLab.environment_spec.supports_binding !== false" class="binding-actions">
-            <el-select v-model="bindingEnvironmentId" placeholder="选择已建环境" clearable aria-label="实验绑定环境">
-              <el-option v-for="env in bindingEnvironments" :key="env.id" :value="env.id" :label="`${env.name} · ${env.version} · ${env.status}`" />
+            <el-select v-model="bindingEnvironmentId" placeholder="选择已建环境" clearable aria-label="实验绑定环境" @change="bindingError = ''">
+              <el-option v-for="env in bindingEnvironments" :key="env.id" :value="env.id" :label="`${env.name} · ${env.version} · ${env.last_preflight_status === 'ready' ? '已预检' : '待预检'}`" />
             </el-select>
             <el-button :loading="bindingSaving" @click="saveLabBinding">保存环境绑定</el-button>
+            <el-button link type="primary" @click="prepareLabEnvironment">为本实验准备环境</el-button>
           </div>
+          <el-alert v-if="bindingError" type="error" :closable="false" show-icon :title="bindingError">
+            <el-button link type="primary" @click="prepareLabEnvironment">去环境映射补齐</el-button>
+          </el-alert>
           <p v-if="isAdmin && stepsLab.environment_spec.supports_binding !== false" class="muted">只影响之后的新会话；旧会话保持原版本。协议先修与设备写入仍单独核对。</p>
-          <details><summary>内容来源</summary><p v-for="source in stepsLab.environment_spec.sources || []" :key="source" class="source-path">{{ source }}</p></details>
+          <details v-if="!stepsLab.objectives?.some(step => step?.original_sources?.length)">
+            <summary>内容来源</summary>
+            <p v-for="source in stepsLab.environment_spec.sources || []" :key="source" class="source-path">{{ source }}</p>
+          </details>
         </div>
+        <p v-if="courseSourceNotice" class="muted" role="status">{{ courseSourceNotice }}</p>
         <div v-for="(s, i) in stepsLab.objectives || []" :key="i" class="step-item">
           <div class="step-head">
             <span class="step-no">{{ i + 1 }}</span>
@@ -198,13 +178,30 @@
           <div v-if="s.start_guidance" class="step-goal">先做什么 · {{ s.start_guidance }}</div>
           <div v-if="s.config_hint" class="step-hint">操作说明 · {{ s.config_hint }}</div>
           <div v-if="s.verify_command" class="step-verify">
-            观察建议：<code>{{ s.verify_command }}</code>
+            {{ supportedObservation(s.verify_command, stepsLab.mode_facts) ? '观察命令' : '设备环境参考命令' }}
+            <code>{{ s.verify_command }}</code>
           </div>
           <div v-if="s.expected" class="step-goal">判断依据 · {{ s.expected }}</div>
+          <div v-if="s.record_example" class="step-goal">记录示例 · {{ s.record_example }}</div>
           <div v-if="s.verification" class="step-goal">核验范围：{{ s.verification.limitations }}</div>
+          <div v-if="s.original_sources?.length" class="step-sources">
+            <template v-for="source in s.original_sources" :key="source.document_id + ':' + source.page">
+              <el-button v-if="canReadCourseSource(source)" link type="primary" @click="readCourseSource(source)">
+                {{ source.title }} · PDF 第 {{ source.page }} 页
+              </el-button>
+              <span v-else class="muted">{{ source.title }} · PDF 第 {{ source.page }} 页</span>
+            </template>
+          </div>
         </div>
       </div>
+      <template #footer>
+        <el-button v-if="stepsLab?.availability?.state === 'local_practice'" type="primary" :loading="startingLab === stepsLab.id" @click="beginIntro(stepsLab)">
+          {{ activeSessionOf(stepsLab) ? '继续巡检' : '开始巡检' }}
+        </el-button>
+      </template>
     </el-dialog>
+    <KnowledgeDocumentReader v-model="courseSourceOpen" :document-id="courseSource?.document_id"
+      :original-page="courseSource?.page" :version="courseSource?.version" />
 
     <!-- 创建Lab对话框 -->
     <el-dialog v-model="showCreateDialog" title="创建实训Lab" width="560px" draggable>      <el-form :model="createForm" label-width="100px">
@@ -243,7 +240,7 @@
     </template>
 
     <!-- 会话对话框挂载到 body，作为浮层使用时不依赖下方页面。 -->
-    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" width="min(94vw, clamp(740px, 58vw, 1120px))" draggable :close-on-click-modal="false" append-to-body destroy-on-close @closed="emit('overlay-closed')">
+    <el-dialog v-model="showSessionDialog" class="session-dialog" :title="sessionDialogTitle" top="4vh" width="min(94vw, clamp(740px, 58vw, 1120px))" draggable :close-on-click-modal="false" append-to-body destroy-on-close @closed="emit('overlay-closed')">
       <el-alert
         v-if="sessionReadOnly"
         type="warning"
@@ -259,10 +256,22 @@
             <p v-if="currentStepGuide?.goal">{{ currentStepGuide.goal }}</p>
             <p v-if="currentStepGuide?.start_guidance || currentStepGuide?.config_hint">{{ currentStepGuide.start_guidance || currentStepGuide.config_hint }}</p>
             <p v-if="currentStepGuide?.expected"><strong>判断依据</strong> {{ currentStepGuide.expected }}</p>
-            <p v-if="currentStepGuide?.verify_command"><strong>观察命令</strong> <code>{{ currentStepGuide.verify_command }}</code></p>
-            <p v-if="!currentStepGuide">可以切到拓扑或设备页，关闭窗口后从顶部实训条继续。</p>
+            <p v-if="currentStepGuide?.verify_command && supportedObservation(currentStepGuide.verify_command, currentSession.mode_facts)"><strong>观察命令</strong> <code>{{ currentStepGuide.verify_command }}</code></p>
+            <p v-else-if="currentStepGuide?.verify_command">当前本地终端暂不提供这一步的观察。可继续阅读步骤。</p>
+            <p v-if="currentStepGuide?.record_example"><strong>记录示例</strong> {{ currentStepGuide.record_example }}</p>
+            <p v-if="!sessionVerificationDevices.length && sessionBindingSupported">本次会话可阅读和记录。需要核对设备时，请管理员绑定环境并新开会话。</p>
+            <details v-if="sessionVerificationDevices.length" class="session-targets">
+              <summary>本次会话绑定的设备和接口</summary>
+              <ul>
+                <li v-for="device in sessionVerificationDevices" :key="device.device_id">
+                  {{ device.role }} · {{ labDevices.find(item => item.id === device.device_id)?.hostname || `设备 #${device.device_id}` }}
+                  <template v-if="device.interfaces?.length"> · {{ device.interfaces.map(port => [port.name, port.address].filter(Boolean).join(' ')).join('、') }}</template>
+                </li>
+              </ul>
+            </details>
+            <p v-if="!currentStepGuide">保存笔记和步骤后，可结束并回看本次实训。</p>
           </div>
-          <el-button type="primary" plain @click="askAboutCurrentStep">{{ nextWorkspaceStep ? '问助手这一步' : '问助手实训进度' }}</el-button>
+          <el-button type="primary" plain @click="askAboutCurrentStep">{{ nextWorkspaceStep ? '填入本步问题' : '填入实训进度问题' }}</el-button>
         </section>
         <details class="session-facts">
           <summary>会话与环境信息 · {{ teachingLabel(currentSession) }} · {{ deviceTagLabelFor(currentSession) }}</summary>
@@ -651,6 +660,12 @@
               style="margin-bottom: 10px"
               :title="`共 ${reportVersions.filter(v => v.status === 'ready').length} 个成功版本；当前显示 v${trainingReport.version}，重新生成会新增版本。`"
             />
+            <el-alert v-if="reportChanges.length" class="report-source-warning" :closable="false" type="info" show-icon
+              :title="`生成此版本后，${reportChanges.join('、')}。可重新生成复盘。`" />
+            <p v-if="typeof trainingReport.input_summary?.log_count === 'number'" class="muted">
+              此版本依据当时已保存的 {{ trainingReport.input_summary.log_count }} 条操作记录和
+              {{ trainingReport.input_summary.fault_count ?? 0 }} 条故障记录。
+            </p>
             <div class="report-sections">
               <section v-if="trainingReport.summary">
                 <h4>摘要</h4><p>{{ trainingReport.summary }}</p>
@@ -729,11 +744,13 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
-import { notifyRequestError } from '../../utils/requestError'
+import { notifyRequestError, requestErrorMessage } from '../../utils/requestError'
 import { renderMarkdown } from '../../utils/markdownLite'
 import { formatApiTime } from '../../utils/datetime'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import StepVerificationPanel from '../../components/training/StepVerificationPanel.vue'
+import KnowledgeDocumentReader from '../../components/KnowledgeDocumentReader.vue'
+import { getKnowledgeCatalog, type KnowledgeDocument } from '../../api/knowledge'
 import { getEnvironments, type EnvironmentRecord, type EnvironmentDevice } from '../../api/trust'
 import { useCurrentUser } from '../../composables/useCurrentUser'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
@@ -753,6 +770,9 @@ import AdminAction from '../../components/AdminAction.vue'
 import PageHeader from '../../components/v7b/PageHeader.vue'
 
 const props = defineProps<{ overlaySessionId?: number }>()
+const labPage = ref<HTMLElement | null>(null)
+const compactLayout = ref(window.innerWidth <= 1100)
+let labResizeObserver: ResizeObserver | undefined
 const emit = defineEmits<{ 'overlay-closed': [] }>()
 const { isAdmin } = useCurrentUser()
 
@@ -766,6 +786,7 @@ interface ModeFacts {
   environment_binding_label: string
   webssh_write_risk: 'none' | 'possible' | 'unknown'
   summary: string
+  terminal_read_commands?: string[]
 }
 
 interface Lab {
@@ -780,7 +801,8 @@ interface Lab {
   is_sandbox: boolean
   mode_facts?: ModeFacts
   content_version?: string
-  environment_spec?: { prerequisites?: string[]; sources?: string[]; trust_environment_id?: number; supports_binding?: boolean }
+  environment_spec?: { prerequisites?: string[]; sources?: string[]; trust_environment_id?: number; supports_binding?: boolean; devices?: { role: string }[] }
+  availability?: { state: string; label: string; detail: string }
   created_at: string
 }
 
@@ -983,22 +1005,60 @@ function bindLabContext(lab: Lab, sessionId: number, session?: Session) {
 // 实验步骤大纲弹窗
 const showStepsDialog = ref(false)
 const stepsLab = ref<Lab | null>(null)
+type CourseSource = { document_id: string; title: string; page: number }
+const courseSource = ref<(CourseSource & { version?: string }) | null>(null)
+const courseSourceOpen = ref(false)
+const courseSourceRequest = useSnapshotRequest('课程教材目录')
+const courseSourceDocuments = ref(new Map<string, KnowledgeDocument>())
+
+function canReadCourseSource(source: CourseSource) {
+  if (courseSourceRequest.loading.value || courseSourceRequest.error.value) return false
+  const document = courseSourceDocuments.value.get(source.document_id)
+  return document?.page_start != null && document.page_end != null &&
+    source.page >= document.page_start && source.page <= document.page_end
+}
+
+const courseSourceNotice = computed(() => {
+  const sources: CourseSource[] = stepsLab.value?.objectives?.flatMap(step => step?.original_sources || []) || []
+  if (!sources.length) return ''
+  if (courseSourceRequest.loading.value) return '正在核对课程教材目录…'
+  if (courseSourceRequest.error.value) return '暂时无法核对教材目录，可重新打开实验步骤重试。'
+  return sources.some(source => !canReadCourseSource(source))
+    ? '挂载包含对应原页的同版教材后可打开来源。随附正文可在「知识库」检索。' : ''
+})
+
+function readCourseSource(source: CourseSource) {
+  courseSource.value = { ...source, version: courseSourceDocuments.value.get(source.document_id)?.version }
+  courseSourceOpen.value = true
+}
 const bindingEnvironments = ref<EnvironmentRecord[]>([])
 const bindingEnvironmentId = ref<number | undefined>()
 const bindingSaving = ref(false)
+const bindingError = ref('')
 let bindingSelection = 0
-async function showSteps(lab: Lab) {
+async function showSteps(lab: Lab, preferredEnvironment?: number) {
   const selected = ++bindingSelection
   bindingSaving.value = false
+  bindingError.value = ''
   stepsLab.value = lab
-  bindingEnvironmentId.value = lab.environment_spec?.trust_environment_id
+  bindingEnvironmentId.value = preferredEnvironment ?? lab.environment_spec?.trust_environment_id
   showStepsDialog.value = true
+  if (lab.objectives?.some(step => step?.original_sources?.length)) {
+    void courseSourceRequest.run(getKnowledgeCatalog, ({ documents }) => {
+      courseSourceDocuments.value = new Map(documents.filter(doc => doc.source_status === 'edition' && doc.readable)
+        .map(doc => [doc.id, doc]))
+    })
+  }
   if (isAdmin.value) {
     try {
       const environments = await getEnvironments() as unknown as EnvironmentRecord[]
       if (selected === bindingSelection) bindingEnvironments.value = environments
     } catch (error) { if (selected === bindingSelection) notifyRequestError(error, '读取环境失败，请重开步骤重试') }
   }
+}
+function prepareLabEnvironment() {
+  if (!stepsLab.value) return
+  void router.push({ path: '/environments', query: { lab_id: stepsLab.value.id } })
 }
 async function saveLabBinding() {
   const lab = stepsLab.value
@@ -1007,11 +1067,16 @@ async function saveLabBinding() {
   const environmentId = bindingEnvironmentId.value
   const stillSelected = () => selected === bindingSelection && stepsLab.value?.id === lab.id
   bindingSaving.value = true
+  bindingError.value = ''
   try {
-    await bindLabEnvironment(lab.id, environmentId || null)
-    lab.environment_spec = { ...lab.environment_spec, trust_environment_id: environmentId }
-    if (stillSelected()) ElMessage.success('已保存，仅用于之后的新会话；已有会话保持原绑定')
-  } catch (error) { if (stillSelected()) notifyRequestError(error, '保存绑定失败') }
+    const binding = await bindLabEnvironment(lab.id, environmentId || null) as unknown as Pick<Lab, 'environment_spec' | 'availability'>
+    const updated = { ...lab, environment_spec: binding.environment_spec, availability: binding.availability }
+    labs.value = labs.value.map(row => row.id === lab.id ? updated : row)
+    if (stillSelected()) {
+      stepsLab.value = updated
+      ElMessage.success('已保存，新开会话将使用这次绑定')
+    }
+  } catch (error) { if (stillSelected()) bindingError.value = requestErrorMessage(error, '保存绑定失败') }
   finally { if (stillSelected()) bindingSaving.value = false }
 }
 
@@ -1114,6 +1179,25 @@ const workspaceOpen = ref(true)
 const workspaceNotes = ref('')
 const workspaceSteps = ref<Array<Record<string, any>>>([])
 const workspaceRevision = ref(0)
+const reportChanges = computed(() => {
+  const source = trainingReport.value?.input_summary
+  const status = currentSession.value?.status
+  if (!source || !status) return []
+  const changes: string[] = []
+  if (typeof source.log_count === 'number' && operationLogs.value.length > source.log_count) {
+    changes.push(`新增 ${operationLogs.value.length - source.log_count} 条操作记录`)
+  }
+  if (typeof source.fault_count === 'number' && sessionFaults.value.length > source.fault_count) {
+    changes.push(`新增 ${sessionFaults.value.length - source.fault_count} 条故障记录`)
+  }
+  if (typeof source.workspace_revision === 'number' && workspaceRevision.value > source.workspace_revision) {
+    changes.push('笔记或步骤已有更新')
+  }
+  if (typeof source.session_status === 'string' && source.session_status !== status) {
+    changes.push('会话状态已有更新')
+  }
+  return changes
+})
 const workspaceReadOnly = ref(false)
 const workspaceSaving = ref(false)
 const workspaceLoading = ref(false)
@@ -1389,11 +1473,10 @@ const loadLabDevices = async () => {
 }
 
 const stats = computed(() => {
-  const total = labs.value.length
-  const ready = labs.value.filter(l => l.status === 'ready').length
+  const ready = labs.value.filter(l => l.availability?.state === 'local_practice').length
   const active = sessions.value.filter(s => s.status === 'in_progress').length
   const completed = sessions.value.filter(s => s.status === 'completed').length
-  return { totalLabs: total, readyLabs: ready, activeSessions: active, completedSessions: completed }
+  return { readyLabs: ready, activeSessions: active, completedSessions: completed }
 })
 
 const sessionLabTitle = computed(() => {
@@ -1414,10 +1497,16 @@ function resumeLab(lab: Lab) {
   if (session) resumeSession(session.id)
 }
 
+async function beginIntro(lab: Lab) {
+  showStepsDialog.value = false
+  if (activeSessionOf(lab)) resumeLab(lab)
+  else await handleStart(lab)
+}
+
 const filteredLabs = computed(() => {
   if (!searchText.value) return labs.value
   const q = searchText.value.toLowerCase()
-  return labs.value.filter(l => l.title.toLowerCase().includes(q))
+  return labs.value.filter(l => `${l.title} ${l.description || ''}`.toLowerCase().includes(q))
 })
 
 function statusType(s: string) {
@@ -1431,6 +1520,7 @@ function statusLabel(s: string) {
 }
 
 function labReadiness(lab: Lab) {
+  if (lab.availability) return lab.availability.detail
   const spec = lab.environment_spec
   if (spec?.supports_binding === false) return '从拓扑与设备开始，练习观察、保存笔记和复盘。'
   if (spec?.trust_environment_id) return '已选环境。先看实验步骤，核对协议先修和观察目标。'
@@ -1438,6 +1528,23 @@ function labReadiness(lab: Lab) {
   return lab.description || '打开实验查看目标、步骤和环境要求。'
 }
 
+function labStatusType(lab: Lab) {
+  if (!lab.availability) return statusType(lab.status)
+  return ['local_practice', 'device_observation'].includes(lab.availability.state) ? 'success' : 'info'
+}
+
+function labStartLabel(lab: Lab) {
+  const state = lab.availability?.state
+  if (state === 'local_practice') return '开始巡检'
+  if (!state || state === 'device_observation') return '开始实训'
+  if (state === 'limited_practice') return '开始观察'
+  return '阅读并记录'
+}
+
+function supportedObservation(command: string, modes?: ModeFacts) {
+  return modes?.device_mode !== 'sim' || !modes.terminal_read_commands
+    || modes.terminal_read_commands.includes(command.trim().toLowerCase())
+}
 function sessionStatusType(s: string) {
   const map: Record<string, string> = { pending: 'info', in_progress: 'warning', completed: 'success', abandoned: 'info' }
   return (map[s] || 'info') as '' | 'success' | 'warning' | 'info' | 'danger'
@@ -1998,6 +2105,10 @@ watch(
 )
 
 onMounted(async () => {
+  if (props.overlaySessionId === undefined && labPage.value && typeof ResizeObserver !== 'undefined') {
+    labResizeObserver = new ResizeObserver(([entry]) => { compactLayout.value = entry.contentRect.width < 830 })
+    labResizeObserver.observe(labPage.value)
+  }
   if (props.overlaySessionId !== undefined) {
     void loadLabDevices()
     await resumeSession(props.overlaySessionId, true)
@@ -2010,9 +2121,17 @@ onMounted(async () => {
   if (initialSelection !== sessionSelectionSeq || route.name !== '实训') return
   const qid = Number(Array.isArray(route.query.session_id) ? route.query.session_id[0] : route.query.session_id)
   if (qid) await resumeSession(qid)
+  else {
+    const preparationReturn = isAdmin.value && route.query.preparation === '1'
+    const requestedLab = labs.value.find(lab => String(lab.id) === route.query.lab_id &&
+      (preparationReturn || lab.availability?.state === 'local_practice'))
+    const environment = Number(route.query.environment_id)
+    if (requestedLab) await showSteps(requestedLab, preparationReturn && Number.isSafeInteger(environment) && environment > 0 ? environment : undefined)
+  }
 })
 
 onUnmounted(() => {
+  labResizeObserver?.disconnect()
   invalidateSessionRequests()
   window.removeEventListener('training-open-session', onTrainingOpenSession)
 })
@@ -2024,8 +2143,16 @@ onUnmounted(() => {
 }
 /* Keep both lists usable; the page scrolls rather than shrinking a card to its header. */
 .training-lab > * { flex-shrink: 0; }
-.training-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 12px; margin: 0 0 16px !important; }
-.training-stats > .el-col { max-width: 100%; padding: 0 !important; }
+.training-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  color: var(--v7b-muted);
+  font-size: 12px;
+}
+.training-stats div { display: flex; gap: 6px; align-items: baseline; }
+.training-stats dd { margin: 0; font-size: 15px; font-weight: 650; color: var(--v7b-text); }
 /* 1102px 下操作列不把 Lab 名称挤成竖排：按钮允许换行，名称列保留最小可读宽度 */
 .lab-actions {
   display: flex;
@@ -2033,25 +2160,6 @@ onUnmounted(() => {
   gap: 4px;
 }
 .lab-actions :deep(.el-button + .el-button) { margin-left: 0; }
-/* 会话弹窗内容过长时只滚动正文，底部“结束/放弃/关闭”始终可见 */
-:deep(.session-dialog .el-dialog__body) {
-  max-height: 62vh;
-  overflow-y: auto;
-}
-.stat-card {
-  text-align: center;
-  padding: 6px 0;
-}
-.stat-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: #edf5fa;
-}
-.stat-label {
-  font-size: 13px;
-  color: #7f93a6;
-  margin-top: 4px;
-}
 h4 {
   margin: 0 0 8px;
   color: var(--el-text-color-primary, #dce8f2);
@@ -2075,6 +2183,8 @@ h4 {
 .binding-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .binding-actions .el-select { flex: 1; min-width: 200px; }
 .source-path { overflow-wrap: anywhere; font-size: 12px; }
+.step-sources { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 6px; }
+.step-sources :deep(.el-button) { margin-left: 0; white-space: normal; height: auto; text-align: left; }
 .step-item {
   border: 1px solid var(--v7b-line);
   border-radius: 8px;
@@ -2149,10 +2259,20 @@ h4 {
 .training-section-heading { padding-top: 16px; border-top: 1px solid #dbe3ea; color: #344054; font-size: 14px; }
 </style>
 <style>
-/* 弹窗被 teleport 到 body，scoped 选择器命不中；这里约束正文滚动，底部动作始终可见。 */
+/* Keep the footer visible when a short window cannot show the full session. */
+.session-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 91dvh;
+  margin-bottom: 0;
+  overflow: hidden;
+}
+.session-dialog .el-dialog__header,
+.session-dialog .el-dialog__footer { flex-shrink: 0; }
 .session-dialog .el-dialog__body {
-  max-height: 62vh;
-  overflow-y: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
 }
 .session-next {
   display: flex;
@@ -2190,14 +2310,9 @@ h4 {
 .workspace-empty { color: var(--v7b-faint); font-size: 11px; }
 @media (max-width: 900px) { .workspace-grid { grid-template-columns: 1fr; } }
 
-@media (max-width: 1280px) {
-  :deep(.hide-narrow) { display: none !important; }
-}
-
 .conflict-copy { margin: 6px 0; font-size: 12px; }
 .conflict-pre { max-height: 100px; overflow: auto; white-space: pre-wrap; background: rgba(0,0,0,.18); padding: 6px; border-radius: 4px; font-size: 11px; }
 
-.training-note { color: var(--v7b-muted); font-size: 12px; line-height: 1.6; }
 .lab-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 12px; background: #fff; border: 1px solid var(--v7b-line); border-radius: 10px; }
 .lab-toolbar-meta { display: flex; align-items: center; gap: 8px; color: var(--v7b-muted); font-size: 12px; }
 @media (max-width: 760px) { .lab-toolbar { align-items: stretch; } }

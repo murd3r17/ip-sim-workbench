@@ -104,9 +104,9 @@
               <el-empty :description="logLoadError || '暂无配置变更日志。'" :image-size="72" />
             </template>
             <el-table-column prop="task_id" label="任务项" width="100" />
+            <el-table-column label="操作人" min-width="120"><template #default="{row}">{{ changeActor(row) }}</template></el-table-column>
             <el-table-column label="操作" min-width="160"><template #default="{row}">{{ auditActionLabel(row.action) }}</template></el-table-column>
-            <el-table-column prop="result" label="结果" width="110" />
-            <el-table-column prop="detail" label="摘要" show-overflow-tooltip />
+            <el-table-column label="结果" width="110"><template #default="{row}">{{ auditResultLabel(row.result) }}</template></el-table-column>
             <el-table-column label="时间" width="190"><template #default="{row}">{{ formatApiTime(row.created_at) }}</template></el-table-column>
             <el-table-column label="操作" width="110"><template #default="{ row }"><el-button type="primary" link @click="openChangeDetail(row)">查看变更</el-button></template></el-table-column>
           </el-table>
@@ -124,10 +124,11 @@
         <template #default>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="任务项">{{ changeTask?.id }}</el-descriptions-item><el-descriptions-item label="设备">{{ deviceName(changeTask?.device_id) }}</el-descriptions-item>
-            <el-descriptions-item label="状态">{{ taskStatusLabel(changeTask?.status) }}</el-descriptions-item><el-descriptions-item label="执行引擎">{{ changeTask?.engine }}</el-descriptions-item>
+            <el-descriptions-item label="状态">{{ deployTaskStatusLabel(changeTask?.status, changeTask?.phase) }}</el-descriptions-item><el-descriptions-item label="操作人">{{ changeActor(changeLog) }}</el-descriptions-item>
             <el-descriptions-item label="执行模式">{{ executionModeLabel(changeTask?.execution_mode) }}</el-descriptions-item><el-descriptions-item label="记录时间">{{ formatApiTime(changeLog?.created_at) }}</el-descriptions-item>
-            <el-descriptions-item label="原始动作码" :span="2">{{ changeLog?.action }}</el-descriptions-item>
+            <el-descriptions-item label="记录的操作" :span="2">{{ auditActionLabel(changeLog?.action) }}</el-descriptions-item>
           </el-descriptions>
+          <details v-if="changeLog?.detail"><summary>诊断详情</summary><pre class="snapshot-content">{{ changeLog.detail }}</pre></details>
           <h4>本次下发脚本</h4><pre class="snapshot-content">{{ changeTask?.config_content || '无' }}</pre>
           <template v-if="changeTask?.result_output"><h4>设备回读结果</h4><pre class="snapshot-content">{{ changeTask.result_output }}</pre></template>
           <template v-if="changeTask?.error_message"><h4>执行失败原因</h4><pre class="snapshot-content">{{ changeTask.error_message }}</pre></template>
@@ -166,7 +167,7 @@ import ConfigTextDiff from '../../components/ConfigTextDiff.vue'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
 import { formatApiTime, parseApiTime } from '../../utils/datetime'
-import { taskStatusLabel, configSourceLabel, auditActionLabel, executionModeLabel } from '../../utils/display'
+import { deployTaskStatusLabel, configSourceLabel, auditActionLabel, auditResultLabel, executionModeLabel } from '../../utils/display'
 import { buildConfigDiff } from '../../utils/configTextDiff'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 
@@ -224,6 +225,8 @@ const deviceTableRef = ref<any>(null)
 const changeDialogVisible = ref(false)
 const changeLoading = ref(false)
 const changeLog = ref<any>(null)
+const changeActor = (record: { actor?: string; actor_id?: number } | null) =>
+  record?.actor === 'system' ? '系统' : record?.actor || (record?.actor_id ? `账号 #${record.actor_id}` : '未记录')
 const changeTask = ref<any>(null)
 
 const snapshotLabel = (v: ConfigVersionRecord) => `${deviceName(v.device_id)} · V${v.version_number} · ${formatApiTime(v.created_at)}`

@@ -1,11 +1,13 @@
 from typing import Any
 """认证模块路由"""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_async_session
-from core.dependencies import get_current_user
+from core.dependencies import get_current_user, require_role
+from modules.auth.models import User
 from modules.auth.service import AuthService
-from modules.auth.schemas import UserLogin, UserCreate, TokenResponse, UserResponse, PasswordChange
+from modules.auth.schemas import UserLogin, UserCreate, TokenResponse, UserResponse, PasswordChange, TraineePasswordReset
 from core.rate_limiter import rate_limit
 
 router = APIRouter(prefix="/auth", tags=["认证"])
@@ -43,16 +45,45 @@ async def create_user(data: UserCreate, db: AsyncSession = Depends(get_async_ses
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="需要管理员权限")
     try:
-        user = await AuthService.create_user(db, data.username, data.password, data.display_name, data.role)
+        user = await AuthService.create_user(db, data.username, data.password, data.display_name, data.role, actor=current_user)
         return user
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/users", response_model=list[UserResponse])
+async def list_users(
+    q: str = Query("", max_length=128),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_async_session),
+    current_user: dict = Depends(require_role("admin")),
+) -> Any:
+    query = select(User).order_by(User.username).offset(offset).limit(50)
+    if q.strip():
+        query = query.where(User.username.contains(q.strip(), autoescape=True) | User.display_name.contains(q.strip(), autoescape=True))
+    return (await db.execute(query)).scalars().all()
+
+
+@router.put("/users/{user_id}/password", response_model=None)
+async def reset_trainee_password(
+    user_id: int,
+    data: TraineePasswordReset,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: dict = Depends(require_role("admin")),
+) -> dict:
+    try:
+        await AuthService.reset_trainee_password(db, user_id, data.new_password.get_secret_value(), current_user)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"message": "密码已重置，原登录将失效"}
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_async_session)) -> Any:
-    from sqlalchemy import select
-    from modules.auth.models import User
     result = await db.execute(select(User).where(User.id == current_user["user_id"]))
     user = result.scalar_one_or_none()
     if not user:

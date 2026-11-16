@@ -16,7 +16,10 @@
               <el-option label="全部待处理" value="" />
               <el-option label="待确认" value="awaiting_review" />
               <el-option label="已确认，待执行" value="confirmed" />
-              <el-option label="执行中或待验证" value="deploying" />
+              <el-option label="正在执行" value="executing" />
+              <el-option label="已执行，待核对" value="awaiting_verification" />
+              <el-option label="正在核对" value="verifying" />
+              <el-option label="执行状态待确认" value="execution_unconfirmed" />
               <el-option label="已完成" value="success" />
               <el-option label="失败" value="failed" />
               <el-option label="已回滚" value="rolled_back" />
@@ -52,7 +55,7 @@
         </el-table-column>
         <el-table-column label="状态" width="140">
           <template #default="{ row }">
-            <span :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
+            <span :class="statusClass(row.status)">{{ statusLabel(row.status, row.phase) }}</span>
             <el-tag v-if="row.has_lock" type="success" size="small" effect="plain" style="margin-left: 6px">已加锁</el-tag>
           </template>
         </el-table-column>
@@ -80,19 +83,19 @@
             <!-- 确认之后必须能继续执行/验证：回滚任务没有批次，配置下发页看不到它，
                  此前确认完就成死路（2026-10-05 审计发现） -->
             <el-button
-              v-if="row.status === 'confirmed'"
+              v-if="row.status === 'confirmed' && row.has_lock"
               size="small"
               type="success"
               :loading="actingId === row.id"
               @click="execute(row)"
             >执行</el-button>
             <el-button
-              v-if="row.status === 'deploying'"
+              v-if="row.phase === 'awaiting_verification'"
               size="small"
               type="warning"
               :loading="actingId === row.id"
               @click="verify(row)"
-            >验证</el-button>
+            >{{ row.execution_mode === 'simulated' ? '确认演练结果' : '核对回读' }}</el-button>
             <el-button
               v-if="['success', 'failed', 'rolled_back'].includes(row.status)"
               size="small"
@@ -140,16 +143,16 @@
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item v-if="detail.batch_name" label="任务名称" :span="2">{{ detail.batch_name }}</el-descriptions-item>
           <el-descriptions-item label="设备">{{ deviceName(detail.device_id) }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ statusLabel(detail.status) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ statusLabel(detail.status, detail.phase) }}</el-descriptions-item>
           <el-descriptions-item label="风险级别">{{ changeLevelLabel(detail.change_level) }}</el-descriptions-item>
           <el-descriptions-item label="执行引擎">{{ detail.engine || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatTime(detail.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="确认人">{{ detail.confirmed_by ? `用户 #${detail.confirmed_by}` : '未记录' }}</el-descriptions-item>
+          <el-descriptions-item label="确认人">{{ detail.confirmed_username || (detail.confirmed_by ? `用户 #${detail.confirmed_by}` : '未记录') }}</el-descriptions-item>
           <el-descriptions-item label="确认时间">{{ formatTime(detail.confirmed_at || '') }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.execution_mode" label="执行模式" :span="2">{{ executionModeLabel(detail.execution_mode) }}</el-descriptions-item>
         </el-descriptions>
         <div class="config-block">
-          <div class="block-title">任务配置脚本 · {{ statusLabel(detail.status) }}</div>
+          <div class="block-title">任务配置脚本</div>
           <pre class="config-text">{{ detail.config_content || '（空）' }}</pre>
         </div>
         <div v-if="detail.verify_diff" class="config-block">
@@ -157,8 +160,7 @@
           <pre class="config-text">{{ detail.verify_diff }}</pre>
         </div>
         <div v-if="detail.error_message" class="config-block"><div class="block-title">执行或恢复异常</div><pre class="config-text">{{ detail.error_message }}</pre></div>
-        <p v-if="CONFIRMABLE.includes(detail.status)" class="verify-tip">核对目标和脚本后点「确认变更」。确认会锁定设备，配置在下一步「执行」时才处理。</p>
-        <p v-else-if="detail.status === 'confirmed'" class="verify-tip">任务已确认。现在可以执行，之后在同一任务上查看验证结果。</p>
+        <p class="verify-tip">{{ deployNextAction(detail.status, detail.phase, detail.execution_mode) }}</p>
       </div>
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
@@ -168,11 +170,12 @@
           :loading="actingId === detail.id"
           @click="approve(detail)"
         >确认变更</el-button>
-        <el-button v-if="detail?.status === 'confirmed'" type="primary" :loading="actingId === detail.id" @click="execute(detail)">执行</el-button>
+        <el-button v-if="detail?.status === 'confirmed' && detail.has_lock" type="primary" :loading="actingId === detail.id" @click="execute(detail)">执行</el-button>
         <el-button
-          v-if="detail && ['deploying', 'success', 'failed', 'rolled_back'].includes(detail.status)"
+          v-if="detail && (detail.phase === 'awaiting_verification' || ['success', 'failed', 'rolled_back'].includes(detail.status))"
           type="primary" :loading="actingId === detail.id" @click="verify(detail)"
-        >{{ detail.status === 'deploying' ? '验证' : '查看结果' }}</el-button>
+        >{{ detail.phase === 'awaiting_verification' ? (detail.execution_mode === 'simulated' ? '确认演练结果' : '核对回读') : '查看结果' }}</el-button>
+        <el-button v-if="detail?.execution_mode" @click="router.push({ path: '/config-versions', query: { tab: 'logs', from: 'approval', task_id: detail.id } })">查看变更记录</el-button>
         <el-button
           v-if="detail && isCancelable(detail.status)"
           type="danger"
@@ -197,7 +200,7 @@ import { confirmWithRisk } from '../../utils/deployConfirmation'
 import { formatApiTime } from '../../utils/datetime'
 import { getDeployTask, getDeployTasks, confirmDeployTask, cancelDeployTask, executeDeployTask, verifyDeployTask } from '../../api/deploy'
 import { getDevices, type DeviceRecord } from '../../api/device'
-import { deployTaskStatusLabel as statusLabel, executionModeLabel, savedVerificationState } from '../../utils/display'
+import { deployNextAction, deployTaskStatusLabel as statusLabel, executionModeLabel, savedVerificationState } from '../../utils/display'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
 
@@ -207,10 +210,12 @@ interface DeployTaskRow {
   device_id: number
   batch_name?: string | null
   status: string
+  phase?: string
   change_level?: string
   engine?: string
   created_at: string
   confirmed_by?: number | null
+  confirmed_username?: string | null
   confirmed_at?: string | null
   config_content?: string
   verify_diff?: string | null
@@ -231,7 +236,8 @@ const taskLoadError = taskRequest.error
 const actingId = ref<number | null>(null)
 const detailVisible = ref(false)
 const detail = ref<DeployTaskRow | null>(null)
-const allowedFilters = ['awaiting_review', 'confirmed', 'deploying', 'success', 'failed', 'rolled_back']
+const deployPhases = ['executing', 'awaiting_verification', 'execution_unconfirmed']
+const allowedFilters = ['awaiting_review', 'confirmed', 'deploying', ...deployPhases, 'verifying', 'success', 'failed', 'rolled_back']
 const statusFilterFromRoute = () => allowedFilters.find(value => value === route.query.status) || ''
 const statusFilter = ref(statusFilterFromRoute())
 const verifyVisible = ref(false)
@@ -270,15 +276,17 @@ const rollbackLabel = (r: string) => ({
 
 const loadTasks = async () => {
   const filter = statusFilter.value
+  const phaseSelected = deployPhases.includes(filter)
+  const apiStatus = phaseSelected ? 'deploying' : filter
   await taskRequest.run(() => Promise.all([
-      getDeployTasks(filter && filter !== 'awaiting_review' ? { status: filter } : undefined),
+      getDeployTasks(apiStatus && apiStatus !== 'awaiting_review' ? { status: apiStatus } : undefined),
       devices.value.length ? Promise.resolve(devices.value) : getDevices(),
     ]), ([taskList, deviceList]) => {
     devices.value = deviceList as DeviceRecord[]
     const rows = (Array.isArray(taskList) ? taskList : []) as DeployTaskRow[]
     // 默认只看待处理；选「已完成」时看终态，否则终态任务会"确认完就消失"、结果无处可查
     const statuses = filter === 'awaiting_review' ? CONFIRMABLE : filter ? [filter] : PENDING_STATUSES
-    tasks.value = rows.filter(row => statuses.includes(row.status))
+    tasks.value = rows.filter(row => phaseSelected ? row.phase === filter : statuses.includes(row.status))
   })
 }
 
@@ -324,9 +332,9 @@ const execute = async (row: DeployTaskRow) => {
     const result: any = await executeDeployTask(row.id)
     if (result.error_category) ElMessage.error(executionErrorLabel(result.error_category))
     else ElMessage.success(result.mode === 'simulated'
-      ? '已执行（模拟）；接下来点「验证」查看模拟结果'
-      : '已执行下发；接下来点「验证」核对设备回读')
-    if (statusFilter.value === 'confirmed') statusFilter.value = result.error_category ? 'failed' : 'deploying'
+      ? '模拟执行已完成，可以确认演练结果'
+      : '已执行，现在可以核对设备回读')
+    if (statusFilter.value === 'confirmed') statusFilter.value = result.error_category ? 'failed' : 'awaiting_verification'
     await loadTasks()
     if (detailVisible.value && detail.value?.id === row.id) await openDetail(row)
   } catch (error) {

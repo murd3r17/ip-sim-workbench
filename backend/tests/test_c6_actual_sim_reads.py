@@ -20,6 +20,37 @@ async def test_unimplemented_sim_display_is_an_explicit_error_not_a_successful_r
     assert detect_cli_error(output)
     assert '已执行' not in output
 
+@pytest.mark.asyncio
+async def test_sim_rejects_configuration_and_unimplemented_filters_without_changing_readback():
+    from modules.trust.service import detect_cli_error
+
+    sim = SimDeviceAdapter('R-1')
+    original = await sim.run_command('display current-configuration')
+    for command in (
+        'system-view', 'interface GigabitEthernet0/0/7', 'description UX_SIM_EDIT_CHECK',
+        'description display version', 'sysname R-NEW', 'quit', 'return',
+        'display current-configuration interface GE0/0/7', 'display bgp peer ipv6',
+    ):
+        response = await sim.run_command(command)
+        assert detect_cli_error(response), command
+        assert '未执行' in response, command
+    assert await sim.run_command('display current-configuration') == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hostname', ['R-1', 'R-7'])
+async def test_sim_help_only_advertises_commands_with_a_readback(hostname):
+    from modules.trust.service import detect_cli_error
+
+    sim = SimDeviceAdapter(hostname)
+    command_lines = (await sim.run_command('help')).splitlines()[2:]
+    assert 'display ip interface brief' in command_lines
+    assert 'display current-configuration' in command_lines
+    for command in command_lines:
+        result = await sim.run_command(command)
+        assert command.startswith('display ') and not detect_cli_error(result), command
+        assert len(result.strip().splitlines()) > 1, command
+
 @pytest.mark.parametrize('question,command', [
     ('那 R1 的路由表呢？','display ip routing-table'),
     ('R1的OSPF邻居有哪些？','display ospf peer'),

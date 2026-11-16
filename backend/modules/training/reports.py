@@ -24,7 +24,7 @@ from modules.training.service import TrainingService, UNVERIFIED_NOTE
 
 logger = get_logger("training")
 
-PROMPT_VERSION = "training-recap-v7c-source-identity"
+PROMPT_VERSION = "training-recap-v7ux-evidence-scope"
 REPORT_STATUS_READY = "ready"
 REPORT_STATUS_FAILED = "failed"
 
@@ -48,6 +48,12 @@ def build_report_input(snapshot: dict) -> dict:
     logs = snapshot["logs"]
     faults = snapshot["faults"]
     resolved = _resolved(snapshot)
+    workspace = getattr(session, "workspace", None)
+    workspace = workspace if isinstance(workspace, dict) else {}
+    revision = getattr(session, "workspace_revision", 0)
+    if type(revision) is not int or revision <= 0:
+        legacy_revision = workspace.get("revision")
+        revision = legacy_revision if type(legacy_revision) is int and legacy_revision > 0 else 0
     evidence = {
         "logs": [
             {
@@ -79,6 +85,7 @@ def build_report_input(snapshot: dict) -> dict:
         "objective_brief": content_brief(resolved),
         "reference_score": session.score,
         "verification_note": UNVERIFIED_NOTE,
+        "workspace_revision": revision,
         "evidence": evidence,
     }
 
@@ -104,6 +111,7 @@ def input_summary(payload: dict) -> dict:
         "content_warning": payload.get("content_warning"),
         "log_count": len(logs),
         "fault_count": len(faults),
+        "workspace_revision": payload.get("workspace_revision"),
         "evidence_trust": trust,
         "first_log_at": min(timestamps) if timestamps else None,
         "last_log_at": max(timestamps) if timestamps else None,

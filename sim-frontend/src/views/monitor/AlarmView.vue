@@ -10,8 +10,8 @@
             <el-select v-model="filterStatus" placeholder="告警状态" clearable style="width: 120px">
               <el-option label="活跃告警" value="active" />
               <el-option label="未处理" value="fired" />
-              <el-option label="已确认" value="acknowledged" />
-              <el-option label="已解决" value="resolved" />
+              <el-option label="已接手" value="acknowledged" />
+              <el-option label="已解除" value="resolved" />
               <el-option label="已关闭" value="closed" />
             </el-select>
             <el-select v-model="filterDevice" placeholder="选择设备" clearable style="width: 200px">
@@ -28,7 +28,7 @@
       <el-alert v-if="linkedAlarmError" :title="linkedAlarmError" type="warning" :closable="false" show-icon>
         <el-button link type="primary" @click="loadLinkedAlarm">重新打开指定告警</el-button>
       </el-alert>
-      <p class="alarm-help">确认表示已接手；关闭表示结束记录。处理状态不等于设备或业务恢复；请核对监控中的最近采样。</p>
+      <p class="alarm-help">先核对触发依据和最近采样。接手和关闭只更新这条记录的处理状态。</p>
       <el-table :data="pagedAlarms" v-loading="loading" @row-click="onAlarmRowClick">
         <template #empty>
           <el-empty :description="loadError || (filterStatus || filterDevice ? '当前筛选没有匹配告警。' : '暂无告警记录')" :image-size="72">
@@ -36,18 +36,15 @@
             <el-button v-else type="primary" @click="$router.push('/monitor')">去监控大盘</el-button>
           </el-empty>
         </template>
-        <el-table-column prop="id" label="ID" width="60" />
         <el-table-column label="设备" min-width="110"><template #default="{ row }">{{ row.device_name || `设备 #${row.device_id}` }}</template></el-table-column>
         <el-table-column label="告警类型" min-width="160"><template #default="{ row }">{{ alarmTypeLabel(row.alarm_type) }}</template></el-table-column>
         <el-table-column prop="severity" label="严重程度" width="100">
           <template #default="{ row }">
-            <el-tag :type="getSeverityType(row.severity)">{{ getSeverityLabel(row.severity) }}</el-tag>
+            <el-tag :type="getSeverityType(row.severity)">{{ reviewOnly(row.alarm_type) ? '需核对' : getSeverityLabel(row.severity) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="message" label="告警信息" min-width="230" show-overflow-tooltip />
-        <el-table-column label="采样值" width="100"><template #default="{ row }">{{ alarmMeasurementLabel(row.metric_value, row.alarm_type) }}</template></el-table-column>
-        <el-table-column label="阈值" width="90"><template #default="{ row }">{{ alarmMeasurementLabel(row.threshold, row.alarm_type) }}</template></el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column label="触发依据" min-width="235"><template #default="{ row }">{{ alarmTriggerLabel(row) }}</template></el-table-column>
+        <el-table-column prop="status" label="处理状态" width="125">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">{{ getStatusLabel(row.status) }}</el-tag>
           </template>
@@ -57,7 +54,7 @@
         </el-table-column>
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'fired'" type="warning" link @click.stop="handleAcknowledge(row)">确认</el-button>
+            <el-button v-if="row.status === 'fired'" type="warning" link @click.stop="handleAcknowledge(row)">接手</el-button>
             <el-button v-if="['resolved', 'acknowledged'].includes(row.status)" type="success" link @click.stop="handleClose(row)">关闭</el-button>
             <el-button type="primary" link @click.stop="handleViewDetail(row)">详情</el-button>
             <el-button v-if="row.device_id" type="primary" link @click.stop="openWebSSH(row)">终端</el-button>
@@ -83,13 +80,12 @@
         <el-descriptions-item label="设备">{{ currentAlarm?.device_name || '设备' }} #{{ currentAlarm?.device_id }}</el-descriptions-item>
         <el-descriptions-item label="告警类型">{{ alarmTypeLabel(currentAlarm?.alarm_type) }}</el-descriptions-item>
         <el-descriptions-item label="严重程度">
-          <el-tag :type="getSeverityType(currentAlarm?.severity)">{{ getSeverityLabel(currentAlarm?.severity) }}</el-tag>
+          <el-tag :type="getSeverityType(currentAlarm?.severity)">{{ reviewOnly(currentAlarm?.alarm_type) ? '需核对' : getSeverityLabel(currentAlarm?.severity) }}</el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="getStatusType(currentAlarm?.status)">{{ getStatusLabel(currentAlarm?.status) }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="采样值">{{ alarmMeasurementLabel(currentAlarm?.metric_value, currentAlarm?.alarm_type) }}</el-descriptions-item>
-        <el-descriptions-item label="阈值">{{ alarmMeasurementLabel(currentAlarm?.threshold, currentAlarm?.alarm_type) }}</el-descriptions-item>
+        <el-descriptions-item label="触发依据" :span="2">{{ alarmTriggerLabel(currentAlarm || {}) }}</el-descriptions-item>
         <el-descriptions-item label="触发时间">{{ formatApiTime(currentAlarm?.fired_at) }}</el-descriptions-item>
         <el-descriptions-item label="确认时间">{{ formatApiTime(currentAlarm?.acknowledged_at) }}</el-descriptions-item>
         <el-descriptions-item label="解决时间">{{ formatApiTime(currentAlarm?.resolved_at) }}</el-descriptions-item>
@@ -98,12 +94,10 @@
       <el-alert :title="alarmMeaning(currentAlarm?.alarm_type)" type="info" :closable="false" show-icon style="margin-top: 12px" />
       <p class="alarm-help">这是保存的告警记录。确认、解决、关闭时间各有含义；当前设备状态请核对新的观察。</p>
       <div style="margin-top: 16px">
-        <h4>告警信息</h4>
-        <p>{{ currentAlarm?.message }}</p>
-        <details><summary>原始动作类型</summary>{{ currentAlarm?.alarm_type }}</details>
+        <details><summary>原始告警记录</summary><p>{{ currentAlarm?.message }}</p><code>{{ currentAlarm?.alarm_type }}</code></details>
       </div>
       <div v-if="currentAlarm?.device_id" class="v7b-actions" style="margin-top: 12px">
-        <el-button type="primary" @click="openDeviceObservation(currentAlarm)">观察该设备</el-button>
+        <el-button type="primary" @click="openDeviceObservation(currentAlarm)">{{ ospfAlarm(currentAlarm?.alarm_type) ? '查看 OSPF 邻居' : '观察该设备' }}</el-button>
         <el-button @click="openWebSSH(currentAlarm)">打开 WebSSH</el-button>
         <el-button @click="$router.push('/monitor')">去监控大盘</el-button>
       </div>
@@ -126,12 +120,10 @@ import {
   alarmStatusTagType as getStatusType,
   severityLabel as getSeverityLabel,
   severityTagType as getSeverityType,
-  alarmTypeLabel, alarmMeaning, alarmMeasurementLabel,
+  alarmTypeLabel, alarmMeaning, alarmTriggerLabel,
 } from '../../utils/display'
-import { useAiCopilotStore } from '../../stores/aiCopilot'
 import { useLabContextStore } from '../../stores/labContext'
 
-const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const route = useRoute()
 const router = useRouter()
@@ -144,11 +136,18 @@ const filterStatus = ref<string | null>(null)
 const filterDevice = ref<number | null>(null)
 const devices = ref<DeviceRecord[]>([])
 const alarms = ref<AlarmRecord[]>([])
+const reviewOnly = (kind?: string) => kind === 'interface_review' || kind === 'ospf_neighbor_count_review'
+const ospfAlarm = (kind?: string) => Boolean(kind?.startsWith('ospf_neighbor_count_'))
 const alarmPage = ref(1)
 const alarmPageSize = ref(20)
 const pagedAlarms = computed(() => {
   const start = (alarmPage.value - 1) * alarmPageSize.value
-  return alarms.value.slice(start, start + alarmPageSize.value)
+  const rank = (item: AlarmRecord) => {
+    if (!['fired', 'acknowledged'].includes(item.status)) return 0
+    if (reviewOnly(item.alarm_type)) return 1
+    return ({ warning: 2, minor: 3, major: 4, critical: 5 })[item.severity as 'warning' | 'minor' | 'major' | 'critical'] || 2
+  }
+  return [...alarms.value].sort((a, b) => rank(b) - rank(a)).slice(start, start + alarmPageSize.value)
 })
 
 // 详情对话框
@@ -158,24 +157,17 @@ const linkedAlarmError = ref('')
 let linkedAlarmEpoch = 0
 
 const bindAlarmSelection = (alarm: any) => {
-  labCtx.setAlarm({
-    id: alarm.id,
-    label: alarm.alarm_type || `告警#${alarm.id}`,
-    detail: `${alarm.severity || ''} ${alarm.message || ''}`.trim().slice(0, 120),
-    device_id: alarm.device_id,
-  })
-  if (alarm.device_id) {
-    const d = devices.value.find((x) => x.id === alarm.device_id)
-    if (d) {
-      labCtx.setDevice({ id: d.id, hostname: d.hostname, mgmt_ip: d.mgmt_ip })
-    }
+  const device = devices.value.find((entry) => entry.id === alarm.device_id)
+  const deviceName = alarm.device_name || device?.hostname || (alarm.device_id ? `设备 #${alarm.device_id}` : '未关联设备')
+  const label = `${deviceName} · ${alarmTypeLabel(alarm.alarm_type)}`
+  const detail = [
+    alarm.fired_at ? formatApiTime(alarm.fired_at) : '',
+    alarm.message,
+  ].filter(Boolean).join(' · ').slice(0, 160)
+  if (device) {
+    labCtx.setDevice({ id: device.id, hostname: device.hostname, mgmt_ip: device.mgmt_ip, model: device.model })
   }
-  copilot.setSelection({
-    kind: 'alarm',
-    id: alarm.id,
-    label: alarm.alarm_type || `告警#${alarm.id}`,
-    detail: `${alarm.severity || ''} ${alarm.message || ''}`.trim().slice(0, 120),
-  })
+  labCtx.setAlarm({ id: alarm.id, label, detail, device_id: alarm.device_id })
 }
 
 const onAlarmRowClick = (row: any) => {
@@ -191,7 +183,8 @@ const openWebSSH = (alarm: any) => {
 function openDeviceObservation(alarm: AlarmRecord) {
   bindAlarmSelection(alarm)
   detailDialogVisible.value = false
-  void router.push({ path: '/devices', query: { observe_device: alarm.device_id } })
+  const action = ospfAlarm(alarm.alarm_type) ? 'ospf_peer' : 'interface_brief'
+  void router.push({ path: '/devices', query: { observe_device: alarm.device_id, observe_action: action } })
 }
 
 function clearFilters() {
