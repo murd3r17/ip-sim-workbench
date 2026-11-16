@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { browserSession } from './browserSession'
 import type { ConfigValidateResult } from '../api/deploy'
 
 export interface TrainingWorkspaceDraft {
@@ -24,14 +25,8 @@ const DEPLOY_DRAFT_LIFETIME_MS = 2 * 60 * 60 * 1000
 const CREDENTIAL_TEXT = /\b(?:password|passwd|secret|shared[-_]key|pre[-_]shared[-_]key|key|string-secret|community(?:-name)?|authentication[-_]key|authentication-mode|privacy-mode|api[-_ ]?key|authorization|bearer|access[-_]token|refresh[-_]token)\b|\bsk-[\w-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|口令|密码|密钥/i
 
 export function currentDraftOwner(): string | null {
-  try {
-    const user = JSON.parse(localStorage.getItem('user') || 'null')
-    return localStorage.getItem('token') && Number.isSafeInteger(user?.id) && user.id > 0 && typeof user.username === 'string'
-      ? `${user.id}:${user.username}`
-      : null
-  } catch {
-    return null
-  }
+  const user = browserSession.value?.user
+  return user ? `${user.id}:${user.username}` : null
 }
 
 function draftStorageKey(owner: string) {

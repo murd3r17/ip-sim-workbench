@@ -93,12 +93,14 @@ async def checks(settings, endpoint, refused_port, markers):
         health = await client.get(endpoint + "/api/v1/health")
         observed.append(health.text)
         body = health.json()
+        from core.health import database_component
+        db_health = database_component(body.get("components", {}))
         components["database"] = {
             "ok": health.status_code == 503 and body.get("status") == "unhealthy"
-                  and body.get("components", {}).get("mysql", {}).get("status") == "unhealthy",
+                  and db_health.get("status") == "unhealthy",
             "fault": "loopback_connection_refused", "health_http_status": health.status_code,
             "health_status": body.get("status"), "elapsed_ms": round((time.monotonic() - started) * 1000),
-            "mysql_status": body.get("components", {}).get("mysql", {}).get("status"),
+            "mysql_status": db_health.get("status"),
         }
 
     started = time.monotonic()

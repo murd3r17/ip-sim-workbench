@@ -1,5 +1,5 @@
 """认证模块数据模型"""
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum
+from sqlalchemy import BigInteger, Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Enum as SAEnum
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import enum
@@ -50,3 +50,39 @@ class AuditLog(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="audit_logs")
+
+
+class TerminalGrant(Base):
+    """Current interactive SSH authorization for one learner and device."""
+
+    __tablename__ = "terminal_grant"
+
+    user_id = Column(Integer, ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    device_id = Column(Integer, ForeignKey("device.id", ondelete="CASCADE"), primary_key=True)
+    grant_id = Column(String(32), nullable=False)
+    management_address = Column(String(64), nullable=False)
+    ssh_port = Column(Integer, nullable=False)
+    issued_by = Column(Integer, ForeignKey("user.id"), nullable=False)
+    issued_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    note = Column(String(240), nullable=False, default="")
+
+
+class BrowserSession(Base):
+    __tablename__ = "browser_session"
+
+    credential_digest = Column(String(64), primary_key=True)
+    session_id = Column(String(32), nullable=False)
+    user_id = Column(Integer, ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_version = Column(Integer, nullable=False)
+    role = Column(String(16), nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+
+class LoginAttemptWindow(Base):
+    __tablename__ = "login_attempt_window"
+
+    bucket = Column(String(64), primary_key=True)
+    expires_at = Column(BigInteger, nullable=False, index=True)
+    attempts = Column(Integer, nullable=False)

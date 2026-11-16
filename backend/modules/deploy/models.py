@@ -167,5 +167,6 @@ class ServiceInstance(Base):
     instance_id = Column(String(64), primary_key=True)
     pid = Column(Integer, nullable=False)
     process_started_at = Column(DateTime, nullable=True)
+    process_identity = Column(String(96), nullable=True)
     started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     last_heartbeat_at = Column(DateTime, nullable=True)

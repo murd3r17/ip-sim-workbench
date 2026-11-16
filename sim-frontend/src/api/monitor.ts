@@ -1,4 +1,5 @@
 import request from './request'
+import { browserSessionRevision, expireBrowserSession, sessionFetch } from '../stores/browserSession'
 
 // ── 响应类型 ──────────────────────────────────────────────────────────
 export interface MonitorStats {
@@ -110,24 +111,29 @@ export const acknowledgeAlarm = (alarmId: number) =>
 export const closeAlarm = (alarmId: number) =>
   request.put(`/alarms/${alarmId}/close`)
 
-// SSE流（fetch + Authorization 头；EventSource 无法携带 Bearer token）
+// SSE 连接跟随当前浏览器会话。
 export const createMonitorStream = (
   onEvent: (data: any) => void,
   onError?: (err: any) => void,
   onClose?: () => void,
 ): { close: () => void } => {
   const controller = new AbortController()
+  const observedRevision = browserSessionRevision()
   const dispatch = (raw: string) => {
     for (const line of raw.split('\n')) {
       if (!line.startsWith('data: ')) continue
-      try { onEvent(JSON.parse(line.slice(6))) } catch { /* 忽略坏帧 */ }
+      try {
+        const event = JSON.parse(line.slice(6))
+        if (event.type === 'auth_expired') {
+          expireBrowserSession(observedRevision)
+          controller.abort()
+        } else if (observedRevision === browserSessionRevision()) onEvent(event)
+      } catch { /* 忽略坏帧 */ }
     }
   }
   const connect = async () => {
-    const token = localStorage.getItem('token')
     try {
-      const res = await fetch('/api/v1/monitor/stream', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      const res = await sessionFetch('/api/v1/monitor/stream', {
         signal: controller.signal,
       })
       if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`)

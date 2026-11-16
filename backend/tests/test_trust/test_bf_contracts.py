@@ -190,8 +190,9 @@ async def test_active_terminal_blocks_deploy_confirmation(client,test_session_fa
     monkeypatch.setattr(wr,'SSHProxySession',Proxy)
     monkeypatch.setattr(wr.DeviceService,'get_device_credentials',AsyncMock(return_value={'username':'isolated','password':''}))
     monkeypatch.setattr(ds.VRPValidator,'assess',lambda *a,**kw:{'requires_confirmation':False})
-    ws=SimpleNamespace(headers={},accept=AsyncMock(),close=AsyncMock(),send_text=AsyncMock())
-    task=asyncio.create_task(wr.webssh_websocket(ws,did,token))
+    ws=SimpleNamespace(headers={'authorization':f'Bearer {token}'},cookies={},query_params={},
+        accept=AsyncMock(),close=AsyncMock(),send_text=AsyncMock())
+    task=asyncio.create_task(wr.webssh_websocket(ws,did))
     try:
         await asyncio.wait_for(started.wait(),3)
         async with test_session_factory() as db:

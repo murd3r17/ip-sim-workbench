@@ -29,7 +29,7 @@
     <el-alert v-if="healthResult" :type="healthProblems.length ? 'warning' : 'info'" :title="healthTitle" :closable="true" show-icon @close="healthResult = null">
       <ul v-if="healthProblems.length" class="device-check-errors">
         <li v-for="row in healthProblems" :key="row.device_id ?? row.hostname">
-          {{ row.hostname }} · {{ row.reason === 'missing_credentials' ? '缺少设备登录信息，请管理员配置。' : '未验证 SSH 登录，请检查设备管理连接或请管理员核对。' }}
+          {{ row.hostname }} · {{ connectionIssue(row.reason) }}
         </li>
       </ul>
     </el-alert>
@@ -226,6 +226,15 @@ const deviceLoadError = deviceRequest.error
 const healthChecking = ref(false)
 const healthResult = ref<DeviceHealthResult | null>(null)
 const healthProblems = computed(() => healthResult.value?.results.filter(row => row.status !== 'online') || [])
+const sshIssues: Record<string, string> = {
+  missing_credentials: '缺少设备登录信息，请管理员配置。',
+  ssh_host_unknown: '尚未登记 SSH 主机密钥，请管理员核对设备指纹。',
+  ssh_host_changed: '设备 SSH 主机密钥已变化，请管理员重新核对。',
+  ssh_known_hosts_invalid: 'SSH 已知主机文件无法使用，请管理员检查路径和文件内容。',
+}
+function connectionIssue(reason: string | null | undefined) {
+  return sshIssues[reason || ''] || '未验证 SSH 登录，请检查设备管理连接或请管理员核对。'
+}
 const healthTitle = computed(() => {
   const result = healthResult.value
   if (!result?.total) return '没有设备可以检查。'

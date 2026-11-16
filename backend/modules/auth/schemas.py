@@ -63,6 +63,12 @@ class TokenResponse(BaseModel):
     user: UserResponse
 
 
+class BrowserSessionResponse(BaseModel):
+    user: UserResponse
+    session_id: str
+    csrf_token: str
+
+
 class PasswordChange(BaseModel):
     old_password: str
     new_password: str

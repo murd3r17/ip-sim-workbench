@@ -585,7 +585,7 @@ class FallbackProvider(LLMProvider):
         except Exception as e:
             logger.warning("llm_stream_parts_fallback", error=str(e))
             if not yielded:
-                yield {"kind": "content", "text": self.fallback_message}
+                raise LLMUnavailableError(self.fallback_message) from e
             raise
 
     async def chat_completion(

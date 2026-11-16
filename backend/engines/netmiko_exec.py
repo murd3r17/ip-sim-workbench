@@ -4,6 +4,7 @@ import re
 import threading
 from netmiko.huawei.huawei import HuaweiSSH, HuaweiVrpv8SSH
 from core.logger import get_logger
+from engines.ssh_trust import connect_with_device_password, new_ssh_client
 
 logger = get_logger("ssh")
 
@@ -42,6 +43,9 @@ async def _run_ssh_operation(operation, *, on_cancel=None):
 
 class SafeHuaweiSSH(HuaweiSSH):
     """Never accept a configuration repair/save as a side effect of SSH login."""
+
+    def _build_ssh_client(self):
+        return new_ssh_client()
 
     def special_login_handler(self, delay_factor: float = 1.0) -> None:
         try:
@@ -141,31 +145,6 @@ class SafeHuaweiVrpv8SSH(SafeHuaweiSSH, HuaweiVrpv8SSH):
         # Base disconnect() closes Paramiko and log resources after this hook.
         # No return/quit/confirmation is safe when a candidate operation failed.
         pass
-
-
-def new_ssh_client():
-    """按配置构造 paramiko SSHClient。
-
-    默认 AutoAddPolicy（eNSP/虚拟镜像会频繁重装，主机密钥不稳定）；
-    设置 SSH_STRICT_HOST_KEY=true 后改为校验 known_hosts（真实设备环境建议开启）。
-    """
-    import paramiko
-    from core.config import get_settings
-
-    settings = get_settings()
-    client = paramiko.SSHClient()
-    if getattr(settings, "ssh_strict_host_key", False):
-        client.load_system_host_keys()
-        known_hosts = getattr(settings, "ssh_known_hosts", "") or ""
-        if known_hosts:
-            try:
-                client.load_host_keys(known_hosts)
-            except OSError as exc:
-                logger.warning("ssh_known_hosts_load_failed", path=known_hosts, error=str(exc))
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
-    else:
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    return client
 
 
 class NetmikoExecutor:
@@ -296,13 +275,15 @@ class SSHExecutor:
         self._channel = None
 
     async def connect(self):
-        import paramiko
-        self._client = new_ssh_client()
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: self._client.connect(
-            hostname=self.host, port=self.port, username=self.username,
-            password=self.password, timeout=self.timeout, allow_agent=False, look_for_keys=False
-        ))
+        client = new_ssh_client()
+        try:
+            await _run_ssh_operation(lambda: connect_with_device_password(
+                client, self.host, self.port, self.username, self.password, self.timeout,
+            ))
+        except BaseException:
+            client.close()
+            raise
+        self._client = client
 
     async def disconnect(self):
         if self._client:

@@ -1,4 +1,5 @@
 """认证模块服务"""
+import asyncio
 from datetime import datetime, timezone
 import re
 from sqlalchemy import select, update
@@ -27,19 +28,24 @@ def _validate_password(password: str) -> None:
 
 class AuthService:
     @staticmethod
-    async def login(db: AsyncSession, username: str, password: str) -> dict:
-        result = await db.execute(select(User).where(User.username == username))
-        user = result.scalar_one_or_none()
-        if not user or not verify_password(password, user.hashed_password):
+    async def authenticate_password(db: AsyncSession, username: str, password: str) -> User:
+        user = await db.scalar(select(User).where(User.username == username))
+        if user is None or not await asyncio.to_thread(verify_password, password, user.hashed_password) or not user.is_active:
             raise ValueError("用户名或密码错误")
-        if not user.is_active:
-            raise ValueError("账号已被禁用")
+        # Don't issue a session from a password check that raced with a reset.
+        updated = await db.execute(update(User).where(
+            User.id == user.id, User.token_version == user.token_version, User.role == user.role,
+            User.is_active.is_(True), User.hashed_password == user.hashed_password,
+        ).values(last_login_at=datetime.now(timezone.utc)))
+        if updated.rowcount != 1:
+            raise ValueError("用户名或密码错误")
+        return user
 
-        user.last_login_at = datetime.now(timezone.utc)
-        await db.commit()
-        await db.refresh(user)
-
+    @staticmethod
+    async def login(db: AsyncSession, username: str, password: str) -> dict:
+        user = await AuthService.authenticate_password(db, username, password)
         token = create_access_token(user.id, user.username, user.role.value, user.token_version)
+        await db.commit()
         return {
             "access_token": token,
             "token_type": "bearer",

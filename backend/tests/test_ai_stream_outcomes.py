@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.llm_provider import FallbackProvider, FailoverProvider, LLMProvider, OpenAICompatibleProvider, OllamaProvider
+from core.llm_provider import FallbackProvider, FailoverProvider, LLMProvider, LLMUnavailableError, OpenAICompatibleProvider, OllamaProvider
 from modules.ai_text.llm_service import LLMService
 
 
@@ -68,10 +68,10 @@ async def test_failover_preserves_failure_after_partial_output(method):
 async def test_fallback_before_output_is_not_a_successful_stream():
     provider = FallbackProvider(ScriptedProvider(), fallback_message="unavailable")
     output = []
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LLMUnavailableError, match="unavailable"):
         async for part in provider.stream_parts("prompt"):
             output.append(part)
-    assert output == [{"kind": "content", "text": "unavailable"}]
+    assert output == []
 
 
 @pytest.mark.asyncio
@@ -108,11 +108,12 @@ async def test_copilot_empty_answer_is_failed_even_when_provider_completed(monke
 
 
 @pytest.mark.asyncio
-async def test_copilot_static_fallback_ends_failed(monkeypatch):
+async def test_copilot_provider_failure_before_first_token_emits_no_answer(monkeypatch):
     monkeypatch.setattr("modules.ai_text.agent_tools.available_tool_defs", lambda actor, allowed=None: [])
     service = LLMService(provider=FallbackProvider(ScriptedProvider(), fallback_message="unavailable"))
     events = [event async for event in service.copilot_chat_stream("hi")]
-    assert events[0] == {"type": "token", "text": "unavailable"}
+    assert not any(event["type"] == "token" for event in events)
+    assert events[0]["code"] == "provider_unavailable"
     assert events[-1]["status"] == "failed"
 
 

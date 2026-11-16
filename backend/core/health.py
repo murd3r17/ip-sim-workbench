@@ -30,6 +30,26 @@ def _mark_degraded(overall: str) -> str:
     return "unhealthy" if overall == "unhealthy" else "degraded"
 
 
+def database_component(components: dict) -> dict:
+    """Read current and historical full-mode health payloads."""
+    return components.get("database") or components.get("mysql") or {}
+
+
+def _configured_value(value) -> bool:
+    return bool(value and not str(value).strip().startswith("<"))
+
+
+def llm_is_configured(settings, runtime=None) -> bool:
+    values = runtime or {}
+    def field(name):
+        return values[name] if name in values else getattr(settings, name, "")
+
+    provider = str(field("llm_provider") or "").lower()
+    return bool(field("llm_base_url") and field("llm_model") and
+                (provider == "ollama" or _configured_value(field("llm_api_key"))
+                 or (field("llm_fallback_model") and _configured_value(field("llm_fallback_api_key")))))
+
+
 async def _probe_minio(settings) -> dict:
     cached = _cache_get("minio")
     if cached is not None:
@@ -88,7 +108,7 @@ async def _probe_knowledge() -> dict:
             "workspace_slug": khealth.get("workspace_slug") or settings.knowledge_workspace_slug,
         }
         if not available and khealth.get("error"):
-            result["error"] = str(khealth.get("error"))
+            result["reason"] = "knowledge_probe_failed"
         return _cache_set("knowledge", result)
     except Exception as exc:
         logger.warning("health_knowledge_failed", error=type(exc).__name__)
@@ -130,6 +150,9 @@ async def _probe_llm(settings, db=None) -> dict:
         runtime = None
         config_source = "env"
 
+    if not llm_is_configured(settings, runtime):
+        return {"status": "disabled", "configured": False, "config_source": config_source,
+                "provider": (runtime or {}).get("llm_provider") or settings.llm_provider}
     try:
         from core.llm_provider import cached_llm_health_check, create_llm_provider
         provider = create_llm_provider(runtime)
@@ -139,6 +162,7 @@ async def _probe_llm(settings, db=None) -> dict:
             "provider": (runtime or {}).get("llm_provider") or settings.llm_provider,
             "model": (runtime or {}).get("llm_model") or settings.llm_model,
             "config_source": config_source,
+            "configured": True,
         }
     except Exception:
         return {
@@ -146,6 +170,7 @@ async def _probe_llm(settings, db=None) -> dict:
             "provider": (runtime or {}).get("llm_provider") or settings.llm_provider,
             "model": (runtime or {}).get("llm_model") or settings.llm_model,
             "config_source": config_source,
+            "configured": True,
         }
 
 
@@ -154,6 +179,13 @@ async def get_health_status(db=None) -> dict:
     settings = get_settings()
     overall_status = "healthy"
     components = {}
+    from core.database import get_engine
+    engine = get_engine()
+    db_backend = (db.get_bind().dialect.name if db is not None else engine.dialect.name if engine else
+                  (settings.db_url.split(":", 1)[0].split("+", 1)[0] if settings.db_url else settings.db_backend))
+    full = settings.workbench_mode == "full"
+    profile = settings.workbench_mode if settings.workbench_mode != "auto" else (
+        "minimal" if db_backend == "sqlite" and settings.device_mode == "sim" else "configured")
 
     # MySQL检查 —— 唯一能把整站打成 unhealthy 的组件
     try:
@@ -169,30 +201,37 @@ async def get_health_status(db=None) -> dict:
             async with session_factory() as session:
                 await session.execute(text("SELECT 1"))
         latency = round((time.monotonic() - start) * 1000, 1)
-        components["mysql"] = {"status": "healthy", "latency_ms": latency}
+        components["database"] = {"status": "healthy", "latency_ms": latency}
     except Exception as e:
         overall_status = "unhealthy"
-        components["mysql"] = {"status": "unhealthy", "error": str(e)}
+        components["database"] = {"status": "unhealthy", "error": type(e).__name__}
+    components["database"].update(backend=db_backend, required=True, configured=True)
+    if db_backend == "mysql":
+        components["mysql"] = {**components["database"], "legacy_alias": True}
 
     components["llm"] = await _probe_llm(settings, db)
-    if components["llm"].get("status") != "healthy":
-        overall_status = _mark_degraded(overall_status)
+    components["llm"]["required"] = full
 
-    components["minio"] = await _probe_minio(settings)
-    if components["minio"].get("status") != "healthy":
-        overall_status = _mark_degraded(overall_status)
+    minio_configured = all(_configured_value(getattr(settings, name)) for name in
+                           ("minio_endpoint", "minio_access_key", "minio_secret_key"))
+    components["minio"] = await _probe_minio(settings) if minio_configured else {"status": "disabled"}
+    components["minio"].update(required=settings.minio_required, configured=minio_configured)
 
-    components["ollama"] = await _probe_ollama()
-    if components["ollama"].get("status") != "healthy":
-        components["ollama"]["optional"] = True
-        components["ollama"]["role"] = "knowledge_embedding"
+    embedding_configured = settings.knowledge_provider == "anythingllm" and _configured_value(settings.knowledge_api_key)
+    components["ollama"] = dict(await _probe_ollama()) if embedding_configured else {"status": "disabled"}
+    components["ollama"].update(optional=True, required=False, role="knowledge_embedding")
 
-    components["knowledge"] = await _probe_knowledge()
-    if components["knowledge"].get("status") != "healthy":
-        overall_status = _mark_degraded(overall_status)
+    components["knowledge"] = {**await _probe_knowledge(), "required": full or profile == "minimal"}
+    for name in ("llm", "minio", "knowledge"):
+        part = components[name]
+        if part["status"] != "healthy" and (part.get("required") or part["status"] != "disabled"):
+            overall_status = _mark_degraded(overall_status)
+    ready = all(not part.get("required") or part["status"] == "healthy" for part in components.values())
 
     return {
         "status": overall_status,
+        "ready": ready,
+        "profile": profile,
         "version": settings.app_version,
         "uptime_seconds": round(time.monotonic() - _app_start_time, 1),
         "components": components,

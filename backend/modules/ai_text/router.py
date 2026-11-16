@@ -27,7 +27,7 @@ from modules.ai_text.draft_environment import resolve_draft_environment, blocked
 from modules.ai_text.skills import request_evidence_scope, select_skill
 from modules.ai_text.kb_cache import cached_search
 from modules.ai_text.retrieval import clean_chunk, expand_query, rerank
-from modules.ai_text.context_bundle import prepare_sources, source_documents
+from modules.ai_text.context_bundle import answer_references, prepare_sources, source_documents
 from modules.ai_text import lexical_index
 from modules.ai_text.protect_ports import load_protected_interfaces
 from modules.ai_text.budget_policy import limits_for, select_tier
@@ -625,9 +625,13 @@ async def _generate_copilot_chat(
                                       else "本次未能生成回答正文，请稍后重试。")
             if stream_status == "ok":
                 result["status"] = "failed"
+        generation_status, answer_sources = answer_references(
+            sources[:data.top_k], "".join(answer_parts), result["status"],
+        )
         return CopilotChatResponse(
             answer=answer,
-            sources=sources[: data.top_k],
+            sources=answer_sources,
+            generation_status=generation_status,
             draft_commands=guarded.commands,
             draft_explanation=guarded.explanation,
             draft_refused_reason=refused,
@@ -885,9 +889,10 @@ async def _generate_copilot_stream(
 
     async def generate() -> Any:
         stream = None
+        answer_parts = []
         try:
             yield sse({
-                "type": "meta", "request_id": request_id, "sources": slim_sources,
+                "type": "meta", "request_id": request_id, "sources": [],
                 "provider": _kb_provider_label(knowledge),
                 "knowledge_status": knowledge.get("status", "unknown"),
                 "skill": skill.as_meta(),
@@ -896,6 +901,7 @@ async def _generate_copilot_stream(
                     else ("unavailable" if provider_error else (knowledge.get("status") or "ok"))
                 ),
                 "assist_only": True, "draft_refused_reason": draft_refused,
+                "generation_status": "not_generated",
                 "draft_target": draft_target.as_meta() if draft_target else None,
             })
             if draft_refused:
@@ -949,8 +955,18 @@ async def _generate_copilot_stream(
             )
             async for event in stream:
                 event.setdefault("request_id", request_id)
+                kind = event.get("type")
+                if kind == "token":
+                    answer_parts.append(event.get("text", ""))
+                elif kind == "policy" and "replace_answer" in event:
+                    answer_parts = [event["replace_answer"]]
+                elif kind == "done":
+                    generation_status, answer_sources = answer_references(
+                        slim_sources, "".join(answer_parts), event.get("status", "failed"),
+                    )
+                    yield sse({"type": "references", "generation_status": generation_status, "sources": answer_sources})
                 yield sse(event)
-                if event.get("type") == "done":
+                if kind == "done":
                     break
         except asyncio.CancelledError:
             cancel_event.set()

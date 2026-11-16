@@ -202,7 +202,7 @@
             <div
               v-if="msg.role === 'assistant' && msg.content"
               class="md-body"
-              v-html="renderMarkdown(msg.content || (!msg.streaming && !msg.requestId ? '这条历史回复未保存完整内容，也没有可恢复的请求标识；无法确认原回答。' : ''), msg.streaming ? undefined : (msg.sources?.length || 0))"
+              v-html="renderMarkdown(msg.content || (!msg.streaming && !msg.requestId ? '这条历史回复未保存完整内容，也没有可恢复的请求标识；无法确认原回答。' : ''), msg.streaming ? undefined : referenceCount(msg))"
             />
             <template v-else-if="msg.role === 'user'">
               <div v-if="msg.attachments?.length" class="msg-attachments">
@@ -235,7 +235,7 @@
             <div v-else-if="msg.role === 'assistant' && !msg.streaming && ['degraded', 'empty'].includes(msg.knowledgeStatus || '')" class="sources">
               <div class="sources-title">{{ msg.knowledgeStatus === 'degraded' ? '本次未能连接知识服务' : '本次检索没有找到可引用的片段' }}</div>
             </div>
-            <div v-else-if="msg.role === 'assistant' && !msg.streaming && msg.knowledgeStatus === 'ok'" class="sources">
+            <div v-else-if="msg.role === 'assistant' && !msg.streaming && msg.requestState === 'completed' && msg.knowledgeStatus === 'ok'" class="sources">
               <div class="sources-title">已检索资料，正文没有引用检索片段。</div>
             </div>
             <div v-if="msg.draftRefused && !msg.streaming" class="draft-refused">
@@ -392,6 +392,7 @@ import { ElMessage } from 'element-plus/es/components/message/index'
 import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest, getCopilotSession } from '../api/ai'
 import { useAiCopilotStore, type CopilotAttachment, type CopilotMessage } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
+import { sessionFetch } from '../stores/browserSession'
 import { referencedSourceIndices, renderMarkdown } from '../utils/markdownLite'
 import KnowledgeDocumentReader from './KnowledgeDocumentReader.vue'
 import { resolvePageMeta } from '../utils/copilotContext'
@@ -939,7 +940,13 @@ const citation = ref<null | { title?: string; filename?: string; document_id?: s
 function answerSources(message: CopilotMessage) {
   if (!message.sources?.length || message.streaming) return []
   const numbers = referencedSourceIndices(message.content)
-  return message.sources.flatMap((source, index) => numbers.has(index) ? [{ source, index }] : [])
+  return message.sources.flatMap((source, position) => {
+    const index = (source.reference_index ?? position + 1) - 1
+    return numbers.has(index) ? [{ source, index }] : []
+  })
+}
+function referenceCount(message: CopilotMessage) {
+  return Math.max(0, ...(message.sources || []).map((source, index) => source.reference_index ?? index + 1))
 }
 const citationPanel = ref<HTMLElement | null>(null)
 let citationReturnFocus: HTMLElement | null = null
@@ -973,7 +980,7 @@ function onCitationKeydown(event: KeyboardEvent) {
 }
 let citationSeq = 0
 async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, index: number) {
-  const s = msg.sources?.[index]
+  const s = msg.sources?.find((source, position) => (source.reference_index ?? position + 1) - 1 === index)
   if (!s) return
   const seq = ++citationSeq
   citation.value = { title: s.title, filename: s.filename, score: s.score, content: '', version: s.version, status: 'loading' }
@@ -983,15 +990,12 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
     return
   }
   try {
-    const token = localStorage.getItem('token')
     const params = new URLSearchParams({ filename })
     if (msg.requestId && s.source_id) {
       params.set('request_id', msg.requestId)
       params.set('source_id', s.source_id)
     }
-    const resp = await fetch(`/api/v1/ai/copilot/citations/read?${params}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    const resp = await sessionFetch(`/api/v1/ai/copilot/citations/read?${params}`)
     if (seq !== citationSeq) return  // 晚到的 A 不能污染 B
     if (resp.status === 410) {
       citation.value = { ...citation.value, status: 'revoked', content: '', message: '该引用已失效或已撤权，不再展示旧片段。' }
@@ -1136,24 +1140,16 @@ async function send(preset?: string, forceDraft = false) {
         // 迟到事件：带 request_id 且不是本次请求的，一律丢弃（不写进当前会话）
         const eventId = (event as { request_id?: string }).request_id
         if (eventId && eventId !== request.requestId) return
-        if (failureMarked && event.type !== 'done') return
+        if (failureMarked && event.type !== 'done' && event.type !== 'references') return
         if (event.type === 'meta') {
           store.patchMessage(assistantId, {
-            sources: (event.sources || []).map((s) => ({
-              source_id: s.source_id,
-              filename: s.filename || s.title,
-              title: s.title,
-              score: s.score,
-              content: s.content,
-              version: s.version,
-              captured_at: s.captured_at,
-              page: s.page,
-            })),
             knowledgeStatus: event.knowledge_status || (['empty', 'degraded'].includes(event.status || '') ? event.status : undefined),
             draftRefused: event.draft_refused_reason || undefined,
             draftTarget: serverDraftTarget(event.draft_target),
             recovered: event.replayed === true,
           })
+        } else if (event.type === 'references') {
+          store.patchMessage(assistantId, { sources: event.sources || [] })
         } else if (event.type === 'policy') {
           store.patchMessage(assistantId, { draftRefused: event.draft_refused_reason || '当前环境未核验，不生成可执行草稿' })
           if (typeof event.replace_answer === 'string') {

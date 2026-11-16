@@ -1,6 +1,9 @@
 <template>
   <el-config-provider :locale="zhCn">
-    <router-view />
+    <router-view v-slot="{ Component }">
+      <component :is="Component" v-if="Component" />
+      <p v-else role="status" class="route-loading">正在核对登录状态…</p>
+    </router-view>
   </el-config-provider>
 </template>
 
@@ -10,6 +13,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 </script>
 
 <style>
+.route-loading { margin: 32px; color: var(--v7b-text); }
 html:root {
   /* 组件及传送到 body 的弹层共用同一浅色主题，侧栏和终端自行定义深色。 */
   color-scheme: light;

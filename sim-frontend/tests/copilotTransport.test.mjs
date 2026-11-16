@@ -5,17 +5,26 @@ import ts from 'typescript'
 
 const source = await readFile(new URL('../src/api/ai.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+const sessionSource = await readFile(new URL('../src/stores/browserSession.ts', import.meta.url), 'utf8')
+const sessionCompiled = ts.transpileModule(sessionSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 
 function harness(chunks, status = 200) {
-  let cancelled = false, locked = true, fetches = 0, cleared = false
-  const window = { location: { pathname: '/devices', search: '?id=2', href: '' } }
+  let cancelled = false, locked = true, fetches = 0
+  const window = { location: {
+    origin: 'http://localhost', pathname: '/devices', search: '?id=2', hash: '', href: '',
+    replace(url) { this.href = String(url) },
+  } }
   const reader = { async read() { return chunks.length ? { value: new TextEncoder().encode(chunks.shift()), done: false } : { done: true } },
     async cancel() { cancelled = true }, releaseLock() { locked = false } }
   const module = { exports: {} }
   const fetch = async () => { fetches++; return { ok: status === 200, status, json: async () => ({detail:'无效Token'}), body: { getReader: () => reader } } }
-  new Function('require', 'module', 'exports', 'fetch', 'localStorage', 'window', compiled)(
-    () => ({ default: {}, clearClientSession: () => { cleared = true } }), module, module.exports, fetch, { getItem: () => 'isolated-token' }, window)
-  return { run: module.exports.copilotChatStream, window, cleared: () => cleared, state: () => ({ cancelled, locked, fetches }) }
+  const session = {}
+  new Function('require', 'exports', 'fetch', 'window', sessionCompiled)(
+    () => ({ shallowRef: value => ({ value }), readonly: value => value }), session, fetch, window)
+  session.acceptBrowserSession({ user: { id: 1, username: 'learner' }, session_id: 'test-session', csrf_token: 'csrf' })
+  new Function('require', 'module', 'exports', compiled)(
+    name => name === '../stores/browserSession' ? session : { default: {} }, module, module.exports)
+  return { run: module.exports.copilotChatStream, window, cleared: () => !session.browserSession.value, state: () => ({ cancelled, locked, fetches }) }
 }
 
 test('CRLF, split chunks and final frame work; no data after done is delivered', async () => {

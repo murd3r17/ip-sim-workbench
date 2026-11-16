@@ -150,12 +150,14 @@ class TestEnvExampleHygiene:
         """最小模式必须强制 SQLite，否则目录里已有 .env 时会写进真实 MySQL。"""
         from pathlib import Path
 
-        script = (Path(__file__).resolve().parents[2] / "scripts" / "bootstrap-local.ps1").read_text(
-            encoding="utf-8-sig"
+        import runpy
+        from unittest.mock import patch
+        entry = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_local.py"
+        with patch.dict("os.environ", {"DB_BACKEND": "mysql", "DB_URL": "mysql://fixture", "DEVICE_MODE": "ssh"}):
+            env = runpy.run_path(str(entry))["prepare_environment"]()
+        assert (env["DB_BACKEND"], env["DB_URL"], env["DEVICE_MODE"], env["KNOWLEDGE_PROVIDER"]) == (
+            "sqlite", "", "sim", "local",
         )
-        assert "$env:DB_BACKEND = 'sqlite'" in script
-        assert "$env:DEVICE_MODE = 'sim'" in script
-        assert "$env:KNOWLEDGE_PROVIDER = 'local'" in script
 
 
 class TestSpaHosting:

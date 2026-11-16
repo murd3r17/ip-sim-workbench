@@ -17,6 +17,9 @@ def _settings(**overrides):
         device_mode="ssh",
         device_default_username="admin",
         device_default_password="pwd",
+        ssh_strict_host_key=True,
+        ssh_known_hosts_file="",
+        api_docs_enabled=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

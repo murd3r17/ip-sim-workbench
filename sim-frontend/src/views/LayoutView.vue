@@ -89,6 +89,8 @@
         </div>
       </header>
       <main id="main-content" class="app-main" :inert="narrowWindow && (copilot.open || navOpen)">
+        <el-alert v-if="route.query.access === 'denied'" title="该页面需要管理员权限。你可以从左侧继续使用学员功能。"
+          type="warning" show-icon :closable="false" />
         <router-view v-slot="{ Component }">
           <component :is="Component" class="page-root" />
         </router-view>
@@ -123,19 +125,18 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import AiCopilotPanel from '../components/AiCopilotPanel.vue'
 import { useAiCopilotStore } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
 import { useCurrentUser } from '../composables/useCurrentUser'
-import { currentDraftOwner, useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
+import { useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
-import { changePassword } from '../api/auth'
+import { changePassword, logout } from '../api/auth'
 import { requestErrorMessage } from '../utils/requestError'
-import { clearClientSession } from '../utils/session'
+import { acceptBrowserSession, browserSession, publishSessionChange, SESSION_CHANGE_KEY } from '../stores/browserSession'
 
 const route = useRoute()
-const router = useRouter()
 const navOpen = ref(false)
 const navigation = ref<HTMLElement | null>(null)
 const navToggle = ref<HTMLButtonElement | null>(null)
@@ -147,7 +148,6 @@ const collapsed = computed(() => navCollapsed.value && !narrowWindow.value)
 const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const drafts = useWorkbenchDraftsStore()
-const mountedOwner = currentDraftOwner()
 const passwordOpen = ref(false)
 const passwordError = ref('')
 const changingPassword = ref(false)
@@ -186,14 +186,13 @@ const hasUnsentWork = computed(() =>
   !!(drafts.deploy.form.config_content.trim() || drafts.deploy.form.name.trim() || drafts.deploy.intent.trim()) ||
   Object.keys(drafts.training).length > 0)
 function confirmLeaving(event: BeforeUnloadEvent) {
-  if (!hasUnsentWork.value) return
+  if (!browserSession.value || !hasUnsentWork.value) return
   event.preventDefault()
   event.returnValue = ''
 }
 function onAccountStorageChange(event: StorageEvent) {
-  if (event.storageArea !== localStorage || (event.key && !['token', 'user'].includes(event.key))) return
-  if (currentDraftOwner() === mountedOwner) return
-  window.removeEventListener('beforeunload', confirmLeaving)
+  if (event.storageArea !== localStorage || event.key !== SESSION_CHANGE_KEY) return
+  acceptBrowserSession(null)
   window.location.reload()
 }
 const currentTime = computed(() => now.value.toLocaleTimeString('zh-CN', { hour12: false }))
@@ -260,8 +259,12 @@ async function handleCommand(cmd: string) {
         })
       } catch { return }
     }
-    clearClientSession('logout')
-    router.push('/login')
+    try {
+      await logout()
+      acceptBrowserSession(null)
+      publishSessionChange()
+      window.location.replace('/login')
+    } catch { /* the request interceptor reports failure */ }
   }
 }
 
@@ -278,8 +281,9 @@ async function savePassword() {
     passwordOpen.value = false
     passwordForm.value = { old_password: '', new_password: '' }
     const previousPage = route.fullPath
-    clearClientSession()
-    await router.push({ path: '/login', query: { password_changed: '1', redirect: previousPage } })
+    acceptBrowserSession(null)
+    publishSessionChange()
+    window.location.replace(`/login?password_changed=1&redirect=${encodeURIComponent(previousPage)}`)
   } catch (error) {
     passwordError.value = requestErrorMessage(error, '修改未完成，请核对当前密码和新密码要求。')
   } finally {

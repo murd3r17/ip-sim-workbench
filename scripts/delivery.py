@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 import uuid
@@ -24,7 +25,9 @@ import zipfile
 
 EVIDENCE = "delivery-evidence.json"
 ROOT_FILES = {"README.md", "AGENTS.md", ".env.example", ".gitignore", ".gitattributes", "DELIVERY-REDACTIONS.json",
-              "环境与部署上下文.md", "最小清单交付说明.md"}
+              "启动与验收.md", "环境与部署上下文.md", "最小清单交付说明.md"}
+README_IMAGES = {"dashboard.png", "device-observation.png", "knowledge.png", "topology.png",
+                 "training-courses.png", "training-session.png", "webssh.png"}
 TREE_ROOTS = {"backend", "sim-frontend", "scripts", "knowledge", "init-sql", "nginx", "docs"}
 EXCLUDED_DIRS = {".git", ".runtime", ".venv", "venv", "node_modules", "__pycache__",
                  ".pytest_cache", ".mypy_cache", "logs", "uploads", "test-results",
@@ -721,8 +724,10 @@ def files(root: Path, *, tests: bool = False) -> list[Path]:
                 continue
             if folder == root and name not in ROOT_FILES:
                 continue
-            if any(part in {"docs"} for part in path.relative_to(root).parts) and path.suffix != ".md":
-                continue
+            relative = path.relative_to(root)
+            if relative.parts[0] == "docs" and path.suffix != ".md":
+                if relative.parts[:-1] != ("docs", "images", "workbench") or name not in README_IMAGES:
+                    continue
             result.append(path)
     return sorted(result)
 
@@ -948,6 +953,8 @@ def run_browser(root: Path) -> int:
     env["E2E_ADMIN_USER"], env["E2E_ADMIN_PASSWORD"] = settings["ADMIN_USERNAME"], settings["ADMIN_PASSWORD"]
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
         env["PLAYWRIGHT_BROWSERS_PATH"] = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+    if os.environ.get("E2E_BROWSER_CHANNEL"):
+        env["E2E_BROWSER_CHANNEL"] = os.environ["E2E_BROWSER_CHANNEL"]
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -1021,8 +1028,9 @@ def pytest_temp(stage: Path) -> Path:
     the path belongs to this run and cannot alias kept acceptance evidence.
     """
     runtime = stage / ".runtime"
-    temp = runtime / ("pytest-" + uuid.uuid4().hex)
-    temp.mkdir(parents=True, exist_ok=False)
+    runtime.mkdir(parents=True, exist_ok=True)
+    # Test fixtures add several levels and long atomic-write names on Windows.
+    temp = Path(tempfile.mkdtemp(prefix="pt-", dir=runtime))
     if runtime.resolve() not in temp.resolve().parents:
         raise ValueError("pytest_temp_outside_stage_runtime")
     return temp

@@ -2,6 +2,8 @@ import { parseApiTime } from '../utils/datetime'
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
+import { accountStorageKey } from './browserSession'
+import type { CopilotReference } from '../api/ai'
 
 export type CopilotRole = 'user' | 'assistant' | 'system'
 
@@ -18,7 +20,7 @@ export interface CopilotMessage {
   content: string
   reasoning?: string
   reasoningOpen?: boolean
-  sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
+  sources?: CopilotReference[]
   knowledgeStatus?: string
   draftCommands?: string[]
   draftTarget?: { deviceId: number; label: string; alarmId?: number | string; verifiedByServer?: boolean } | null
@@ -58,8 +60,6 @@ export interface CopilotConversation {
   evidenceId?: number | null
 }
 
-const STORAGE_KEY = 'ai_copilot_sessions_v1'
-const ACTIVE_KEY = 'ai_copilot_active_id'
 const MAX_SESSIONS = 40
 
 function newId() {
@@ -183,10 +183,10 @@ async function shrinkForStorageAsync(msgs: CopilotMessage[]): Promise<CopilotMes
   return shrinkForStorage(compressed)
 }
 
-function loadSessions(): { conversations: CopilotConversation[]; activeId: string | null } {
+function loadSessions(storageKey: string, activeKey: string): { conversations: CopilotConversation[]; activeId: string | null } {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const activeId = localStorage.getItem(ACTIVE_KEY)
+    const raw = localStorage.getItem(storageKey)
+    const activeId = localStorage.getItem(activeKey)
     if (!raw) return { conversations: [], activeId: null }
     const parsed = JSON.parse(raw) as CopilotConversation[]
     if (!Array.isArray(parsed)) return { conversations: [], activeId: null }
@@ -213,7 +213,10 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   const loading = ref(false)
   const historyOpen = ref(false)
 
-  const boot = loadSessions()
+  const STORAGE_KEY = accountStorageKey('copilot:sessions')
+  const ACTIVE_KEY = accountStorageKey('copilot:active')
+  const transferKey = accountStorageKey('copilot:transfer:')
+  const boot = loadSessions(STORAGE_KEY, ACTIVE_KEY)
   const conversations = ref<CopilotConversation[]>(boot.conversations)
   const activeId = ref<string | null>(boot.activeId)
   const messages = ref<CopilotMessage[]>(
@@ -715,10 +718,10 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
 
   function saveDraftToDeploy(commands: string[], target: CopilotMessage['draftTarget'] = null) {
     const text = commands.join('\n')
-    localStorage.setItem('deploy_ai_draft', text)
+    localStorage.setItem(transferKey + 'text', text)
     // Content match prevents stale metadata from binding a replaced/legacy draft.
-    localStorage.setItem('deploy_ai_draft_context', JSON.stringify({ text, target }))
-    localStorage.setItem('deploy_ai_draft_at', String(Date.now()))
+    localStorage.setItem(transferKey + 'context', JSON.stringify({ text, target }))
+    localStorage.setItem(transferKey + 'at', String(Date.now()))
     return text
   }
 

@@ -2,22 +2,24 @@
 """Generate a read-only eNSP SSH command baseline matrix.
 
 The report intentionally records only command status and output size. It never
-prints credentials or raw device output.
+prints credentials or raw device output. SSH uses the workbench host-key policy.
 """
 from __future__ import annotations
 
 import argparse
 import os
-import socket
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import paramiko
 import pymysql
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend"))
+from engines.ssh_trust import connect_with_device_password, new_ssh_client
+
 DEFAULT_OUTPUT = ROOT / ".claude" / "ensp-readonly-command-matrix.md"
 COMMANDS = [
     "display version",
@@ -68,40 +70,13 @@ def db_devices(env: dict[str, str]) -> list[Device]:
 
 
 def open_shell(device: Device, username: str, password: str, timeout: int):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client = new_ssh_client()
     try:
-        client.connect(
-            hostname=device.mgmt_ip,
-            port=device.ssh_port,
-            username=username,
-            password=password,
-            timeout=timeout,
-            auth_timeout=timeout,
-            banner_timeout=timeout,
-            allow_agent=False,
-            look_for_keys=False,
-        )
-        channel = client.invoke_shell(width=120, height=40)
-        return client, channel
-    except paramiko.AuthenticationException:
+        connect_with_device_password(client, device.mgmt_ip, device.ssh_port, username, password, timeout)
+        return client, client.invoke_shell(width=120, height=40)
+    except BaseException:
         client.close()
-
-    sock = socket.create_connection((device.mgmt_ip, device.ssh_port), timeout=timeout)
-    transport = paramiko.Transport(sock)
-    transport.start_client(timeout=timeout)
-
-    def handler(_title, _instructions, prompt_list):
-        return [password] * len(prompt_list)
-
-    transport.auth_interactive(username, handler)
-    if not transport.is_authenticated():
-        transport.close()
-        raise paramiko.AuthenticationException("interactive authentication failed")
-    channel = transport.open_session(timeout=timeout)
-    channel.get_pty(width=120, height=40)
-    channel.invoke_shell()
-    return transport, channel
+        raise
 
 
 def read_quiet(channel, timeout: int) -> str:

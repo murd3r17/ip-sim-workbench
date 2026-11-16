@@ -116,10 +116,11 @@ async def test_webssh_rejects_disabled_account_before_device_connect(client, tes
         user = await db.get(User, int(decode_access_token(token)['sub']))
         user.is_active = False
         await db.commit()
-    websocket = SimpleNamespace(headers={}, accept=AsyncMock(), close=AsyncMock(), send_text=AsyncMock())
+    websocket = SimpleNamespace(headers={"authorization": f"Bearer {token}"}, cookies={}, query_params={},
+                                accept=AsyncMock(), close=AsyncMock(), send_text=AsyncMock())
     get_device = AsyncMock(side_effect=AssertionError('device lookup must not happen'))
     monkeypatch.setattr('modules.webssh.router.DeviceService.get_device', get_device)
-    await webssh_websocket(websocket, 1, token)
+    await webssh_websocket(websocket, 1)
     get_device.assert_not_called()
     assert websocket.close.call_args.kwargs['code'] == 4001
 
@@ -144,13 +145,17 @@ async def test_open_webssh_rechecks_account_before_forwarding_input():
 
 
 @pytest.mark.asyncio
-async def test_webssh_revalidation_uses_current_database_state(client, test_session_factory):
+async def test_webssh_revalidation_uses_current_database_state(client, test_session_factory, monkeypatch):
     from core.security import decode_access_token
+    from core.dependencies import authenticate_token
     from modules.webssh.router import _session_authorized
+    monkeypatch.setattr("engines.device_adapter.get_device_mode", lambda: "sim")
     token = await _setup_test_user(test_session_factory)
-    assert await _session_authorized(test_session_factory, token)
+    authorize = lambda: _session_authorized(test_session_factory, lambda db: authenticate_token(token, db),
+                                             1, "sim", None, ("fixture", 22))
+    assert await authorize()
     async with test_session_factory() as db:
         user = await db.get(User, int(decode_access_token(token)['sub']))
         user.token_version += 1
         await db.commit()
-    assert not await _session_authorized(test_session_factory, token)
+    assert not await authorize()

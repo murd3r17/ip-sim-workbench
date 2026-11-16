@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
-from core.health import _app_start_time, get_health_status
+from core.health import _app_start_time, get_health_status, llm_is_configured
 from core.logger import get_logger
 from core.llm_provider import cached_llm_health_check, create_llm_provider, llm_health_checked_at
 from core.security import credential_encryptor
@@ -208,10 +208,13 @@ class SystemService:
         }
         try:
             runtime_llm_config = await SystemService.get_llm_runtime_config(db)
-            provider = create_llm_provider(runtime_llm_config)
-            is_healthy = await cached_llm_health_check(provider)
-            llm_checked_at = llm_health_checked_at(provider)
-            llm_status = "healthy" if is_healthy else "unavailable"
+            if llm_is_configured(settings, runtime_llm_config):
+                provider = create_llm_provider(runtime_llm_config)
+                is_healthy = await cached_llm_health_check(provider)
+                llm_checked_at = llm_health_checked_at(provider)
+                llm_status = "healthy" if is_healthy else "unavailable"
+            else:
+                llm_status = "disabled"
         except Exception:
             llm_status = "unavailable"
 
@@ -228,6 +231,7 @@ class SystemService:
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "platform": platform.platform(),
             "database_status": db_status,
+            "database_backend": db.get_bind().dialect.name,
             "llm_status": llm_status,
             "llm_checked_at": llm_checked_at,
             "llm_provider": runtime_llm_config["llm_provider"],

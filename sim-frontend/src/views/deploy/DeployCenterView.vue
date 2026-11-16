@@ -315,6 +315,7 @@ import { generateAndValidate, reviewConfig } from '../../api/ai'
 import { cancelDeployTask, confirmDeployTask, createDeployBatch, createTemplate, executeDeployTask, getDeployBatch, getDeployBatches, getDeployTask, getTemplates, renderTemplate, validateConfig, verifyDeployTask, type ConfigTemplateRecord, type DeployBatchRecord } from '../../api/deploy'
 import { useLabContextStore } from '../../stores/labContext'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
+import { accountStorageKey } from '../../stores/browserSession'
 import {
   clearSavedDeployDraft, currentDraftOwner, deployDraftMatches, emptyDeployDraft,
   readSavedDeployDraft, saveDeployDraft, useWorkbenchDraftsStore,
@@ -853,11 +854,12 @@ const handleVerification = async (task: any) => {
 
 // ── AI 配置草稿：提示条 + 手动载入/清除（不再打开页面自动填入） ──
 const draftAvailable = ref(false)
+const transferKey = accountStorageKey('copilot:transfer:')
 const draftSavedAt = ref('')
 
 function refreshDraftState() {
-  draftAvailable.value = !!localStorage.getItem('deploy_ai_draft')?.trim()
-  const at = localStorage.getItem('deploy_ai_draft_at')
+  draftAvailable.value = !!localStorage.getItem(transferKey + 'text')?.trim()
+  const at = localStorage.getItem(transferKey + 'at')
   draftSavedAt.value = at ? new Date(Number(at)).toLocaleString('zh-CN', { hour12: false }) : ''
 }
 
@@ -871,17 +873,17 @@ async function confirmDraftReplacement(source: string) {
 }
 
 async function loadAiDraft() {
-  const draft = localStorage.getItem('deploy_ai_draft')
+  const draft = localStorage.getItem(transferKey + 'text')
   const current = drafts.deploy
   if (!draft?.trim() || current.submitting) return
   const previous = JSON.stringify(current.form)
   if (hasDraft.value && !await confirmDraftReplacement('AI 草稿及其目标设备')) return
-  if (!viewActive || drafts.deploy !== current || previous !== JSON.stringify(current.form) || current.submitting || localStorage.getItem('deploy_ai_draft') !== draft) return
+  if (!viewActive || drafts.deploy !== current || previous !== JSON.stringify(current.form) || current.submitting || localStorage.getItem(transferKey + 'text') !== draft) return
   // A loaded draft replaces the target selection, never adds to an old batch.
   // Legacy or mismatched metadata requires an explicit new selection.
   let targetId: number | null = null
   try {
-    const context = JSON.parse(localStorage.getItem('deploy_ai_draft_context') || 'null')
+    const context = JSON.parse(localStorage.getItem(transferKey + 'context') || 'null')
     const id = context?.target?.deviceId
     if (context?.text === draft && context?.target?.verifiedByServer === true && Number.isSafeInteger(id) && id > 0 && devices.value.some(d => d.id === id)) targetId = id
   } catch { /* Unbound legacy draft; clear stale target below. */ }
@@ -902,9 +904,7 @@ function maybeAutoLoadDraft() {
 }
 
 function clearAiDraft() {
-  localStorage.removeItem('deploy_ai_draft')
-  localStorage.removeItem('deploy_ai_draft_at')
-  localStorage.removeItem('deploy_ai_draft_context')
+  for (const key of ['text', 'at', 'context']) localStorage.removeItem(transferKey + key)
   ElMessage.success('配置草稿已清除')
   refreshDraftState()
 }

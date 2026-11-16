@@ -386,7 +386,8 @@ class DashboardService:
     @staticmethod
     async def get_services(db: AsyncSession, *, probe_services: bool = True) -> dict:
         settings = get_settings()
-        llm_configured = bool(settings.llm_base_url and settings.llm_model)
+        from core.health import llm_is_configured
+        llm_configured = llm_is_configured(settings)
         knowledge_provider = getattr(settings, "knowledge_provider", "") or None
         knowledge_configured = bool(
             (knowledge_provider or "").lower() == "local"
@@ -408,7 +409,7 @@ class DashboardService:
         except Exception:  # noqa: BLE001
             db_status = "unhealthy"
 
-        llm_status = "not_configured"
+        llm_status = "disabled"
         llm_provider = settings.llm_provider
         llm_model = settings.llm_model
         llm_source = "env"
@@ -422,7 +423,7 @@ class DashboardService:
             llm_source = await SystemService.get_llm_config_source(db)
             llm_provider = runtime.get("llm_provider") or llm_provider
             llm_model = runtime.get("llm_model") or llm_model
-            llm_configured = bool(runtime.get("llm_base_url") and llm_model)
+            llm_configured = llm_is_configured(settings, runtime)
             if llm_configured and probe_services:
                 provider = create_llm_provider(runtime)
                 is_healthy = await cached_llm_health_check(provider)
@@ -431,7 +432,7 @@ class DashboardService:
             elif llm_configured:
                 llm_status = "configured"
         except Exception:  # noqa: BLE001
-            llm_status = "unavailable" if llm_configured else "not_configured"
+            llm_status = "unavailable" if llm_configured else "disabled"
 
         knowledge_details: dict = {}
         if knowledge_configured and probe_services:
@@ -453,7 +454,7 @@ class DashboardService:
             knowledge_status = ("healthy" if knowledge_details.get("available") else "unavailable") if probe_services else "not_checked"
 
         return {
-            "database": {"status": db_status},
+            "database": {"status": db_status, "backend": db.get_bind().dialect.name},
             "llm": {
                 "status": llm_status,
                 "provider": llm_provider,

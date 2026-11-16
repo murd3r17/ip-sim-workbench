@@ -1,0 +1,1 @@
+function i(e){if(!e)return null;const t=String(e),n=/[zZ]$|[+-]\d{2}:?\d{2}$/.test(t)?t:`${t}Z`,r=new Date(n);return Number.isNaN(r.getTime())?null:r}function o(e,t={}){const n=i(e);return n?n.toLocaleString("zh-CN",{hour12:!1,...t}):"-"}export{o as f,i as p};

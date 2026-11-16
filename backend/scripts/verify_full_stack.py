@@ -234,7 +234,11 @@ async def verify(settings, endpoints: str, base_url: str) -> dict:
     status, health = http_json("GET", api + "/health", timeout=45)
     components = health.get("components", {}) if isinstance(health, dict) else {}
     model = components.get("llm", {})
-    ready = status == 200 and all(components.get(name, {}).get("status") == "healthy" for name in ("mysql", "llm", "knowledge")) and model.get("model") == snapshot["llm_model"] and model.get("config_source") == snapshot["llm_source"]
+    from core.health import database_component
+    database = database_component(components)
+    ready = (status == 200 and database.get("status") == "healthy" and database.get("backend", "mysql") == "mysql"
+             and all(components.get(name, {}).get("status") == "healthy" for name in ("llm", "knowledge"))
+             and model.get("model") == snapshot["llm_model"] and model.get("config_source") == snapshot["llm_source"])
     add("effective_authenticated_health", ready)
     if not ready:
         return finish()

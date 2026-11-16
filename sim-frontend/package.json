@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test:e2e": "playwright test",
-    "test:e2e:strict": "set E2E_REQUIRE_UP=1&& playwright test"
+    "test:e2e:strict": "node scripts/playwright-strict.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

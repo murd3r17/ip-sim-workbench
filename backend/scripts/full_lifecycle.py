@@ -130,12 +130,17 @@ def stop_signal(path: Path, data: dict) -> Path:
 
 async def serve(root: Path, path: Path, launch_id: str) -> None:
     import uvicorn
+    from core.config import get_settings
 
     data = read_receipt(root, path)
     if data["state"] != "STARTING" or data["launch_id"] != launch_id:
         raise ValueError("启动收据与工作进程不匹配。")
-    server = uvicorn.Server(uvicorn.Config("main:app", host=data["host"], port=data["port"],
-                                         workers=1, timeout_graceful_shutdown=10))
+    os.environ["WORKBENCH_MODE"] = "full"
+    get_settings.cache_clear()
+    server = uvicorn.Server(uvicorn.Config(
+        "main:app", host=data["host"], port=data["port"], workers=1, timeout_graceful_shutdown=10,
+        forwarded_allow_ips=get_settings().forwarded_allow_ips,
+    ))
     signal = stop_signal(path, data)
 
     async def watch_stop():
@@ -192,7 +197,8 @@ def stop(root: Path, path: Path) -> dict:
 def assert_port_available(host: str, port: int) -> None:
     address = ipaddress.ip_address(host)
     with socket.socket(socket.AF_INET6 if address.version == 6 else socket.AF_INET) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             sock.bind((host, port))
         except OSError as exc:
@@ -233,7 +239,7 @@ def start(root: Path, path: Path, host: str, port: int, expected_page: bytes | N
             process = subprocess.Popen([sys.executable, *command_tail(root, path, data)], cwd=root / "backend",
                                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, close_fds=True,
                                        env=dict(os.environ, PYTHONUTF8="1", WORKBENCH_LAUNCH_ID=launch_id),
-                                       creationflags=subprocess.CREATE_NO_WINDOW)
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         launcher = owner.snapshot(process.pid)
         if not launcher:
             raise ValueError("后端启动进程提前退出，请查看本次日志。")
@@ -260,7 +266,9 @@ def start(root: Path, path: Path, host: str, port: int, expected_page: bytes | N
                     health = client.get(base + "/api/v1/health")
                     if health.is_success:
                         components = health.json().get("components", {})
-                        if all(components.get(k, {}).get("status") == "healthy" for k in ("mysql", "llm", "knowledge")):
+                        from core.health import database_component
+                        if (database_component(components).get("status") == "healthy"
+                                and all(components.get(k, {}).get("status") == "healthy" for k in ("llm", "knowledge"))):
                             page = client.get(base + "/")
                             if page.is_success and page.content == expected_page:
                                 verified = verify_backend(root, base, launcher["pid"], expected_launch_id=launch_id)

@@ -5,13 +5,16 @@ import anyio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.security.utils import get_authorization_scheme_param
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from core.config import get_settings
-from core.database import get_session_factory
-from core.security import decode_access_token
-from core.dependencies import authenticate_token
+from core.database import get_async_session, get_session_factory
+from core.browser_session import authenticate_browser_session, cookie_name, credential_digest, require_browser_origin
+from core.dependencies import authenticate_token, get_current_user
+from engines import device_adapter
+from modules.auth.terminal_grants import TerminalPermissionError, check_terminal_grant
 from modules.webssh.proxy import SSHProxySession
 from modules.webssh.session_logger import TerminalSessionLogger
 from modules.device.service import DeviceService
@@ -62,19 +65,10 @@ def _release_ws_slot(user_id: int) -> None:
         _ACTIVE_WS_SESSIONS.pop(user_id, None)
 
 
-async def _reject(websocket: WebSocket, code: int, reason: str, subprotocol: str | None = None) -> None:
-    """先 accept 再 close。
-
-    未完成握手的 WebSocket 无法把自定义 close code/reason 传给浏览器 —— 浏览器只会看到
-    1006（异常关闭）且 reason 为空，用户于是只看到"连接已断开"而不知道原因（实测确认）。
-    "超过并发上限需明确提示"（设计 §16）依赖这两个字段，因此拒绝路径也必须先 accept。
-
-    注意：前端是用子协议传 token 的（`new WebSocket(url, [token])`）。按 WebSocket 规范，
-    服务端若不在握手响应里回显子协议，浏览器会**直接判定握手失败**并只报 1006 —— 所以这里
-    必须把 subprotocol 原样回显（实测：不回显时 Chrome 报 1006，回显后正常收到 4006+原因）。
-    """
+async def _reject(websocket: WebSocket, code: int, reason: str) -> None:
+    """Send a readable close reason after the request passes Origin checks."""
     try:
-        await websocket.accept(subprotocol=subprotocol)
+        await websocket.accept()
     except Exception:  # 已 accept 或客户端已断开
         pass
     try:
@@ -83,58 +77,64 @@ async def _reject(websocket: WebSocket, code: int, reason: str, subprotocol: str
         pass
 
 
+@router.get("/webssh/access/{device_id}")
+async def terminal_access(device_id: int, actor: dict = Depends(get_current_user),
+                          db=Depends(get_async_session)) -> dict:
+    device = await db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(404, "设备不存在")
+    mode = device_adapter.get_device_mode()
+    try:
+        await check_terminal_grant(db, actor, device, mode=mode)
+    except TerminalPermissionError as exc:
+        return {"allowed": False, "mode": mode, "reason": str(exc)}
+    return {"allowed": True, "mode": mode}
+
+
 @router.websocket("/ws/ssh/{device_id}")
-async def webssh_websocket(websocket: WebSocket, device_id: int, token: str = None) -> Any:
-    """WebSSH WebSocket端点 - 支持子协议（前端）和query参数（测试/兼容）两种token传递方式"""
-
-    # 优先从子协议提取token，回退到query参数
-    protocols = websocket.headers.get("sec-websocket-protocol", "")
-    ws_token = None
-    if protocols:
-        for p in protocols.split(","):
-            p = p.strip().strip('"')
-            if p and p not in ("token", ""):
-                ws_token = p
-                break
-
-    final_token = ws_token or token
-
-    if not final_token:
-        await _reject(websocket, 4001, "缺少认证token", ws_token)
+async def webssh_websocket(websocket: WebSocket, device_id: int) -> Any:
+    digest = credential_digest(websocket.cookies.get(cookie_name()))
+    scheme, token = get_authorization_scheme_param(websocket.headers.get("authorization"))
+    browser = "origin" in websocket.headers or digest is not None
+    if browser:
+        try:
+            require_browser_origin(websocket)
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+    if "token" in websocket.query_params or websocket.headers.get("sec-websocket-protocol"):
+        await _reject(websocket, 4001, "终端登录方式已更新，请刷新工作台")
+        return
+    if not digest and (browser or scheme.lower() != "bearer" or not token):
+        await _reject(websocket, 4001, "请登录工作台后再打开终端")
+        return
+    session_factory = get_session_factory()
+    if session_factory is None:
+        await _reject(websocket, 4005, "数据库未初始化")
         return
 
+    async def authenticate(db):
+        if browser:
+            return await authenticate_browser_session(digest, db)
+        return await authenticate_token(token, db)
+
     try:
-        # Reject a malformed token before touching the database.
-        decode_access_token(final_token)
-        session_factory = get_session_factory()
-        if session_factory is None:
-            await _reject(websocket, 4005, "数据库未初始化", ws_token)
-            return
-        async with session_factory() as auth_db:
-            actor = await authenticate_token(final_token, auth_db)
+        async with session_factory() as db:
+            actor = await authenticate(db)
         user_id = actor["user_id"]
     except Exception:
-        await _reject(websocket, 4001, "认证失败", ws_token)
+        await _reject(websocket, 4001, "登录已失效，请重新登录")
         return
 
     if not _acquire_ws_slot(user_id):
-        await _reject(websocket, 4006, "并发终端会话数已达上限", ws_token)
+        await _reject(websocket, 4006, "并发终端会话数已达上限")
         return
     lock_acquired = False
     terminal_token = uuid.uuid4().hex
-    session_factory = None
     heartbeat_stop = None
     heartbeat_task = None
     try:
-        # token有效，接受WebSocket连接（子协议方式传 token 时回显子协议）
-        await websocket.accept(subprotocol=ws_token)
-
-        # 获取数据库会话工厂
-        session_factory = get_session_factory()
-        if session_factory is None:
-            await websocket.send_text(json.dumps({"type": "error", "message": "数据库未初始化"}))
-            await websocket.close(code=4005, reason="数据库未初始化")
-            return
+        await websocket.accept()
 
         # 获取设备信息
         async with session_factory() as db:
@@ -143,6 +143,14 @@ async def webssh_websocket(websocket: WebSocket, device_id: int, token: str = No
             except ValueError:
                 await websocket.send_text(json.dumps({"type": "error", "message": "设备不存在"}))
                 await websocket.close(code=4004, reason="设备不存在")
+                return
+
+            mode = device_adapter.get_device_mode()
+            try:
+                grant = await check_terminal_grant(db, actor, device, mode=mode)
+            except TerminalPermissionError as exc:
+                await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                await websocket.close(code=4003, reason="缺少真实终端授权")
                 return
 
             if await db.get(DeviceWriteLock, device_id):
@@ -173,14 +181,17 @@ async def webssh_websocket(websocket: WebSocket, device_id: int, token: str = No
             heartbeat_stop = asyncio.Event()
             heartbeat_task = asyncio.create_task(_terminal_heartbeat(session_factory, device_id, terminal_token, heartbeat_stop))
             _track_heartbeat(heartbeat_task)
-            credentials = await DeviceService.get_device_credentials(device)
+            credentials = await DeviceService.get_device_credentials(device) if mode == "ssh" else {
+                "username": "", "password": "",
+            }
+            endpoint = (device.mgmt_ip, device.ssh_port)
             session_logger = TerminalSessionLogger(user_id=user_id, device_ip=device.mgmt_ip)
             proxy = SSHProxySession(
                 websocket=websocket, device_ip=device.mgmt_ip,
                 ssh_port=device.ssh_port, username=credentials["username"],
                 password=credentials["password"], session_logger=session_logger,
                 device_hostname=device.hostname,
-                authorize=lambda: _session_authorized(session_factory, final_token),
+                authorize=lambda: _session_authorized(session_factory, authenticate, device_id, mode, grant, endpoint),
             )
         # The interactive terminal must not hold a database connection for its lifetime.
         await proxy.start()
@@ -295,10 +306,21 @@ async def shutdown_terminal_tasks(timeout: float = 3.0) -> None:
             get_logger('webssh').warning('terminal_shutdown_cleanup_pending', pending_tasks=len(pending))
 
 
-async def _session_authorized(session_factory, token: str) -> bool:
+async def _session_authorized(
+    session_factory, authenticate, device_id: int, mode: str, grant: str | None, endpoint: tuple[str, int],
+) -> bool:
     try:
         async with session_factory() as db:
-            await authenticate_token(token, db)
+            actor = await authenticate(db)
+            if device_adapter.get_device_mode() != mode:
+                raise TerminalPermissionError("设备连接方式已变化")
+            if mode == "ssh":
+                device = await db.get(Device, device_id)
+                if device is None or (device.mgmt_ip, device.ssh_port) != endpoint:
+                    raise TerminalPermissionError("设备管理地址已变化")
+                await check_terminal_grant(db, actor, device, mode=mode, expected=grant)
         return True
+    except TerminalPermissionError:
+        raise
     except Exception:
         return False

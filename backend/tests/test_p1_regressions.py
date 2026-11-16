@@ -142,8 +142,8 @@ class TestFallbackStream:
         assert parts == [{"kind": "content", "text": "前半段"}]
 
     @pytest.mark.asyncio
-    async def test_fallback_message_when_nothing_yielded(self):
-        from core.llm_provider import FallbackProvider
+    async def test_provider_failure_uses_exception_when_nothing_yielded(self):
+        from core.llm_provider import FallbackProvider, LLMUnavailableError
 
         class _Primary:
             name = "P"
@@ -154,10 +154,11 @@ class TestFallbackStream:
 
         provider = FallbackProvider(_Primary(), fallback_message="降级文案")
         parts = []
-        with pytest.raises(RuntimeError, match="down"):
+        with pytest.raises(LLMUnavailableError, match="降级文案") as caught:
             async for part in provider.stream_parts("hi"):
                 parts.append(part)
-        assert parts == [{"kind": "content", "text": "降级文案"}]
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert parts == []
 
 
 class TestHighestRisk:

@@ -97,6 +97,7 @@ class RequestStore:
             await db.commit()
 
     async def read(self, request_id, actor):
+        from .context_bundle import sanitize_historical_references
         async with self.factory() as db:
             row = await db.get(CopilotRequest, (actor["user_id"], request_id))
             if row is None:
@@ -106,5 +107,5 @@ class RequestStore:
             return {"request_id": request_id, "state": row.status,
                     "created_at": row.created_at.isoformat() + "Z",
                     "updated_at": row.updated_at.isoformat() + "Z",
-                    "response": row.response, "http_status": row.http_status,
+                    "response": sanitize_historical_references(row.response), "http_status": row.http_status,
                     "replayed": True, "historical": True}

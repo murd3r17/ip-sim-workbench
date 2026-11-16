@@ -1,7 +1,9 @@
 import request from './request'
+import type { BrowserSession } from '../stores/browserSession'
 
 export const login = (data: { username: string; password: string }) =>
-  request.post('/auth/login', data)
+  request.post<BrowserSession, BrowserSession>('/auth/session', data, { headers: { 'X-Workbench-Login': '1' } })
+export const logout = () => request.delete('/auth/session')
 
 export const getMe = () => request.get('/auth/me')
 
@@ -25,3 +27,26 @@ export const createAccount = (data: { username: string; display_name: string; pa
 
 export const resetTraineePassword = (accountId: number, newPassword: string) =>
   request.put(`/auth/users/${accountId}/password`, { new_password: newPassword }, { silent: true })
+
+export interface TerminalGrant {
+  grant_id: string
+  device_id: number
+  management_address: string
+  ssh_port: number
+  expires_at: string
+  revoked_at: string | null
+  note: string
+}
+
+export const listTerminalGrants = (userId: number) =>
+  request.get<TerminalGrant[], TerminalGrant[]>(`/auth/users/${userId}/terminal-grants`, { silent: true })
+export const issueTerminalGrant = (userId: number, deviceId: number, minutes: number, note: string) =>
+  request.put(`/auth/users/${userId}/terminal-grants/${deviceId}`, { minutes, note }, { silent: true })
+export const revokeTerminalGrant = (userId: number, grant: TerminalGrant) =>
+  request.delete(`/auth/users/${userId}/terminal-grants/${grant.device_id}`, {
+    params: { grant_id: grant.grant_id }, silent: true,
+  })
+
+export interface TerminalAccess { allowed: boolean; mode: 'sim' | 'ssh'; reason?: string }
+export const getTerminalAccess = (deviceId: number) =>
+  request.get<TerminalAccess, TerminalAccess>(`/webssh/access/${deviceId}`, { silent: true })

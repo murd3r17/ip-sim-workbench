@@ -1,9 +1,8 @@
 """设备管理模块服务"""
 import asyncio
 import json
-import socket
 from datetime import datetime, timezone
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.security import credential_encryptor
@@ -18,36 +17,34 @@ logger = get_logger("topology")
 def _ssh_check_sync(ip: str, port: int, username: str, password: str, timeout: int = 8) -> bool:
     """同步SSH健康检查 - 支持keyboard-interactive和password两种认证"""
     import paramiko
-    from engines.netmiko_exec import new_ssh_client
+    from engines.ssh_trust import (
+        InvalidKnownHosts, UnknownDeviceHost, connect_with_device_password, new_ssh_client,
+    )
+
     client = new_ssh_client()
     try:
-        # 先尝试普通password认证
-        try:
-            client.connect(hostname=ip, port=port, username=username, password=password,
-                           timeout=timeout, allow_agent=False, look_for_keys=False,
-                           auth_timeout=timeout)
-            return True
-        except paramiko.AuthenticationException:
-            pass
-
-        # 回退：使用transport做keyboard-interactive认证
-        sock = socket.create_connection((ip, port), timeout=timeout)
-        transport = paramiko.Transport(sock)
-        transport.connect()
-        try:
-            def handler(title, instructions, prompt_list):
-                return [password] * len(prompt_list)
-            transport.auth_interactive(username, handler)
-            if transport.is_authenticated():
-                return True
-        finally:
-            transport.close()
-        return False
+        connect_with_device_password(client, ip, port, username, password, timeout)
+        return True
+    except (UnknownDeviceHost, InvalidKnownHosts, paramiko.BadHostKeyException):
+        raise
     except Exception as e:
-        logger.debug("ssh_check_failed", ip=ip, error=str(e))
+        logger.debug("ssh_check_failed", ip=ip, error=type(e).__name__)
         return False
     finally:
         client.close()
+
+
+def _ssh_health_reason(exc: Exception) -> str:
+    from paramiko import BadHostKeyException
+    from engines.ssh_trust import InvalidKnownHosts, UnknownDeviceHost
+
+    if isinstance(exc, UnknownDeviceHost):
+        return "ssh_host_unknown"
+    if isinstance(exc, BadHostKeyException):
+        return "ssh_host_changed"
+    if isinstance(exc, InvalidKnownHosts):
+        return "ssh_known_hosts_invalid"
+    return "check_failed"
 
 
 class DeviceService:
@@ -88,9 +85,15 @@ class DeviceService:
         device = await DeviceService.get_device(db, device_id)
         await DeviceService.lock_topology(db, device.topology_id)
         await db.refresh(device)
+        previous_endpoint = (device.mgmt_ip, device.ssh_port)
         for key, value in data.items():
             if value is not None and key in DeviceService._UPDATABLE_FIELDS:
                 setattr(device, key, value)
+        if previous_endpoint != (device.mgmt_ip, device.ssh_port):
+            from modules.auth.models import TerminalGrant
+            await db.execute(update(TerminalGrant).where(
+                TerminalGrant.device_id == device_id, TerminalGrant.revoked_at.is_(None),
+            ).values(revoked_at=datetime.now(timezone.utc).replace(tzinfo=None)))
         await db.commit()
         await db.refresh(device)
         return device
@@ -127,6 +130,8 @@ class DeviceService:
     async def device_dependencies(db: AsyncSession, device_id: int) -> dict[str, int]:
         dependencies = {}
         for table in Device.metadata.tables.values():
+            if table.name == "terminal_grant":
+                continue  # Device deletion removes live permissions; audit events remain.
             columns = [fk.parent for fk in table.foreign_keys if fk.target_fullname == "device.id"]
             if columns:
                 count = await db.scalar(select(func.count()).select_from(table).where(
@@ -176,6 +181,7 @@ class DeviceService:
         device = await DeviceService.get_device(db, device_id)
 
         from engines.device_adapter import get_device_mode
+        reason = None
         if get_device_mode() == "sim":
             is_alive = True
         else:
@@ -186,7 +192,11 @@ class DeviceService:
                 return {"device_id": device_id, "hostname": device.hostname, "status": "unknown", "error": "无SSH凭证"}
             loop = asyncio.get_running_loop()
             settings = get_settings()
-            is_alive = await loop.run_in_executor(None, _ssh_check_sync, device.mgmt_ip, device.ssh_port, uname, pwd, settings.ssh_connect_timeout)
+            try:
+                is_alive = await loop.run_in_executor(None, _ssh_check_sync, device.mgmt_ip, device.ssh_port, uname, pwd, settings.ssh_connect_timeout)
+            except Exception as exc:
+                is_alive = False
+                reason = _ssh_health_reason(exc)
 
         new_status = DeviceStatus.ONLINE if is_alive else DeviceStatus.OFFLINE
         old_status = device.status
@@ -198,7 +208,10 @@ class DeviceService:
             await db.commit()
 
         logger.info("device_health_check", device_id=device_id, hostname=device.hostname, old=old_status.value, new=new_status.value)
-        return {"device_id": device_id, "hostname": device.hostname, "status": new_status.value}
+        result = {"device_id": device_id, "hostname": device.hostname, "status": new_status.value}
+        if reason is not None:
+            result["reason"] = reason
+        return result
 
     @staticmethod
     async def check_all_devices_health(db: AsyncSession, topology_id: int = None, username: str = None, password: str = None) -> list:
@@ -251,8 +264,8 @@ class DeviceService:
                         None, _ssh_check_sync, device.mgmt_ip, device.ssh_port,
                         uname, pwd, settings.ssh_connect_timeout,
                     )
-                except Exception:  # noqa: BLE001
-                    return device, False, "check_failed"
+                except Exception as exc:
+                    return device, False, _ssh_health_reason(exc)
                 return device, alive, None if alive else "ssh_unavailable"
 
         probed = await asyncio.gather(*(probe(d) for d in devices))

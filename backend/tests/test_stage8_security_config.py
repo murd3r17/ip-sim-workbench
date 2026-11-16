@@ -4,10 +4,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_v60_defaults_to_anythingllm() -> None:
+def test_public_template_uses_local_knowledge_and_keeps_legacy_full_defaults() -> None:
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
-    assert "KNOWLEDGE_PROVIDER=anythingllm" in env_example
+    assert "KNOWLEDGE_PROVIDER=local" in env_example
     assert "KNOWLEDGE_BASE_URL=http://127.0.0.1:3001" in env_example
     assert "KNOWLEDGE_WORKSPACE_SLUG=ip-ops-kb" in env_example
     assert "KNOWLEDGE_API_KEY=" in env_example

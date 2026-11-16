@@ -30,7 +30,7 @@ let reconnectAttempts = 0
 const MAX_RECONNECT_DELAY_MS = 15000
 const MAX_RECONNECT_ATTEMPTS = 5
 // 服务端拒绝类关闭码（见 backend/modules/webssh/router.py）：重连无意义，直接展示原因
-const REJECT_CLOSE_CODES = new Set([4001, 4004, 4005, 4006, 4009])
+const REJECT_CLOSE_CODES = new Set([4001, 4003, 4004, 4005, 4006, 4009])
 
 let lineBuffer = ''
 let lastOutputTail = ''
@@ -271,10 +271,9 @@ const connect = async () => {
   await initTerminal()
   if (epoch !== connectEpoch) return
   opening = false
-  const token = localStorage.getItem('token') || ''
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const url = `${protocol}://${window.location.host}/api/v1/ws/ssh/${deviceId}`
-  const connection = token ? new WebSocket(url, [token]) : new WebSocket(url)
+  const connection = new WebSocket(url)
   ws = connection
   let reportedConnectionError = ''
 

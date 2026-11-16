@@ -1,4 +1,5 @@
 import request from './request'
+import { browserSessionRevision, expireBrowserSession, sessionFetch } from '../stores/browserSession'
 
 export const getAICapabilities = () =>
   request.get<unknown, { vision_enabled: boolean; image_mime_types: string[] }>('/ai/capabilities', { silent: true })
@@ -34,11 +35,22 @@ export const copilotChat = (data: {
   page_data?: string
 }) => request.post('/ai/copilot/chat', data)
 
+export interface CopilotReference {
+  source_id?: string
+  reference_index?: number
+  filename?: string
+  title?: string
+  score?: number
+  content?: string
+  version?: string
+  captured_at?: string
+  page?: number
+}
+
 export type CopilotStreamEvent =
   | {
       type: 'meta'
       request_id?: string
-      sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
       provider?: string
       status?: string
       knowledge_status?: string
@@ -47,6 +59,7 @@ export type CopilotStreamEvent =
       replayed?: boolean
       historical?: boolean
     }
+  | { type: 'references'; request_id?: string; generation_status?: string; sources?: CopilotReference[] }
   | { type: 'policy'; draft_refused_reason?: string; draft_target?: null; replace_answer?: string }
   | { type: 'tool'; name?: string; status?: string }
   | { type: 'progress'; stage: string; message?: string; request_id?: string }
@@ -82,26 +95,17 @@ export async function copilotChatStream(
   onEvent: (event: CopilotStreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const token = localStorage.getItem('token')
-  const res = await fetch('/api/v1/ai/copilot/chat/stream', {
+  const observedRevision = browserSessionRevision()
+  const res = await sessionFetch('/api/v1/ai/copilot/chat/stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(data),
     signal,
   })
 
   if (!res.ok) {
-    if (res.status === 401 && localStorage.getItem('token') === token) {
-      const { clearClientSession } = await import('../utils/session')
-      clearClientSession()
-      const path = `${window.location.pathname}${window.location.search}`
-      window.location.href = path.startsWith('/login')
-        ? '/login'
-        : `/login?expired=1&redirect=${encodeURIComponent(path)}`
-    }
     let detail = ''
     let code = ''
     try {
@@ -128,9 +132,14 @@ export async function copilotChatStream(
       if (!trimmed.startsWith('data:')) continue
       const payload = trimmed.slice(5).trim()
       if (!payload || payload === '[DONE]') continue
-      let event: CopilotStreamEvent
-      try { event = JSON.parse(payload) as CopilotStreamEvent } catch {
+      let event: CopilotStreamEvent | { type: 'auth_expired' }
+      try { event = JSON.parse(payload) } catch {
         throw new Error('回答数据格式异常，请查询原回答。')
+      }
+      if (observedRevision !== browserSessionRevision()) throw new Error('登录状态已变化。')
+      if (event.type === 'auth_expired') {
+        expireBrowserSession(observedRevision)
+        throw new Error('登录已失效，请重新登录。')
       }
       if (terminal) continue
       onEvent(event)

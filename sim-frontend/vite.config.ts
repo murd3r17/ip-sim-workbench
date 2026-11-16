@@ -50,12 +50,10 @@ export default defineConfig({
     reportCompressedSize: true,
     rollupOptions: {
       output: {
-        // 按真实模块路径分组：应用全部通过 `element-plus/es/components/...` 子路径按需
-        // 引入，桶入口 `element-plus` 根本不在依赖图里，旧的 `element: ['element-plus']`
-        // 写法等于没生效（P2-24）。
+        // Chart and terminal libraries follow their routes; login shares
+        // only its own controls with the workbench.
         manualChunks(id: string) {
           if (!id.includes('node_modules')) return undefined
-          if (id.includes('element-plus') || id.includes('@element-plus')) return 'element'
           if (id.includes('echarts') || id.includes('zrender')) return 'echarts'
           if (id.includes('xterm')) return 'xterm'
           if (id.includes('/vue/') || id.includes('vue-router') || id.includes('pinia') || id.includes('@vue/')) {

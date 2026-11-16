@@ -43,16 +43,20 @@ async def test_preparation_timeout_is_durable_and_does_not_repeat(test_session_f
 
 @pytest.mark.asyncio
 async def test_setup_and_stream_share_one_deadline(test_session_factory, monkeypatch):
-    # The request store has no User foreign key; this identity is isolated to this fixture DB.
-    actor = {"user_id": 1, "role": "user"}
-    monkeypatch.setattr(request_lifecycle, "deadline_seconds", lambda data: .12)
+    from tests.test_training.test_v7a_state_and_reports import _admin_token
+    from core.dependencies import authenticate_token
+
+    token = await _admin_token(test_session_factory)
+    async with test_session_factory() as db:
+        actor = await authenticate_token(token, db)
+    monkeypatch.setattr(request_lifecycle, "deadline_seconds", lambda data: .25)
     closed = asyncio.Event()
     async def invoke(data, cancel):
-        await asyncio.sleep(.06)
+        await asyncio.sleep(.12)
         async def stream():
             try:
                 yield request_lifecycle.encode({"type": "token", "text": "部分回答"})
-                await asyncio.sleep(.08)
+                await asyncio.sleep(.17)
                 yield request_lifecycle.encode({"type": "done", "status": "ok"})
             finally:
                 closed.set()

@@ -40,6 +40,7 @@
         <div class="search-form"><el-input v-model="searchQuery" type="textarea" :rows="2" placeholder="输入关键词（Ctrl+Enter 检索）" aria-label="检索关键词" @keydown.ctrl.enter.prevent="handleSearch" @keydown.meta.enter.prevent="handleSearch" /><el-button type="primary" :loading="searchLoading" @click="handleSearch">检索</el-button></div>
         <el-alert v-if="searchError" :title="searchError" type="error" show-icon :closable="false" />
         <el-empty v-if="searched && !searchResults.length && !searchLoading && !searchError" description="未检索到相关片段，可换关键词或查看资料目录。" :image-size="72" />
+        <p v-if="searchResults.length" class="knowledge-tip">结果按本次查询的匹配程度排序。请打开片段核对内容。</p>
         <el-card v-for="(result, i) in searchResults" :key="i" shadow="never" class="search-result">
           <header><strong>{{ result.title || result.filename || '检索片段' }}</strong><el-button link type="primary" @click="openCitation(result)">片段详情</el-button></header>
           <p v-if="result.page" class="document-secondary">原教材 PDF 第 {{ result.page }} 页</p>

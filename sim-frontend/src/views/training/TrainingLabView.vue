@@ -745,6 +745,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { notifyRequestError, requestErrorMessage } from '../../utils/requestError'
+import { browserSession, browserSessionRevision } from '../../stores/browserSession'
 import { renderMarkdown } from '../../utils/markdownLite'
 import { formatApiTime } from '../../utils/datetime'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
@@ -977,7 +978,7 @@ const route = useRoute()
 const labCtx = useLabContextStore()
 const copilot = useAiCopilotStore()
 const drafts = useWorkbenchDraftsStore()
-const signedInToken = localStorage.getItem('token')
+const openingSession = browserSessionRevision()
 
 // 操作记录与故障注入表单
 const logForm = ref({ action: 'command', target_device: '', command: '', success: true })
@@ -1238,7 +1239,7 @@ function normalizeWorkspaceSteps(saved: Array<Record<string, any>>) {
 
 function rememberWorkspace() {
   const session = currentSession.value
-  if (!signedInToken || localStorage.getItem('token') !== signedInToken || session?.status !== 'in_progress' || workspaceReadOnly.value) return
+  if (!browserSession.value || browserSessionRevision() !== openingSession || session?.status !== 'in_progress' || workspaceReadOnly.value) return
   if (!workspaceDirty.value) {
     delete drafts.training[session.id]
     return

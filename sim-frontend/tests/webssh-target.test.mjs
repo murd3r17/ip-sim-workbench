@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { test } from 'node:test'
+import { setImmediate as yieldLoop } from 'node:timers/promises'
 import ts from 'typescript'
 
 // Execute the actual component script with only its UI/network dependencies replaced.
@@ -14,6 +15,7 @@ function component(routeId = '1') {
   const watchers = []
   const vue = {
     ref: value => ({ value }), computed: getter => ({ get value() { return getter() } }),
+    nextTick: () => Promise.resolve(),
     onMounted() {}, onBeforeUnmount() {}, watch: (...args) => watchers.push(args),
   }
   const modules = {
@@ -21,6 +23,7 @@ function component(routeId = '1') {
     'vue-router': { useRoute: () => route, useRouter: () => ({}) },
     'element-plus/es/components/message/index': { ElMessage: { error() {} } },
     '../../api/device': { getDevices: async () => [{ id: 1, hostname: 'A' }, { id: 2, hostname: 'B' }] },
+    '../../api/auth': { getTerminalAccess: async () => ({ allowed: true, mode: 'sim' }) },
     '../../utils/requestError': { notifyRequestError: error => { throw error } },
     '../../utils/autoRefresh': { useAutoRefresh() {} },
     '../../components/WebSSHConsole.vue': {},
@@ -61,6 +64,7 @@ test('an explicit route change selects the requested target and connects', async
   const routeWatcher = view.watchers.find(([source]) => typeof source === 'function')
   view.route.params.deviceId = '2'
   routeWatcher[1]('2')
+  await yieldLoop()
   assert.equal(view.selectedDeviceId.value, 2)
   assert.equal(view.connectRequested.value, true)
 })

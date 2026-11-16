@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -36,8 +37,37 @@ CURRENT_INSTANCE_ID = uuid.uuid4().hex
 CURRENT_PID = os.getpid()
 TERMINAL_ACTIVE_GRACE_SECONDS = 120
 
+def _linux_proc_stat(pid: int) -> tuple[str, int]:
+    # comm can contain spaces and literal right parentheses.
+    record = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    prefix, separator, fields = record.rpartition(")")
+    if not separator or not prefix.startswith(f"{pid} ("):
+        raise ValueError("invalid process stat")
+    values = fields.split()
+    return values[0], int(values[19])
+
+
+def _linux_process_identity(ticks: int) -> str:
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    if not boot:
+        raise ValueError("missing boot identity")
+    return f"{boot}:{ticks}"
+
+
+def _linux_started_at(ticks: int) -> float:
+    stat = Path("/proc/stat").read_text(encoding="ascii")
+    boot = next(int(line.split()[1]) for line in stat.splitlines() if line.startswith("btime "))
+    return boot + ticks / os.sysconf("SC_CLK_TCK")
+
+
 def _process_started_at(pid: int) -> float | None:
-    """Windows 进程创建时间；用于避免 PID 复用。非 Windows 返回 None。"""
+    """Creation time for supported native process tables."""
+    if sys.platform == "linux":
+        try:
+            _, ticks = _linux_proc_stat(pid)
+            return _linux_started_at(ticks)
+        except (OSError, ValueError, IndexError, StopIteration):
+            return None
     if os.name != "nt":
         return None
     try:
@@ -63,7 +93,7 @@ def _process_started_at(pid: int) -> float | None:
         return None
 
 
-def _process_alive(pid: int, started_at: float | None) -> bool:
+def _process_alive(pid: int, started_at: float | None, identity: str | None = None) -> bool | None:
     if not pid or pid <= 0:
         return False
     if os.name == "nt":
@@ -94,11 +124,29 @@ def _process_alive(pid: int, started_at: float | None) -> bool:
             return True
         except Exception:
             return None
+    if sys.platform == "linux":
+        try:
+            state, ticks = _linux_proc_stat(pid)
+            if state in {"Z", "X", "x"}:
+                return False
+            if identity:
+                return _linux_process_identity(ticks) == identity
+            # A timestamp from an older schema can prove a mismatch, but
+            # rounding and same-second PID reuse prevent positive identification.
+            if started_at is not None and abs(_linux_started_at(ticks) - started_at) > 2:
+                return False
+            return None
+        except FileNotFoundError:
+            pass  # hidepid can hide a live process; distinguish using kill(0).
+        except (OSError, ValueError, IndexError, StopIteration):
+            return None
     try:
         os.kill(pid, 0)
-        return True
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:
+        return None
+    return None
 
 
 async def ensure_service_instance(db: AsyncSession) -> None:
@@ -106,15 +154,25 @@ async def ensure_service_instance(db: AsyncSession) -> None:
     now = _now().replace(tzinfo=None)
     row = await db.get(ServiceInstance, CURRENT_INSTANCE_ID)
     started = _process_started_at(CURRENT_PID)
+    identity = None
+    if sys.platform == "linux":
+        try:
+            _, ticks = _linux_proc_stat(CURRENT_PID)
+            identity = _linux_process_identity(ticks)
+        except (OSError, ValueError, IndexError):
+            pass
     if row is None:
         db.add(ServiceInstance(instance_id=CURRENT_INSTANCE_ID, pid=CURRENT_PID,
                                process_started_at=datetime.fromtimestamp(started, timezone.utc).replace(tzinfo=None) if started else None,
+                               process_identity=identity,
                                started_at=now, last_heartbeat_at=now))
     else:
         row.pid = CURRENT_PID
         row.last_heartbeat_at = now
         if started:
             row.process_started_at = datetime.fromtimestamp(started, timezone.utc).replace(tzinfo=None)
+        if identity:
+            row.process_identity = identity
     await db.flush()
 
 
@@ -137,7 +195,7 @@ async def reconcile_terminal_locks(db: AsyncSession) -> None:
             changed = True
             continue
         started_at = inst.process_started_at.replace(tzinfo=timezone.utc).timestamp() if inst.process_started_at else None
-        alive = _process_alive(inst.pid, started_at)
+        alive = _process_alive(inst.pid, started_at, inst.process_identity)
         if alive is False:
             lock.state = "orphaned"
             lock.release_state = "orphaned"

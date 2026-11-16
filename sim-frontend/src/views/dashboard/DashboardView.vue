@@ -30,6 +30,8 @@
           <span class="service-label">模型连通性</span>
           <strong :title="summary.services.llm.model || '模型未配置'" :class="statusClass(summary.services.llm.status)">{{ summary.services.llm.status === 'healthy' ? '可连接' : serviceLabel(summary.services.llm.status) }}</strong>
           <small v-if="summary.services.llm.checked_at" class="service-label" :title="formatApiTime(summary.services.llm.checked_at)">{{ formatTime(summary.services.llm.checked_at, true) }} 探测</small>
+          <el-button v-else-if="isAdmin && summary.services.llm.status === 'disabled'" link type="primary" @click="router.push('/system/config')">配置模型</el-button>
+          <small v-else-if="summary.services.llm.status === 'disabled'" class="service-label">教材可用 · 模型请联系管理员</small>
         </div>
         <div class="service-item" style="cursor: pointer" title="点击进入知识库管理" @click="router.push('/knowledge')">
           <span class="service-label">知识库</span>
@@ -177,7 +179,10 @@
             </div>
           </header>
           <div v-if="!alarmTrendTotal" class="trend-empty">近 7 天没有保存告警记录</div>
-          <div v-else ref="trendChartRef" class="trend-chart"></div>
+          <template v-else>
+            <div ref="trendChartRef" class="trend-chart" role="img" aria-label="近七天告警趋势"></div>
+            <el-button v-if="trendChartError" link @click="renderTrendChart(true)">图表未加载 · 重试</el-button>
+          </template>
         </section>
 
         <section class="panel approval-panel" v-if="approvals.length">
@@ -263,10 +268,7 @@ import { formatApiTime } from '../../utils/datetime'
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
-import * as echarts from 'echarts/core'
-import { LineChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+import type { ECharts } from 'echarts/core'
 import { getDashboardServices, getDashboardSummary, type DashboardSummary, type DashboardTask } from '../../api/dashboard'
 import { getDevices, getTopologyLinks } from '../../api/device'
 import TopologyCanvas from '../../components/TopologyCanvas.vue'
@@ -295,7 +297,6 @@ function alarmBrief(alarm: DashboardAlarm) {
   if (alarm.metric_value == null || alarm.threshold == null || alarm.alarm_type?.startsWith('interface_')) return formatApiTime(alarm.fired_at)
   return `采样 ${alarmMeasurementLabel(alarm.metric_value, alarm.alarm_type)} · 阈值 ${alarmMeasurementLabel(alarm.threshold, alarm.alarm_type)}`
 }
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 const summary = ref<DashboardSummary | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -306,10 +307,14 @@ let dashboardActive = true
 const now = ref(new Date())
 let clockTimer = 0
 const trendChartRef = ref<HTMLDivElement | null>(null)
-let trendChart: echarts.ECharts | null = null
+const trendChartError = ref(false)
+let trendChart: ECharts | null = null
 let trendResizeObserver: ResizeObserver | null = null
+let trendVisibility: IntersectionObserver | null = null
+let charts: Promise<typeof import('../../charts')> | undefined
 
 const currentTime = computed(() => now.value.toLocaleString('zh-CN', { hour12: false }))
+const resizeTrendChart = () => { trendChart?.resize() }
 const topologyRoute = computed(() => {
   const id = summary.value?.topology?.id
   return { path: '/topology', query: id ? { topology_id: String(id) } : {} }
@@ -331,10 +336,12 @@ const jobTypeLabel = (type: string) => ({
   cleanup: '数据清理',
 } as Record<string, string>)[type] || type || '巡检任务'
 
-const renderTrendChart = () => {
+const renderTrendChart = async (visible = false) => {
   // 没有告警时不渲染空图表（占位文案代替，省下高度给下面的分析区）
   const el = trendChartRef.value
   if (!el) {
+    trendVisibility?.disconnect()
+    trendVisibility = null
     trendResizeObserver?.disconnect()
     trendResizeObserver = null
     trendChart?.dispose()
@@ -348,6 +355,29 @@ const renderTrendChart = () => {
     trendChart = null
   }
   if (!trendChart) {
+    if (!visible && !charts) {
+      trendVisibility?.disconnect()
+      trendVisibility = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return
+        trendVisibility?.disconnect()
+        trendVisibility = null
+        void renderTrendChart(true)
+      })
+      trendVisibility.observe(el)
+      return
+    }
+    charts ??= import('../../charts')
+    let echarts
+    try {
+      echarts = await charts
+      trendChartError.value = false
+    } catch {
+      trendChartError.value = true
+      charts = undefined
+      return
+    }
+    if (!dashboardActive || trendChartRef.value !== el) return
+    if (trendChart) return
     trendChart = echarts.init(el, undefined, { renderer: 'canvas' })
     trendResizeObserver = new ResizeObserver(() => trendChart?.resize())
     trendResizeObserver.observe(el)
@@ -441,8 +471,8 @@ const loadSummary = async () => {
   }
 }
 
-const serviceLabel = (status: string) => ({ healthy: '正常', configured: '已配置', not_configured: '未配置', unavailable: '不可用' }[status] || status)
-const statusClass = (status: string) => ['healthy', 'configured', 'operational', 'success', 'online'].includes(status) ? 'ok-text' : status === 'not_configured' ? 'muted-text' : 'warn-text'
+const serviceLabel = (status: string) => ({ healthy: '正常', configured: '已配置', not_configured: '未配置', disabled: '未启用', unavailable: '不可用' }[status] || status)
+const statusClass = (status: string) => ['healthy', 'configured', 'operational', 'success', 'online'].includes(status) ? 'ok-text' : ['not_configured', 'disabled'].includes(status) ? 'muted-text' : 'warn-text'
 const taskKindLabel = (kind: string) => ({ deploy: '配置', background: '后台', inspection: '巡检', patrol: '巡检', ai: 'AI', llm: 'AI', training: '实训' }[kind] || kind)
 const formatTime = (value: string, onlyTime = false) => formatApiTime(value, onlyTime ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : {})
 const goTraining = () => {
@@ -470,12 +500,13 @@ onMounted(() => {
   loadSummary()
   clockTimer = window.setInterval(() => { now.value = new Date() }, 1000)
   useAutoRefresh(loadSummary, 20000)
-  window.addEventListener('resize', renderTrendChart)
+  window.addEventListener('resize', resizeTrendChart)
 })
 onUnmounted(() => {
   dashboardActive = false
   window.clearInterval(clockTimer)
-  window.removeEventListener('resize', renderTrendChart)
+  window.removeEventListener('resize', resizeTrendChart)
+  trendVisibility?.disconnect()
   trendResizeObserver?.disconnect()
   trendResizeObserver = null
   trendChart?.dispose()

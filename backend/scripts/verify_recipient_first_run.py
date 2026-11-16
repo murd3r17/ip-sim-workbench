@@ -127,7 +127,11 @@ async def authenticated_start(settings, base, expected, launcher):
         health = await client.get(base + "/api/v1/health")
         require(health.status_code == 200, "recipient_health_failed")
         components = health.json().get("components", {})
-        require(all(components.get(key, {}).get("status") == "healthy" for key in ("mysql", "llm", "knowledge")), "recipient_components_unhealthy")
+        from core.health import database_component
+        database = database_component(components)
+        require(database.get("status") == "healthy" and database.get("backend", "mysql") == "mysql"
+                and all(components.get(key, {}).get("status") == "healthy" for key in ("llm", "knowledge")),
+                "recipient_components_unhealthy")
         page = await client.get(base + "/")
         # Compare the exact bytes the server returned with the packaged file.
         # A text-mode read translates CRLF to LF while an HTTP body keeps CRLF,
@@ -139,7 +143,8 @@ async def authenticated_start(settings, base, expected, launcher):
         # now the raw-bytes digest of the same packaged file.
         return {"ok": True, "runtime_identity": actual, "frontend_sha256": digest(raw),
                 "frontend_file_sha256": digest(raw),
-                "components": {key: components[key]["status"] for key in ("mysql", "llm", "knowledge")}}
+                "components": {"mysql": database["status"],
+                               **{key: components[key]["status"] for key in ("llm", "knowledge")}}}
 
 
 def target_keys(targets):

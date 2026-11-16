@@ -10,11 +10,13 @@ import anyio
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from core.auth_stream import require_live_session
 from core.logger import get_logger
 from core.request_metrics import RequestMetrics
 from .cancel import (registry, RequestCancelled, RequestCapacityExceeded,
                      RequestIdConflict, run_cancellable)
 from .request_store import RequestStore
+from .context_bundle import sanitize_historical_references
 
 logger = get_logger("copilot_requests")
 
@@ -33,7 +35,7 @@ def encode(event):
 
 
 def result_events(result, request_id, *, replayed=True):
-    yield {"type": "meta", "request_id": request_id, "sources": result.get("sources", []),
+    yield {"type": "meta", "request_id": request_id, "sources": [],
            "provider": result.get("provider", ""), "status": result.get("status", "failed"),
            "knowledge_status": result.get("knowledge_status", "unknown"),
            "draft_refused_reason": result.get("draft_refused_reason", ""),
@@ -47,6 +49,8 @@ def result_events(result, request_id, *, replayed=True):
                "draft_explanation": result.get("draft_explanation", "")}
     if result.get("error_message"):
         yield {"type": "error", "request_id": request_id, "message": result["error_message"]}
+    yield {"type": "references", "request_id": request_id, "sources": result.get("sources", []),
+           "generation_status": result.get("generation_status", "not_generated")}
     yield {"type": "done", "request_id": request_id, "status": result.get("status", "failed"),
            "cancelled": result.get("status") == "cancelled", "assist_only": True,
            "trace": result.get("trace", {}), "replayed": replayed}
@@ -55,6 +59,7 @@ def result_events(result, request_id, *, replayed=True):
 class Accumulator:
     def __init__(self, request_id):
         self.result = {"answer": "", "sources": [], "draft_commands": [],
+                       "generation_status": "not_generated",
                        "request_id": request_id, "status": "interrupted", "assist_only": True}
         self.size = 0
 
@@ -63,8 +68,11 @@ class Accumulator:
         if self.size > 2_000_000:
             raise RuntimeError("Assistant response exceeds recovery limit")
         kind = event.get("type")
-        if kind == "meta":
-            for key in ("sources", "provider", "knowledge_status", "draft_refused_reason", "draft_target", "tier", "skill"):
+        if kind == "references":
+            self.result["sources"] = event.get("sources", [])
+            self.result["generation_status"] = event.get("generation_status", "not_generated")
+        elif kind == "meta":
+            for key in ("provider", "knowledge_status", "draft_refused_reason", "draft_target", "tier", "skill"):
                 if key in event:
                     self.result[key] = event[key]
         elif kind == "token":
@@ -165,14 +173,15 @@ async def execute(data, actor, factory, invoke, *, streaming):
             raise HTTPException(503, detail={"code": "request_store_unavailable",
                 "message": "请求记录暂不可用，本次未启动模型或工具。"}) from exc
         if lease.replay:
-            result = {**(lease.response or {}), "request_id": rid, "replayed": True, "historical": True}
+            result = {**(sanitize_historical_references(lease.response) or {}),
+                      "request_id": rid, "replayed": True, "historical": True}
             if lease.http_status >= 400:
                 raise HTTPException(lease.http_status, detail=result.get("detail", "原请求失败；重新提问会创建新请求。"))
             if streaming:
                 async def replay():
                     for event in result_events(result, rid):
                         yield encode(event)
-                return StreamingResponse(replay(), media_type="text/event-stream",
+                return StreamingResponse(require_live_session(replay(), actor), media_type="text/event-stream",
                                          headers={"Cache-Control": "no-store"})
             return result
 
@@ -202,18 +211,19 @@ async def execute(data, actor, factory, invoke, *, streaming):
             async def timeout_events():
                 for event in result_events(result, rid, replayed=False):
                     yield encode(event)
-            return StreamingResponse(timeout_events(), media_type="text/event-stream")
+            return StreamingResponse(require_live_session(timeout_events(), actor), media_type="text/event-stream")
         if not isinstance(response, StreamingResponse):
             await interrupted()
             return response
         accumulator = Accumulator(rid)
 
         async def persist_stream():
+            source = require_live_session(response.body_iterator, actor)
             try:
                 while True:
                     try:
                         with metrics.bind():
-                            raw = await within_deadline(anext(response.body_iterator))
+                            raw = await within_deadline(anext(source))
                     except StopAsyncIteration:
                         break
                     # The inner transport emits exactly one JSON event per frame.
@@ -223,6 +233,10 @@ async def execute(data, actor, factory, invoke, *, streaming):
                             continue
                         event = json.loads(line[6:])
                         event["request_id"] = rid
+                        if event.get("type") == "auth_expired":
+                            cancel_event.set()
+                            yield encode(event)
+                            return
                         metrics.note_event(event)
                         if event.get("type") == "done":
                             metrics.finish()
@@ -256,6 +270,8 @@ async def execute(data, actor, factory, invoke, *, streaming):
                 # Close upstream before recording interruption.
                 try:
                     with anyio.move_on_after(5, shield=True):
+                        with suppress(Exception):
+                            await source.aclose()
                         with suppress(Exception):
                             await response.body_iterator.aclose()
                     await interrupted(accumulator.result)

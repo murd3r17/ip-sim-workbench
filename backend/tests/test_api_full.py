@@ -1736,7 +1736,7 @@ class TestWebSSH:
         with TestClient(app) as ws_client:
             with patch('modules.webssh.router.get_session_factory', return_value=webssh_session_factory):
                 with patch('modules.webssh.proxy.paramiko.SSHClient', side_effect=AssertionError('sim must not use SSH')):
-                    with ws_client.websocket_connect(f'/api/v1/ws/ssh/{device.id}?token={token}') as ws:
+                    with ws_client.websocket_connect(f'/api/v1/ws/ssh/{device.id}', headers=auth_header(token)) as ws:
                         connected = json.loads(ws.receive_text())
                         assert connected['type'] == 'connected' and '模拟终端' in connected['message']
                         assert json.loads(ws.receive_text())['type'] == 'output'  # prompt
@@ -1775,7 +1775,7 @@ class TestWebSSH:
         from main import app
         with TestClient(app) as ws_client:
             with patch("modules.webssh.router.get_session_factory", return_value=webssh_session_factory):
-                with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device.id}?token={token}") as ws:
+                with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device.id}", headers=auth_header(token)) as ws:
                     assert "占用" in json.loads(ws.receive_text())["message"]
 
     def test_websocket_auth_failure_invalid_token(self, client, test_session_factory):
@@ -1786,11 +1786,11 @@ class TestWebSSH:
         """
         from main import app
         with TestClient(app) as ws_client:
-            with ws_client.websocket_connect("/api/v1/ws/ssh/1?token=invalid_token") as ws:
+            with ws_client.websocket_connect("/api/v1/ws/ssh/1", headers=auth_header("invalid_token")) as ws:
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
         assert exc_info.value.code == 4001
-        assert "认证失败" in exc_info.value.reason
+        assert "登录已失效" in exc_info.value.reason
 
     def test_websocket_auth_failure_no_token(self, client, test_session_factory):
         """WebSocket连接 - 无token认证失败（同上：接受握手后用关闭帧告知原因）"""
@@ -1800,20 +1800,13 @@ class TestWebSSH:
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
         assert exc_info.value.code == 4001
-        assert "缺少认证token" in exc_info.value.reason
+        assert "请登录" in exc_info.value.reason
 
-    def test_websocket_reject_echoes_subprotocol(self, client, test_session_factory):
-        """A3：拒绝时必须回显子协议。
-
-        前端用 `new WebSocket(url, [token])` 传 token；按规范服务端若不回显子协议，
-        浏览器会直接判定握手失败并只报 1006（实测），用户看不到原因。
-        """
+    def test_websocket_never_echoes_legacy_token_subprotocol(self, client, test_session_factory):
         from main import app
         with TestClient(app) as ws_client:
-            with ws_client.websocket_connect(
-                "/api/v1/ws/ssh/1", subprotocols=["invalid_token"]
-            ) as ws:
-                assert ws.accepted_subprotocol == "invalid_token"
+            with ws_client.websocket_connect("/api/v1/ws/ssh/1", subprotocols=["legacy-fixture"]) as ws:
+                assert ws.accepted_subprotocol is None
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     ws.receive_text()
         assert exc_info.value.code == 4001
@@ -1824,7 +1817,7 @@ class TestWebSSH:
         from main import app
         with TestClient(app) as ws_client:
             with patch("modules.webssh.router.get_session_factory", return_value=webssh_session_factory):
-                with ws_client.websocket_connect(f"/api/v1/ws/ssh/99999?token={token}") as ws:
+                with ws_client.websocket_connect(f"/api/v1/ws/ssh/99999", headers=auth_header(token)) as ws:
                     data = ws.receive_text()
                     msg = json.loads(data)
                     assert msg["type"] == "error"
@@ -1866,7 +1859,7 @@ class TestWebSSH:
         with TestClient(app) as ws_client:
             with patch("modules.webssh.router.get_session_factory", return_value=webssh_session_factory):
                 with patch("modules.webssh.proxy.paramiko.SSHClient", return_value=mock_ssh_client):
-                    with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}?token={token}") as ws:
+                    with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}", headers=auth_header(token)) as ws:
                         data = ws.receive_text()
                         msg = json.loads(data)
                         assert msg["type"] == "connected"
@@ -1915,7 +1908,7 @@ class TestWebSSH:
             with patch("modules.webssh.router.get_session_factory", return_value=webssh_session_factory):
                 with patch("engines.device_adapter.get_device_mode", return_value="ssh"):
                     with patch("modules.webssh.proxy.paramiko.SSHClient", return_value=mock_ssh_client):
-                        with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}?token={token}") as ws:
+                        with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}", headers=auth_header(token)) as ws:
                             ws.receive_text()  # connected message
                             ws.send_text(json.dumps({"type": "input", "data": "ls\n"}))
                             assert sent.wait(2), "input was not delivered to the SSH channel"
@@ -1961,7 +1954,7 @@ class TestWebSSH:
             with patch("modules.webssh.router.get_session_factory", return_value=webssh_session_factory):
                 with patch("engines.device_adapter.get_device_mode", return_value="ssh"):
                     with patch("modules.webssh.proxy.paramiko.SSHClient", return_value=mock_ssh_client):
-                        with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}?token={token}") as ws:
+                        with ws_client.websocket_connect(f"/api/v1/ws/ssh/{device_id}", headers=auth_header(token)) as ws:
                             ws.receive_text()  # connected message
                             ws.send_text(json.dumps({"type": "resize", "cols": 120, "rows": 40}))
                             assert resized.wait(2), "resize was not delivered to the SSH channel"

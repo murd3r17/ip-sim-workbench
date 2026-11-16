@@ -70,7 +70,7 @@ export async function guardFrontendOrSkip(): Promise<void> {
   if (process.env.E2E_REQUIRE_UP === '1') {
     throw new Error(
       `前端未在 ${FRONTEND_URL} 运行，且 E2E_REQUIRE_UP=1：按失败处理（不要静默跳过）。` +
-        '请先启动服务：scripts\\start-local-windows.ps1 或 scripts\\bootstrap-local.ps1',
+        '请先启动本地工作台（python scripts/bootstrap_local.py），再检查 E2E_BASE_URL。',
     )
   }
   test.skip(true, `frontend is not running at ${FRONTEND_URL}`)

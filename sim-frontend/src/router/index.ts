@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { hydrateBrowserSession } from '../stores/browserSession'
 
 const routes = [
   { path: '/login', name: 'Login', component: () => import('../views/LoginView.vue') },
@@ -36,25 +37,19 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to, _from, next) => {
-  const token = localStorage.getItem('token')
-  if (to.path !== '/login' && !token) {
-    next('/login')
-    return
-  }
-  if (to.path.startsWith('/system') || to.path.startsWith('/environments')) {
-    let role = ''
-    try {
-      role = JSON.parse(localStorage.getItem('user') || 'null')?.role || ''
-    } catch {
-      role = ''
+router.beforeEach(async to => {
+  if (to.path === '/login') return true
+  const adminPage = to.path.startsWith('/system') || to.path.startsWith('/environments')
+  try {
+    const session = await hydrateBrowserSession(adminPage)
+    if (!session) return { path: '/login', query: { redirect: to.fullPath }, replace: true }
+    if (adminPage && session.user.role !== 'admin') {
+      return { path: '/dashboard', query: { access: 'denied' }, replace: true }
     }
-    if (role !== 'admin') {
-      next('/dashboard')
-      return
-    }
+    return true
+  } catch {
+    return { path: '/login', query: { redirect: to.fullPath, unavailable: '1' }, replace: true }
   }
-  next()
 })
 
 export default router

@@ -110,6 +110,7 @@ class CopilotChatResponse(BaseModel):
     status: str = "ok"
     provider: str = "anythingllm"
     knowledge_status: str = "unknown"
+    generation_status: str = "not_generated"
     tier: str = "standard"
     trace: dict = Field(default_factory=dict)
 

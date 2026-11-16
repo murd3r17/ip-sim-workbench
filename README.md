@@ -1,8 +1,8 @@
 # IP 仿真运维管理工作台
 
-面向网络运维初学者的 Windows 工作台。从首页「入门巡检」开始，查看拓扑、记录一条接口观察并保存到实训历史。继续学习时可通过课程步骤打开教材对应页，或请右侧助手解释步骤和证据。
+面向网络运维初学者的工作台。从首页「入门巡检」开始，查看拓扑、记录一条接口观察并保存到实训历史。继续学习时可通过课程步骤打开教材对应页，或请右侧助手解释步骤和证据。
 
-**V7.0 增量候选** · [Windows 快速启动](#windows-快速启动) · [首次验收](#首次验收) · [启动与接管指南](启动与验收.md)
+**V7.0 增量候选** · [Windows 快速启动](#windows-快速启动) · [Linux 最小模式](#linux-最小模式) · [首次验收](#首次验收) · [启动与接管指南](启动与验收.md)
 
 ## 界面预览
 
@@ -20,7 +20,7 @@
 
 | 实训课程目录 | 知识库目录 |
 | --- | --- |
-| [![实训目录显示课程和可用条件](docs/images/workbench/training-courses.png)](docs/images/workbench/training-courses.png) | [![挂载同版教材后的知识库目录](docs/images/workbench/knowledge.png)](docs/images/workbench/knowledge.png) |
+| [![实训目录显示课程和可用条件](docs/images/workbench/training-courses.png)](docs/images/workbench/training-courses.png) | [![随包教材目录与全文入口](docs/images/workbench/knowledge.png)](docs/images/workbench/knowledge.png) |
 
 ## Windows 快速启动
 
@@ -34,12 +34,24 @@ pwsh -NoProfile -File .\scripts\bootstrap-local.ps1 -Mode minimal
 
 脚本就绪后打开 [本机工作台](http://127.0.0.1:8000)。在仓库根目录的 `.env` 查看首次生成的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，登录后进入「工作台」。8000 端口有占用时，在启动命令末尾加 `-BackendPort 18080`，按脚本打印的地址访问。
 
+## Linux 最小模式
+
+使用 Python 3.12 和该版本的 venv 模块。Ubuntu 24.04 可通过系统包管理器准备 `python3.12-venv`。仓库附带前端，运行以下命令后，打开终端打印的本机地址。
+
+```bash
+git clone https://github.com/murd3r17/ip-sim-workbench.git
+cd ip-sim-workbench
+python3.12 scripts/bootstrap_local.py
+```
+
+在根目录 `.env` 查看初始管理员账号。按 Ctrl+C 停止，或通过 `--port 18080` 改用空闲端口。完整模式的安装与真设备接入请参考对应指南。[完整模式](docs/guides/full模式首次配置与启动.md)
+
 ## 首次验收
 
 1. 在「工作台」核对六台设备和五条链路。点「打开拓扑页」，选择一条链路查看两端接口。
 2. 进入「设备」，对 R-1 点「只读观察」→「采集只读事实」，查看接口状态和采集时间。也可以在「终端」连接 R-1，输入 `display interface brief` 查看回显。
 3. 回首页点「入门巡检」和「开始巡检」。按提示记录设备、接口、状态和观察时间，点「保存笔记/步骤」。在终端页点右上角「实训进行中」，可原地查看或编辑会话，关窗后继续使用终端。
-4. 进入「知识库」，用 `OSPF` 筛选资料并打开一个章节。本机可阅读和检索随仓库提供的整理稿。挂载获授权的同版教材资产后，也可从实训步骤和助手引用打开对应正文与可用原图。
+4. 进入「知识库」→「检索资料」，输入 `OSPF` 并打开一个结果。本机可阅读和检索随仓库提供的整理稿。挂载获授权的同版教材资产后，也可从实训步骤和助手引用打开对应正文与可用原图。
 5. 管理员可在「系统管理」的「账号管理」创建或重置普通账号。学员从右上角账号菜单修改自己的密码。
 
 ## 接管与扩展

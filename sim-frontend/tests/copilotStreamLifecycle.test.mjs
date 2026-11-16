@@ -63,6 +63,9 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
       getCopilotRequest(requestId) { const d = deferred(); recoveries.push({ ...d, requestId }); return d.promise },
     },
     '../stores/aiCopilot': { useAiCopilotStore: () => store },
+    '../stores/browserSession': {
+      sessionFetch(url) { const d = deferred(); citations.push({ ...d, url }); return d.promise },
+    },
     '../stores/labContext': { useLabContextStore: () => labCtx },
     '../utils/markdownLite': { renderMarkdown: value => value },
     './KnowledgeDocumentReader.vue': {},
@@ -71,10 +74,10 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     '../utils/deviceModel': { resolveWorkbenchDeviceModel: () => 'NE40E' },
   }
   const module = { exports: {} }
-  new Function('require', 'module', 'exports', 'fetch', 'localStorage', outputText)(name => {
+  new Function('require', 'module', 'exports', outputText)(name => {
     assert.ok(stubs[name], `unexpected dependency ${name}`)
     return stubs[name]
-  }, module, module.exports, url => { const d = deferred(); citations.push({ ...d, url }); return d.promise }, { getItem: () => 'offline-token' })
+  }, module, module.exports)
   return { ...module.exports, store, labCtx, requests, recoveries, citations, drafts, navigations }
 }
 

@@ -4,6 +4,7 @@ No additional retrieval or model call. Prompt text and hashes describe exactly
 the excerpt retained after cleaning/trimming, not an arbitrary first 1200 chars.
 """
 import hashlib
+import re
 from datetime import datetime, timezone
 
 from .retrieval import clean_chunk
@@ -95,6 +96,7 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
         sources.append({
             "source_id": hashlib.sha256((title + "\n" + body).encode("utf-8")).hexdigest()[:16],
             "filename": title, "title": str(hit.get("title") or title), "score": hit.get("score"),
+            **({"score_kind": "relative_within_query"} if hit.get("score_kind") == "relative_within_query" else {}),
             "content": content, "version": version, "captured_at": now,
             "prompt_text": prompt_text, "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
             "truncated": truncated,
@@ -110,3 +112,27 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
 
 def source_documents(sources):
     return SourceDocuments(sources)
+
+
+def answer_references(sources: list[dict], answer: str, status: str) -> tuple[str, list[dict]]:
+    if not answer.strip() or status in {"blocked_environment", "unavailable"}:
+        return "not_generated", []
+    if status == "ok":
+        return "generated", sources
+    # A failed or cancelled stream may contain usable prose. Keep only
+    # markers that actually occurred, retaining their original number.
+    indices = {int(value) for value in re.findall(r"\[(\d{1,2})\]", answer)}
+    return "partial", [
+        {**source, "reference_index": index}
+        for index, source in enumerate(sources, 1) if index in indices
+    ]
+
+
+def sanitize_historical_references(result: dict | None) -> dict | None:
+    if result is None or result.get("generation_status"):
+        return result
+    if result.get("status") not in {"failed", "unavailable", "cancelled", "interrupted", "degraded", "blocked_environment"}:
+        return result
+    # Old failure rows had no reliable boundary between retrieval metadata
+    # and actual model content. Do not present those excerpts as citations.
+    return {**result, "generation_status": "not_generated", "sources": []}

@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { expect, test, type Page, type WebSocket } from '@playwright/test'
-import { ADMIN_PASSWORD, ADMIN_USER, ensureCopilotClosed } from './helpers'
+import { ADMIN_PASSWORD, ADMIN_USER, ensureCopilotClosed, guardFrontendOrSkip } from './helpers'
+
+test.beforeEach(async () => { await guardFrontendOrSkip() })
 
 const publicPages = [
   ['/dashboard', '工作台'], ['/devices', '设备'], ['/topology', '拓扑'],
@@ -9,7 +11,7 @@ const publicPages = [
   ['/monitor', '监控'], ['/alarms', '告警'], ['/training', '实训'],
 ] as const
 const adminPages = [
-  ['/environments', '环境映射'], ['/system/info', '系统信息'], ['/system/config', '系统配置'],
+  ['/environments', '环境映射'], ['/system/accounts', '账号管理'], ['/system/info', '系统信息'], ['/system/config', '系统配置'],
   ['/system/audit', '审计日志'], ['/system/tasks', '后台任务'], ['/system/logs', '日志文件'],
 ] as const
 
@@ -22,19 +24,22 @@ async function login(page: Page, username = ADMIN_USER, password = ADMIN_PASSWOR
   await page.getByPlaceholder('密码', { exact: true }).fill(password)
   await page.getByRole('button', { name: '登录', exact: true }).click()
   await expect(page).toHaveURL(/\/dashboard$/)
-  const identity = await page.request.get('/api/v1/system/runtime-identity', { headers: await readToken(page) })
+  const identity = await page.request.get('/api/v1/system/runtime-identity', { headers: await sessionHeaders(page) })
   expect(identity.ok()).toBeTruthy()
   expect(await identity.json()).toMatchObject({ root_fingerprint: process.env.E2E_ROOT_FINGERPRINT, device_mode: 'sim', deploy_simulate_only: true })
   await ensureCopilotClosed(page)
 }
 
-async function readToken(page: Page) {
-  const token = await page.evaluate(() => localStorage.getItem('token'))
-  expect(token).toBeTruthy()
-  return { Authorization: 'Bearer ' + token }
+async function sessionHeaders(page: Page) {
+  const origin = new URL(page.url()).origin
+  const response = await page.request.get(origin + '/api/v1/auth/session')
+  expect(response.ok()).toBeTruthy()
+  const session = await response.json()
+  expect(session.csrf_token).toBeTruthy()
+  return { Origin: origin, 'X-Workbench-CSRF': session.csrf_token, 'X-Workbench-Session': session.session_id }
 }
 
-test('管理员可从导航打开 V7 的 17 个页面', async ({ page }) => {
+test('管理员可从导航打开 V7 的 18 个页面', async ({ page }) => {
   await login(page)
   await expect(page.locator('#main-content')).toBeVisible()
   for (const [path, label] of [...publicPages, ...adminPages]) {
@@ -52,7 +57,7 @@ test('普通学员保留 11 个入口，管理路由和接口均拒绝访问', a
   const username = 'e07-learner-' + randomBytes(4).toString('hex')
   const password = randomBytes(24).toString('base64url')
   const create = await page.request.post('/api/v1/auth/users', {
-    headers: await readToken(page), data: { username, password, role: 'user' },
+    headers: await sessionHeaders(page), data: { username, password, role: 'user' },
   })
   expect(create.ok()).toBeTruthy()
   const context = await browser.newContext()
@@ -72,9 +77,9 @@ test('普通学员保留 11 个入口，管理路由和接口均拒绝访问', a
     }
     for (const [path] of adminPages) {
       await learner.goto(origin + path)
-      await expect(learner).toHaveURL(/\/dashboard$/)
+      await expect(learner).toHaveURL(/\/dashboard\?access=denied$/)
     }
-    const headers = await readToken(learner)
+    const headers = await sessionHeaders(learner)
     for (const path of ['/system/info', '/system/config', '/system/audit-logs', '/system/tasks', '/system/logs']) {
       const response = await learner.request.get(origin + '/api/v1' + path, { headers })
       expect(response.status(), path).toBe(403)
@@ -101,8 +106,8 @@ test('设备列表遇到 503 可重试，恢复后可采集只读事实', async 
   await row.getByRole('button', { name: '只读观察', exact: true }).click()
   const drawer = page.locator('.el-drawer').filter({ hasText: '只读观察' })
   await drawer.getByRole('button', { name: '采集只读事实' }).click()
-  await expect(drawer.locator('.obs-result')).toContainText('服务端观察')
-  await expect(drawer.locator('.obs-result')).toContainText('解析器')
+  await expect(drawer.locator('.obs-result')).toContainText('工作台采集')
+  await expect(drawer.locator('.obs-result')).toContainText('输出完整')
 })
 
 test('首页展示只读拓扑全局，同一拓扑的详情页可检查链路和打开终端', async ({ page }) => {
@@ -137,9 +142,42 @@ test('知识库目录可打开 135 篇语料中的持久原文', async ({ page }
   await expect(reader).not.toBeVisible()
 })
 
-test('模拟配置任务确认后才能执行，并可查看回读报告', async ({ page }) => {
+test('最小模式健康和教材检索能指导下一步', async ({ page }) => {
   await login(page)
-  const headers = await readToken(page)
+  const health = await page.request.get('/api/v1/health')
+  expect(health.ok()).toBeTruthy()
+  const body = await health.json()
+  expect(body).toMatchObject({
+    status: 'healthy', ready: true, profile: 'minimal',
+    components: { database: { backend: 'sqlite', status: 'healthy' }, llm: { status: 'disabled' } },
+  })
+  expect(body.components).not.toHaveProperty('mysql')
+  expect((await page.request.get('/docs')).status()).toBe(404)
+  await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
+  await page.getByRole('tab', { name: '检索资料' }).click()
+  await page.getByRole('textbox', { name: '检索关键词' }).fill('OSPF')
+  await page.getByRole('button', { name: '检索', exact: true }).click()
+  await expect(page.locator('.search-result').first().locator('header')).toContainText('OSPF')
+})
+
+test('浏览器凭据随服务器会话退出，刷新可以重新核对登录', async ({ page }) => {
+  await login(page)
+  const origin = new URL(page.url()).origin
+  const cookies = await page.context().cookies(origin + '/api/v1')
+  expect(cookies.some(cookie => cookie.name.startsWith('ip_sim_session_') && cookie.httpOnly)).toBeTruthy()
+  expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull()
+  const headers = await sessionHeaders(page)
+  expect((await page.request.delete('/api/v1/auth/session', { headers: { Origin: origin } })).status()).toBe(403)
+  await page.reload()
+  await expect(page.locator('#main-content')).toBeVisible()
+  expect((await page.request.delete('/api/v1/auth/session', { headers })).status()).toBe(204)
+  await page.goto(origin + '/dashboard', { waitUntil: 'commit' })
+  await expect(page).toHaveURL(/\/login\?redirect=/)
+})
+
+test('模拟配置任务确认后才能执行，报告说明为何没有设备回读', async ({ page }) => {
+  await login(page)
+  const headers = await sessionHeaders(page)
   const devices = await page.request.get('/api/v1/devices', { headers })
   expect(devices.ok()).toBeTruthy()
   const device = (await devices.json()).find((item: { hostname: string }) => item.hostname === 'R-1')
@@ -151,10 +189,10 @@ test('模拟配置任务确认后才能执行，并可查看回读报告', async
   await page.getByRole('menuitem', { name: '变更审批', exact: true }).click()
   const row = page.locator('.el-table__row').filter({ hasText: 'R-1' }).first()
   await expect(row.getByRole('button', { name: '执行', exact: true })).toHaveCount(0)
-  await row.getByRole('button', { name: '确认', exact: true }).click()
+  await row.getByRole('button', { name: '确认变更', exact: true }).click()
   await row.getByRole('button', { name: '执行', exact: true }).click()
-  await row.getByRole('button', { name: '验证', exact: true }).click()
-  await expect(page.getByRole('dialog').filter({ hasText: '验证结果' })).toContainText('模拟')
+  await row.getByRole('button', { name: '确认演练结果', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: /验证报告/ })).toContainText('未回读（模拟模式）')
 })
 
 test('顶部实训入口打开同一会话并保留终端连接', async ({ page }) => {
@@ -163,11 +201,16 @@ test('顶部实训入口打开同一会话并保留终端连接', async ({ page 
   const lab = page.getByRole('row').filter({ hasText: '模拟网络巡检实训' }).first()
   const started = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/training/sessions'
     && response.request().method() === 'POST' && response.ok())
-  await lab.getByRole('button', { name: '开始实训', exact: true }).click()
+  await lab.getByRole('button', { name: '开始巡检', exact: true }).click()
   const { id } = await (await started).json()
   expect(Number(id)).toBeGreaterThan(0)
   const session = page.getByRole('dialog', { name: new RegExp(`实训会话 #${id} ·`) })
   await expect(session).toBeVisible()
+  const note = '已核对模拟拓扑，下一步观察设备接口'
+  const notes = session.getByPlaceholder('记录当前现象、判断和下一步。保存后刷新页面也能继续。')
+  await notes.fill(note)
+  await session.getByRole('button', { name: '保存笔记/步骤', exact: true }).click()
+  await expect(session.getByText('已保存', { exact: true })).toBeVisible()
   await session.locator('button.el-dialog__headerbtn').click()
   await expect(session).not.toBeVisible()
   const resume = page.getByRole('button', { name: /^实训进行中/ })
@@ -205,6 +248,15 @@ test('顶部实训入口打开同一会话并保留终端连接', async ({ page 
   await expect(page.locator('.xterm-rows')).toContainText(/Versatile|VRP/)
   expect(sockets).toHaveLength(1)
   expect(sockets[0].isClosed()).toBeFalsy()
+
+  const revisit = await page.context().newPage()
+  try {
+    await revisit.goto(`/training?session_id=${id}`)
+    const savedSession = revisit.getByRole('dialog', { name: new RegExp(`实训会话 #${id} ·`) })
+    await expect(savedSession.getByPlaceholder('记录当前现象、判断和下一步。保存后刷新页面也能继续。')).toHaveValue(note)
+  } finally {
+    await revisit.close()
+  }
 })
 
 test('受控挂起的助手请求及时出现停止入口并可取消', async ({ page }) => {
@@ -226,4 +278,17 @@ test('受控挂起的助手请求及时出现停止入口并可取消', async ({
   } finally {
     release()
   }
+})
+
+test('未配置模型时可返回教材，失败回答没有引用入口', async ({ page }) => {
+  await login(page)
+  await page.locator('.ai-toggle').click()
+  const composer = page.locator('.copilot')
+  await composer.locator('textarea').fill('请查本地教材，解释 OSPF 邻居的 Full 状态。')
+  await composer.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(composer.getByText(/模型服务(?:当前)?不可用|未配置模型|模型尚未配置/, { exact: false }).first()).toBeVisible()
+  await expect(composer.getByText('回答引用', { exact: true })).toHaveCount(0)
+  await expect(composer.getByText('已检索资料，正文没有引用检索片段。', { exact: true })).toHaveCount(0)
+  await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '筛选资料' })).toBeVisible()
 })

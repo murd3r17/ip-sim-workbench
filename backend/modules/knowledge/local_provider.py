@@ -26,6 +26,7 @@ from core.config import get_settings
 from core.logger import get_logger
 from core.markdown_blocks import retrieval_body, split_markdown
 from modules.knowledge.provider import KnowledgeProvider
+from modules.knowledge.query_focus import context_only_query, protocol_names, technical_aliases
 
 logger = get_logger("knowledge")
 
@@ -77,7 +78,7 @@ def _tokenize(text: str) -> list[str]:
     ASCII identifiers/numbers stay intact for command and address lookup.
     """
     lowered = text.lower()
-    tokens = _ASCII_WORD_RE.findall(lowered)
+    tokens = [token if token != "is-is" else "isis" for token in _ASCII_WORD_RE.findall(lowered)]
     for run in _CJK_RE.findall(lowered):
         if len(run) == 1:
             tokens.append(run)
@@ -101,6 +102,8 @@ def _query_tokens(text: str) -> list[str]:
     """
     # A named protocol should match its name, not unrelated books containing
     # only the generic classifier. Keep the question itself unchanged upstream.
+    if context_only_query(text):
+        return []
     text = re.sub(r"([A-Za-z][A-Za-z0-9_-]+)\s*协议", r"\1", text)
     text = re.sub(r"(?:不需要|无需|不用|不要)(?:给出|提供|写|附带|展示|包含|生成)?(?:配置|CLI|操作)?命令", "", text, flags=re.I)
     return [term for term in _tokenize(text) if term not in _QUESTION_TOKENS]
@@ -372,25 +375,34 @@ class LocalKnowledgeProvider(KnowledgeProvider):
             return self._search_locked(query, top_k)
 
     def _search_locked(self, query: str, top_k: int) -> list[dict[str, Any]]:
-        query_tokens = _query_tokens(query or "")
+        alias = technical_aliases(query or "")
+        query_tokens = _query_tokens(f"{query} {alias}" if alias else query or "")
         if not query_tokens:
             return []
         self._ensure_index()
         total = len(self._chunks)
         if not total:
             return []
+        protocols = protocol_names(query)
+        short_subject = next(iter(protocols)) if not alias and len(protocols) == 1 and len(set(query_tokens)) <= 6 and len(query) <= 22 else None
         scored = []
         for chunk in self._chunks:
             score = self._score(query_tokens, chunk, total)
             if score > 0:
-                scored.append((score, chunk))
+                matches_subject = short_subject and short_subject in chunk["counts"]
+                title_match = bool(matches_subject and short_subject in protocol_names(chunk["title"]))
+                scored.append((score, title_match, chunk))
         if not scored:
             return []
+        if any(preferred for _, preferred, _ in scored):
+            title_weight = max(score for score, _, _ in scored)
+            scored = [(score + (title_weight if preferred else 0), preferred, chunk)
+                      for score, preferred, chunk in scored]
         scored.sort(key=lambda pair: pair[0], reverse=True)
         best = scored[0][0]
         limit = top_k or self.top_k
         results: list[dict[str, Any]] = []
-        for score, chunk in scored[:limit]:
+        for score, _, chunk in scored[:limit]:
             normalized = round(score / best, 4) if best else 0.0
             if normalized < self.similarity_threshold and results:
                 continue
@@ -405,6 +417,7 @@ class LocalKnowledgeProvider(KnowledgeProvider):
                 "title": chunk["title"],
                 "text": chunk["text"],
                 "score": normalized,
+                "score_kind": "relative_within_query",
             })
         return results
 

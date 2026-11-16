@@ -16,6 +16,7 @@
           style="margin-bottom: 12px"
         />
         <el-alert v-else-if="route.query.password_changed === '1'" title="密码已修改，请使用新密码登录。" type="success" :closable="false" />
+        <el-alert v-else-if="route.query.unavailable === '1'" title="无法核对登录状态。请确认工作台已启动，再登录。" type="error" :closable="false" />
         <el-form :model="form" label-position="top" size="large" @submit.prevent="handleLogin">
           <el-form-item label="用户名">
             <el-input v-model="form.username" name="username" autocomplete="username" placeholder="用户名" :prefix-icon="UserIcon" />
@@ -33,14 +34,13 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { User as UserIcon, Lock as LockIcon } from '@element-plus/icons-vue'
 import { login } from '../api/auth'
-import { clearClientSession, loginRedirectTarget } from '../utils/session'
-import { currentDraftOwner, useWorkbenchDraftsStore } from '../stores/workbenchDrafts'
+import { loginRedirectTarget } from '../utils/session'
+import { acceptBrowserSession, publishSessionChange } from '../stores/browserSession'
 
-const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const form = ref({ username: '', password: '' })
@@ -55,24 +55,14 @@ const handleLogin = async () => {
   }
   loading.value = true
   try {
-    const data: any = await login(form.value)
-    // 校验字段再写：后端契约变化时若写入字符串 "undefined"（truthy），
-    // 路由守卫会放行，随后所有请求 401 循环跳回登录页
-    const token = typeof data?.access_token === 'string' ? data.access_token.trim() : ''
-    if (!token) {
-      ElMessage.error('登录响应缺少 access_token，请联系管理员检查后端版本')
-      return
-    }
-    const previousOwner = currentDraftOwner()
-    if (previousOwner && previousOwner !== `${data.user?.id}:${data.user?.username}`) clearClientSession()
-    else useWorkbenchDraftsStore().$reset()
-    localStorage.setItem('user', JSON.stringify(data.user ?? {}))
-    localStorage.setItem('token', token)
+    const data = await login(form.value)
+    acceptBrowserSession(data)
+    publishSessionChange()
     form.value.password = ''
     ElMessage.success('登录成功')
-    router.push(loginRedirectTarget(route.query.redirect))
-  } catch {
-    // 错误已在拦截器处理
+    window.location.replace(loginRedirectTarget(route.query.redirect))
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('登录响应不完整')) ElMessage.error(error.message)
   } finally {
     loading.value = false
   }

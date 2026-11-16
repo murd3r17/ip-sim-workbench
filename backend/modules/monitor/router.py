@@ -179,8 +179,9 @@ async def get_monitor_stats(db: AsyncSession = Depends(get_async_session), curre
 async def monitor_stream(current_user: dict = Depends(get_current_user)) -> StreamingResponse:
     """SSE实时监控流：每 5s 推送 stats + 活跃告警 + 心跳。
 
-    前端使用 fetch + Authorization 头连接（EventSource 无法携带 Bearer token）。
+    已建立的流定期重新核验当前会话。
     """
+    from core.auth_stream import require_live_session
     async def generate() -> Any:
         try:
             from core.database import get_session_factory
@@ -237,7 +238,7 @@ async def monitor_stream(current_user: dict = Depends(get_current_user)) -> Stre
             raise
 
     return StreamingResponse(
-        generate(),
+        require_live_session(generate(), current_user),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )

@@ -56,7 +56,7 @@ async def test_runtime_sqlite_enforces_foreign_keys_and_records_revision(tmp_pat
     try:
         async with engine.connect() as conn:
             assert (await conn.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
-            assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "0013_training_report_prompt"
+            assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "0015_browser_sessions"
     finally:
         await database.close_db()
 
@@ -212,7 +212,7 @@ def test_sync_bootstrap_uses_migrations_and_revokes_tokens_on_explicit_reset(tmp
     assert bootstrap.main() == 0
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     with engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0013_training_report_prompt"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0015_browser_sessions"
         assert conn.execute(text("SELECT token_version FROM user WHERE username='isolated-admin'")).scalar_one() == 0
     assert bootstrap.main() == 0
     monkeypatch.setattr(sys, "argv", ["bootstrap_local_sync.py", "--reset-password"])

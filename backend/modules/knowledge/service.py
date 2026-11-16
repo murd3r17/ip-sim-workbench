@@ -271,18 +271,36 @@ class KnowledgeService:
         workspace = self.resolve_workspace_id(workspace_id)
         limit = top_k or get_settings().knowledge_top_k
         edition = self.edition()
+        from .local_provider import _query_tokens
+        from .query_focus import context_only_query, protocol_names, technical_aliases
+
+        if context_only_query(query):
+            return []
+        if self.provider.name == "local" and (
+            technical_aliases(query) or (len(protocol_names(query)) == 1 and len(set(_query_tokens(query))) == 1)
+        ):
+            # Short lookups go directly to passages that explain the subject.
+            # General reading notes can otherwise displace the relevant page.
+            direct = await self.provider.search(query, workspace, limit)
+            return (await asyncio.to_thread(edition.resolve_hits, direct, self.provider, workspace)
+                    if edition else direct)
+        focused = []
         if edition and (self.provider.name == "local"
                         or (self.provider.name == "anythingllm" and workspace == edition.vector["workspace"])):
             from .query_focus import focused_queries
             focuses = focused_queries(query)
             if focuses:
                 focused = await self._focused_originals(edition, workspace, focuses, limit)
-                if focused:
+                if len(focused) >= limit:
                     return focused
         references = await self._reviewed_learning_hits(query, workspace, edition)
         if references and edition is None:
             return references[:limit]
-        learning = list(references)
+        learning = list(focused)
+        known = {(row["document_id"], row.get("page")) for row in learning}
+        learning.extend(row for row in references if (row["document_id"], row.get("page")) not in known)
+        if len(learning) >= limit:
+            return learning[:limit]
         if edition and len(learning) < limit:
             additional = await asyncio.to_thread(edition.learning_hits, query, min(4, limit - len(learning)))
             reference_pages = {(row["document_id"], row.get("page")) for row in learning}
@@ -325,10 +343,10 @@ class KnowledgeService:
             ranked = []
             for hit in hits:
                 body = hit.get("text") or ""
-                if subject and not subject.search(body):
+                if subject and not (subject.search(body) or subject.search(hit.get("title") or "")):
                     continue
                 overlap = len(terms.intersection(_query_tokens(body)))
-                exact = focus.facet in body
+                exact = focus.facet.casefold() in body.casefold()
                 if not exact and (subject is None or overlap < max(1, (len(terms) + 1) // 2)):
                     continue
                 ranked.append((exact, overlap, hit))

@@ -72,10 +72,10 @@ def check_startup_config(settings) -> PreflightResult:
         ))
 
     # ── 安全 ────────────────────────────────────────────────
-    if not settings.jwt_secret_key:
+    if not settings.jwt_secret_key or settings.jwt_secret_key.strip() in {"CHANGE_ME", "<generate-a-unique-secret>"}:
         result.issues.append(ConfigIssue(
             "fatal", "JWT_SECRET_KEY", "未配置 JWT 密钥，无法签发/校验登录令牌",
-            "在根 .env 设置 JWT_SECRET_KEY（scripts/bootstrap-local.ps1 会自动生成）",
+            "本地首次运行可用 scripts/bootstrap_local.py 生成，部署环境请在根 .env 配置",
         ))
     elif len(settings.jwt_secret_key) < 32:
         result.issues.append(ConfigIssue(
@@ -85,7 +85,7 @@ def check_startup_config(settings) -> PreflightResult:
     if not settings.fernet_key:
         result.issues.append(ConfigIssue(
             "warn", "FERNET_KEY", "未配置 Fernet 密钥，将拒绝加密保存设备口令",
-            "在根 .env 设置 FERNET_KEY（scripts/bootstrap-local.ps1 会自动生成）",
+            "在根 .env 设置 FERNET_KEY，本地首次运行脚本可生成",
         ))
 
     # ── LLM ────────────────────────────────────────────────
@@ -121,6 +121,16 @@ def check_startup_config(settings) -> PreflightResult:
             "warn", "DEVICE_DEFAULT_USERNAME/PASSWORD",
             "SSH 模式但未配置设备默认凭据，健康检查/采集/终端会失败",
             "在根 .env 填 DEVICE_DEFAULT_*，或改用 DEVICE_MODE=sim",
+        ))
+    if mode == "ssh" and not settings.ssh_strict_host_key:
+        result.issues.append(ConfigIssue(
+            "warn", "SSH_STRICT_HOST_KEY", "已开启 eNSP 主机密钥兼容模式",
+            "真实设备请登记可信指纹并启用严格校验",
+        ))
+    if settings.api_docs_enabled:
+        result.issues.append(ConfigIssue(
+            "info", "API_DOCS_ENABLED", "已开启 API 文档",
+            "教学结束后可关闭此开关并重启工作台",
         ))
 
     return result

@@ -10,6 +10,8 @@ from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from core.logger import get_logger
 from core.config import get_settings
+from engines.ssh_trust import InvalidKnownHosts, UnknownDeviceHost, connect_with_device_password
+from modules.auth.terminal_grants import TerminalPermissionError
 
 logger = get_logger("webssh")
 _SIM_NAVIGATION_KEYS = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|O[@-~])")
@@ -35,15 +37,19 @@ class SSHProxySession:
     async def _check_authorization(self) -> bool:
         if self._authorize is None:
             return True
+        code, message = 4001, "登录状态已失效，请重新登录"
         try:
             valid = await self._authorize()
+        except TerminalPermissionError:
+            valid = False
+            code, message = 4003, "终端授权已失效，请返回设备页做只读观察，或联系管理员。"
         except Exception:
             valid = False
         if not valid:
             self._running = False
             with suppress(Exception):
-                await self.websocket.send_text(json.dumps({"type": "error", "message": "登录状态已失效，请重新登录"}))
-                await self.websocket.close(code=4001, reason="登录状态已失效")
+                await self.websocket.send_text(json.dumps({"type": "error", "message": message}))
+                await self.websocket.close(code=code)
             await self.stop()
         return valid
 
@@ -53,27 +59,6 @@ class SSHProxySession:
             await asyncio.sleep(5)
             if not await self._check_authorization():
                 return
-
-    def _connect_keyboard_interactive(self, timeout: int):
-        """使用keyboard-interactive认证连接（适用于华为路由器）"""
-        sock = socket.create_connection((self.device_ip, self.ssh_port), timeout=timeout)
-        transport = paramiko.Transport(sock)
-        transport.banner_timeout = timeout
-        transport.auth_timeout = timeout
-
-        def handler(title, instructions, prompt_list):
-            return [self.password] * len(prompt_list)
-
-        try:
-            transport.connect()
-            transport.auth_interactive(self.username, handler)
-            if not transport.is_authenticated():
-                raise paramiko.AuthenticationException("keyboard-interactive认证失败")
-        except Exception:
-            transport.close()
-            raise
-        # 用transport替换client的底层连接
-        self._ssh_client._transport = transport
 
     async def start(self):
         """启动SSH代理会话"""
@@ -103,25 +88,16 @@ class SSHProxySession:
         try:
             logger.info("webssh_connecting", device_ip=self.device_ip, username=self.username)
             
-            from engines.netmiko_exec import new_ssh_client
+            from engines.netmiko_exec import _run_ssh_operation, new_ssh_client
             self._ssh_client = new_ssh_client()
             settings = get_settings()
-            loop = asyncio.get_running_loop()
             timeout = settings.ssh_connect_timeout
             
-            # SSH连接 - 先尝试password，失败后用keyboard-interactive
-            try:
-                await loop.run_in_executor(None, lambda: self._ssh_client.connect(
-                    hostname=self.device_ip, port=self.ssh_port,
-                    username=self.username, password=self.password,
-                    timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
-                    channel_timeout=timeout,
-                    allow_agent=False, look_for_keys=False
-                ))
-            except paramiko.AuthenticationException:
-                # 路由器使用keyboard-interactive认证
-                logger.info("webssh_kbi_fallback", device_ip=self.device_ip)
-                await loop.run_in_executor(None, self._connect_keyboard_interactive, timeout)
+            await _run_ssh_operation(lambda: connect_with_device_password(
+                self._ssh_client, self.device_ip, self.ssh_port, self.username, self.password, timeout,
+            ))
+            if not await self._check_authorization():
+                return
             logger.info("webssh_ssh_connected", device_ip=self.device_ip)
 
             # 创建交互式终端
@@ -145,6 +121,12 @@ class SSHProxySession:
             # 启动双向数据转发
             await asyncio.gather(self._ws_to_ssh(), self._ssh_to_ws())
             
+        except UnknownDeviceHost as exc:
+            await self._connection_error("host_unknown", f"{exc}。请管理员核对指纹后登记。")
+        except paramiko.BadHostKeyException:
+            await self._connection_error("host_changed", "设备 SSH 主机密钥已变化。请管理员通过设备控制台核对后更新登记。")
+        except InvalidKnownHosts as exc:
+            await self._connection_error("known_hosts_invalid", str(exc))
         except paramiko.AuthenticationException as e:
             logger.error("webssh_auth_failed", device_ip=self.device_ip, error=str(e))
             await self._connection_error("authentication", "设备拒绝了 SSH 登录。请管理员检查这台设备的 SSH 账号、密码和登录权限。")

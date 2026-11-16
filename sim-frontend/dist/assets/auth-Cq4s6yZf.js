@@ -1,1 +1,0 @@
-import{g as t}from"./request-Bo0WpGUf.js";const o=s=>t.post("/auth/login",s),r=s=>t.put("/auth/password",s),u=s=>t.get("/auth/users",{params:s,silent:!0}),n=s=>t.post("/auth/users",s,{silent:!0}),c=(s,e)=>t.put(`/auth/users/${s}/password`,{new_password:e},{silent:!0});export{u as a,n as b,r as c,o as l,c as r};

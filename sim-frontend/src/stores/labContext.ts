@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useAiCopilotStore } from './aiCopilot'
+import { accountStorageKey } from './browserSession'
 
 export interface LabDeviceRef {
   id: number
@@ -35,17 +36,20 @@ function load<T>(key: string): T | null {
 }
 
 export const useLabContextStore = defineStore('labContext', () => {
-  const sessionId = ref<number | null>(load<number>('lab_ctx_session'))
-  const sessionStatus = ref<string>(localStorage.getItem('lab_ctx_status') || '')
-  const labId = ref<number | null>(load<number>('lab_ctx_lab'))
-  const labTitle = ref(localStorage.getItem('lab_ctx_title') || '')
-  const topologyId = ref<number | null>(load<number>('lab_ctx_topo'))
-  const device = ref<LabDeviceRef | null>(load<LabDeviceRef>('lab_ctx_device'))
-  const alarm = ref<LabAlarmRef | null>(load<LabAlarmRef>('lab_ctx_alarm'))
+  const scope = accountStorageKey('lab:')
+  const get = <T>(key: string) => load<T>(scope + key)
+  const save = (key: string, value: unknown) => persist(scope + key, value)
+  const sessionId = ref(get<number>('session'))
+  const sessionStatus = ref(get<string>('status') || '')
+  const labId = ref(get<number>('lab'))
+  const labTitle = ref(get<string>('title') || '')
+  const topologyId = ref(get<number>('topo'))
+  const device = ref(get<LabDeviceRef>('device'))
+  const alarm = ref(get<LabAlarmRef>('alarm'))
   // 实验步骤（实训引导用）：[{id,name,goal,config_hint,verify_command,verify_contains}]
-  const labSteps = ref<any[]>(load<any[]>('lab_ctx_steps') || [])
+  const labSteps = ref<any[]>(get<any[]>('steps') || [])
   // AF-04：会话开始时的服务端模式事实，供终端横幅等页面准确显示
-  const modeFacts = ref<any>(load<any>('lab_ctx_modes'))
+  const modeFacts = ref<any>(get<any>('modes'))
 
   const hasLab = computed(() => sessionId.value != null || !!labTitle.value)
   /** V7-A A-04：只有 active 会话才允许绑定终端与教练。 */
@@ -95,13 +99,13 @@ export const useLabContextStore = defineStore('labContext', () => {
     topologyId.value = payload.topologyId ?? null
     labSteps.value = payload.labSteps || []
     modeFacts.value = payload.modeFacts || null
-    persist('lab_ctx_session', sessionId.value)
-    persist('lab_ctx_lab', labId.value)
-    localStorage.setItem('lab_ctx_title', labTitle.value)
-    localStorage.setItem('lab_ctx_status', sessionStatus.value)
-    persist('lab_ctx_topo', topologyId.value)
-    persist('lab_ctx_steps', labSteps.value)
-    persist('lab_ctx_modes', modeFacts.value)
+    save('session', sessionId.value)
+    save('lab', labId.value)
+    save('title', labTitle.value)
+    save('status', sessionStatus.value)
+    save('topo', topologyId.value)
+    save('steps', labSteps.value)
+    save('modes', modeFacts.value)
 
     const copilot = useAiCopilotStore()
     copilot.linkLab(payload.sessionId)
@@ -110,34 +114,30 @@ export const useLabContextStore = defineStore('labContext', () => {
 
   function setTopology(id: number | null) {
     topologyId.value = id
-    persist('lab_ctx_topo', id)
+    save('topo', id)
   }
 
   function setDevice(dev: LabDeviceRef | null) {
     device.value = dev
-    persist('lab_ctx_device', dev)
+    save('device', dev)
     if (dev) syncCopilotDevice()
   }
 
   function setAlarm(a: LabAlarmRef | null) {
     alarm.value = a
-    persist('lab_ctx_alarm', a)
+    save('alarm', a)
     if (a) syncCopilotAlarm()
   }
 
   function clearLab() {
     sessionId.value = null
+    sessionStatus.value = ''
     labId.value = null
     labTitle.value = ''
     topologyId.value = null
     labSteps.value = []
     modeFacts.value = null
-    persist('lab_ctx_session', null)
-    persist('lab_ctx_lab', null)
-    localStorage.removeItem('lab_ctx_title')
-    persist('lab_ctx_topo', null)
-    persist('lab_ctx_steps', null)
-    persist('lab_ctx_modes', null)
+    for (const key of ['session', 'status', 'lab', 'title', 'topo', 'steps', 'modes']) save(key, null)
     const copilot = useAiCopilotStore()
     if ((copilot.notes || '').startsWith('当前实训：')) copilot.setNotes('')
   }

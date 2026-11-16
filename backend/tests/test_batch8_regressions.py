@@ -97,19 +97,18 @@ class TestDeviceLockCleanup:
 
 
 class TestSshClientPolicy:
-    """P1-14：AutoAddPolicy 无主机密钥校验；改为可配置。"""
+    """Unknown devices require verification by default."""
 
-    def test_default_is_auto_add(self):
+    def test_default_rejects_unknown_hosts(self):
+        import paramiko
         from engines.netmiko_exec import new_ssh_client
         client = new_ssh_client()
-        assert client._policy.__class__.__name__ == "AutoAddPolicy"
+        assert isinstance(client._policy, paramiko.RejectPolicy)
 
-    def test_strict_mode_uses_reject_policy(self, monkeypatch):
-        from core.config import get_settings as _gs
-        from engines import netmiko_exec
-
-        settings = _gs().model_copy(update={"ssh_strict_host_key": True, "ssh_known_hosts": ""})
-        monkeypatch.setattr(netmiko_exec, "new_ssh_client", netmiko_exec.new_ssh_client, raising=True)
-        monkeypatch.setattr("core.config.get_settings", lambda: settings)
-        client = netmiko_exec.new_ssh_client()
-        assert client._policy.__class__.__name__ == "RejectPolicy"
+    def test_compatibility_mode_is_explicit(self, monkeypatch):
+        import paramiko
+        from core.config import get_settings
+        from engines.netmiko_exec import new_ssh_client
+        monkeypatch.setenv("SSH_STRICT_HOST_KEY", "false")
+        get_settings.cache_clear()
+        assert isinstance(new_ssh_client()._policy, paramiko.AutoAddPolicy)

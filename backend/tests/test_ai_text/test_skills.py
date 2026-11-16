@@ -93,6 +93,17 @@ def test_single_crc_count_and_trend_stays_in_interface_evidence():
     focuses = focused_queries("只用样例：R2 接口 CRC 为 5。另查教材解释一次 CRC 数值与趋势的区别。")
     assert [(item.subject, item.facet) for item in focuses] == [("CRC", "持续增长")]
 
+
+def test_mechanism_and_cli_questions_keep_complementary_evidence():
+    from modules.knowledge.query_focus import focused_queries
+
+    vrrp = focused_queries("分别解释 VRRP 上行接口跟踪如何改变运行优先级，以及抢占延时在恢复时的作用。")
+    assert [(item.subject, item.facet) for item in vrrp] == [
+        ("VRRP", "降低优先级"), ("VRRP", "监视上行端口"), ("VRRP", "抢占延时"),
+    ]
+    ospf = focused_queries("单区域 OSPF 怎么用只读命令核对邻居？Full 怎么理解，广播网 2-Way 何时正常？")
+    assert [item.facet for item in ospf] == ["display ospf peer brief", "2-Way"]
+
 def test_troubleshooting_beats_page():
     assert select_skill("R2 访问不了 R3，怎么排查").id == "troubleshooting"
 

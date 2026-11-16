@@ -6,6 +6,8 @@ import { setImmediate as yieldLoop } from 'node:timers/promises'
 import ts from 'typescript'
 
 const datetimeExports = {}
+const cachePrefix = 'workbench:1:learner:'
+const sessionsKey = cachePrefix + 'copilot:sessions'
 vm.runInNewContext(ts.transpileModule(
   fs.readFileSync(new URL('../../src/utils/datetime.ts', import.meta.url), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
@@ -39,6 +41,7 @@ function harness(overrides = {}) {
       if (name === 'vue') return { ref: (value) => ({ value }), computed: (fn) => ({ get value() { return fn() } }), watch() {} }
       if (name.startsWith('element-plus/')) return { ElMessage: { warning: (message) => notices.push(message) } }
       if (name === '../api/ai') return api
+      if (name === './browserSession') return { accountStorageKey: (key) => cachePrefix + key }
       throw new Error(`Unexpected dependency ${name}`)
     },
   }
@@ -60,10 +63,10 @@ test('draft origin survives message creation, history persistence and transfer',
   const target = { deviceId: 2, label: 'R2', alarmId: 17 }
   h.store.pushMessage({ role: 'assistant', content: '未执行', draftCommands: ['display version'], draftTarget: target })
   await h.runTimers()
-  const saved = JSON.parse(h.data.get('ai_copilot_sessions_v1'))
+  const saved = JSON.parse(h.data.get(sessionsKey))
   assert.deepEqual(saved[0].messages[0].draftTarget, target)
   h.store.saveDraftToDeploy(['display version'], target)
-  assert.deepEqual(JSON.parse(h.data.get('deploy_ai_draft_context')), { text: 'display version', target })
+  assert.deepEqual(JSON.parse(h.data.get(cachePrefix + 'copilot:transfer:context')), { text: 'display version', target })
 })
 
 test('late attachment compression cannot replace a newer reply', async () => {
@@ -76,7 +79,7 @@ test('late attachment compression cannot replace a newer reply', async () => {
   await yieldLoop()
   old.onload()
   await yieldLoop()
-  const saved = JSON.parse(h.data.get('ai_copilot_sessions_v1'))
+  const saved = JSON.parse(h.data.get(sessionsKey))
   assert.equal(saved[0].messages.length, 2)
   assert.equal(saved[0].messages[1].content, 'latest reply')
 })
@@ -178,7 +181,7 @@ test('logout invalidates pending remote reads and attachment compression', async
   await yieldLoop()
   assert.equal(h.saves.length, 0)
   assert.equal(h.store.conversations.value.length, 0)
-  assert.equal(h.data.has('ai_copilot_sessions_v1'), false)
+  assert.equal(h.data.has(sessionsKey), false)
 })
 
 test('conflicted local content can be saved under a new ID without overwriting the original', async () => {

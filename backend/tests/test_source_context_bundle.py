@@ -81,7 +81,8 @@ async def test_sync_and_sse_sources_equal_actual_provider_prompt(client, test_se
     stream = await client.post("/api/v1/ai/copilot/chat/stream", json=body, headers=auth_header(token))
     assert stream.status_code == 200, stream.text
     events = [json.loads(line[6:]) for line in stream.text.splitlines() if line.startswith("data: ")]
-    sources = next(e["sources"] for e in events if e["type"] == "meta")
+    assert next(e["sources"] for e in events if e["type"] == "meta") == []
+    sources = next(e["sources"] for e in events if e["type"] == "references")
     assert len(prompts) == 2
     assert len(sources) == len(sync_sources) == 6
     for sync, sse in zip(sync_sources, sources):

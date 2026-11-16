@@ -28,10 +28,11 @@
         <template #header><span>组件状态</span></template>
         <el-descriptions :column="1" border>
           <el-descriptions-item label="数据库">
+            <span v-if="info.database_backend">{{ info.database_backend === 'sqlite' ? 'SQLite' : info.database_backend === 'mysql' ? 'MySQL' : info.database_backend }} · </span>
             <el-tag :type="info.database_status === 'healthy' ? 'success' : 'info'" size="small" :title="String(info.database_status || '未取得状态')">{{ healthLabel(info.database_status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="模型连通性">
-            <el-tag :type="info.llm_status === 'healthy' ? 'success' : 'warning'" size="small" :title="String(info.llm_status || '未取得状态')">{{ healthLabel(info.llm_status) }}</el-tag>
+            <el-tag :type="info.llm_status === 'healthy' ? 'success' : info.llm_status === 'disabled' ? 'info' : 'warning'" size="small" :title="String(info.llm_status || '未取得状态')">{{ healthLabel(info.llm_status) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="最近连通性探测">{{ typeof info.llm_checked_at === 'string' ? formatApiTime(info.llm_checked_at) : '暂无探测时间' }}</el-descriptions-item>
           <el-descriptions-item label="LLM提供商">{{ info.llm_provider }}</el-descriptions-item>
@@ -74,12 +75,12 @@ import { getSystemInfo } from '@/api/system'
 
 const info = ref<Record<string, unknown>>({
   app_name: '', app_version: '', python_version: '', uptime_seconds: 0,
-  log_level: '', database_status: '', llm_status: '', llm_provider: '', llm_model: '',
+  log_level: '', database_status: '', database_backend: '', llm_status: '', llm_provider: '', llm_model: '',
   fernet_configured: null, jwt_configured: null, device_count: null, user_count: null,
 })
 const loadError = ref('')
 const loading = ref(false)
-const healthLabel=(value:unknown)=>({healthy:'连接正常',unavailable:'当前不可用',unhealthy:'检查异常',not_configured:'尚未配置',degraded:'降级',unknown:'状态未知'}[String(value)]||value||'尚未读取')
+const healthLabel=(value:unknown)=>({healthy:'连接正常',unavailable:'当前不可用',unhealthy:'检查异常',disabled:'未启用',not_configured:'尚未配置',degraded:'降级',unknown:'状态未知'}[String(value)]||value||'尚未读取')
 
 const formatUptime = (seconds: number) => {
   if (!seconds) return '-'

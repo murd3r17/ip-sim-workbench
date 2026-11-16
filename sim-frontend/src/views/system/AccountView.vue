@@ -1,6 +1,6 @@
 <template>
   <div class="v7b-page">
-    <PageHeader title="账号管理" subtitle="发放账号，或为忘记密码的学员重置密码。">
+    <PageHeader title="账号管理" subtitle="发放账号、重置学员密码或授予指定设备的终端权限。">
       <template #actions><el-button type="primary" @click="openCreate">创建账号</el-button></template>
     </PageHeader>
     <el-card shadow="never">
@@ -15,8 +15,10 @@
         <el-table-column label="角色" width="100"><template #default="{ row }">{{ row.role === 'admin' ? '管理员' : '普通用户' }}</template></el-table-column>
         <el-table-column label="状态" width="90"><template #default="{ row }">{{ row.is_active ? '启用' : '已停用' }}</template></el-table-column>
         <el-table-column label="最近登录" width="170"><template #default="{ row }">{{ row.last_login_at ? formatApiTime(row.last_login_at) : '尚未登录' }}</template></el-table-column>
-        <el-table-column label="操作" width="124"><template #default="{ row }">
+        <el-table-column label="操作" min-width="166"><template #default="{ row }">
           <el-button v-if="row.role === 'user'" link type="primary" :aria-label="`重置 ${row.username} 的密码`" @click="openReset(row)">重置密码</el-button>
+          <el-button v-if="row.role === 'user' && row.is_active" link type="primary"
+            :aria-label="`管理 ${row.username} 的终端授权`" @click="grantAccount = row">终端授权</el-button>
         </template></el-table-column>
       </el-table>
       <div v-if="offset || accounts.length === 50" class="account-toolbar pages">
@@ -50,6 +52,7 @@
         <el-button type="primary" :loading="saving" @click="save">{{ selected ? '重置密码' : '创建账号' }}</el-button>
       </template>
     </el-dialog>
+    <TerminalGrantDialog v-if="grantAccount" :account="grantAccount" @close="grantAccount = null" />
   </div>
 </template>
 
@@ -57,6 +60,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import PageHeader from '../../components/v7b/PageHeader.vue'
+import TerminalGrantDialog from '../../components/TerminalGrantDialog.vue'
 import { createAccount, listAccounts, resetTraineePassword, type Account } from '../../api/auth'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 import { formatApiTime } from '../../utils/datetime'
@@ -66,6 +70,7 @@ const search = ref('')
 const appliedSearch = ref('')
 const offset = ref(0)
 const accounts = ref<Account[]>([])
+const grantAccount = ref<Account | null>(null)
 const { run, loading, error: loadError } = useSnapshotRequest('账号列表')
 const editorOpen = ref(false)
 const selected = ref<Account | null>(null)

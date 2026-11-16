@@ -1,7 +1,10 @@
 """全局配置 - 通过环境变量或.env文件加载"""
 from functools import lru_cache
+from ipaddress import ip_network
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _WORKBENCH_ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +22,7 @@ class Settings(BaseSettings):
     app_version: str = "v7.0"
     debug: bool = False
     api_prefix: str = "/api/v1"
+    workbench_mode: Literal["auto", "minimal", "full"] = "auto"
 
     # 数据库
     db_host: str = "127.0.0.1"
@@ -44,11 +48,17 @@ class Settings(BaseSettings):
     minio_secret_key: str = ""
     minio_bucket: str = "sim-workstation"
     minio_secure: bool = False
+    minio_required: bool = False
 
     # JWT：默认 2 小时（与 .env.example 一致；A-14 此前代码默认 480 分钟）
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 120
+    api_docs_enabled: bool = False
+    login_window_seconds: int = Field(default=60, ge=10, le=900)
+    login_account_limit: int = Field(default=8, ge=2, le=100)
+    login_account_ip_limit: int = Field(default=5, ge=2, le=100)
+    login_ip_limit: int = Field(default=120, ge=40, le=5000)
 
     # 设备凭证
     device_default_username: str = ""
@@ -88,9 +98,8 @@ class Settings(BaseSettings):
     # 网络执行
     ssh_connect_timeout: int = 10
     ssh_command_timeout: int = 30
-    # SSH 主机密钥校验：默认关闭（eNSP/虚拟镜像频繁重装，严格校验会挡住正常使用）；
-    # 生产或真实设备环境建议开启，并配置 ssh_known_hosts
-    ssh_strict_host_key: bool = False
+    # 已知主机校验默认启用。只在已隔离的 eNSP 环境显式关闭。
+    ssh_strict_host_key: bool = True
     ssh_known_hosts: str = ""
     deploy_max_concurrent: int = 5
     deploy_batch_size: int = 5
@@ -154,6 +163,15 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    forwarded_allow_ips: str = ""
+
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def validate_proxy_ips(cls, raw: str) -> str:
+        items = [value.strip() for value in raw.split(",") if value.strip()]
+        if any(ip_network(value, strict=False).prefixlen == 0 for value in items):
+            raise ValueError("FORWARDED_ALLOW_IPS 只允许可信代理地址或限定网段")
+        return ",".join(items)
 
     # 日志：默认写到 <仓库根>/.runtime/logs（绝对路径，与启动脚本把 CWD 设为 backend/ 无关；
     # A-14 此前默认 "logs" 是相对 CWD 的，换目录写日志就跑到别处去了）

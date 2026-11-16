@@ -1,9 +1,10 @@
 """FastAPI依赖注入"""
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from core.security import decode_access_token
 from jose import JWTError
 from core.database import get_session_factory
+from core.browser_session import authenticate_browser_session, check_browser_request, cookie_name, credential_digest
 
 # auto_error=False：缺少 Authorization 头时由我们自己抛 401
 # （HTTPBearer 默认抛 403，语义不对且与 token 失效无法区分）
@@ -11,16 +12,22 @@ security = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Check the current account in a short session, including for SSE endpoints."""
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(status_code=401, detail="缺少认证令牌")
+    digest = credential_digest(request.cookies.get(cookie_name()))
+    if not digest and (credentials is None or not credentials.credentials):
+        raise HTTPException(status_code=401, detail="请登录工作台")
     factory = get_session_factory()
     if factory is None:
         raise HTTPException(status_code=503, detail="认证服务暂不可用")
     async with factory() as db:
-        return await authenticate_token(credentials.credentials, db)
+        if credentials is not None and credentials.credentials:
+            return await authenticate_token(credentials.credentials, db)
+        actor = await authenticate_browser_session(digest, db)
+        check_browser_request(request, actor, mutating=request.method not in {"GET", "HEAD", "OPTIONS"})
+        return actor
 
 
 async def authenticate_token(token: str, db) -> dict:
@@ -35,7 +42,7 @@ async def authenticate_token(token: str, db) -> dict:
         if payload.get("role") != role or int(payload.get("ver", 0)) != user.token_version:
             raise HTTPException(status_code=401, detail="登录状态已变更，请重新登录")
         return {"user_id": user.id, "username": user.username, "role": role,
-                "token_version": user.token_version}
+                "token_version": user.token_version, "_bearer_expires": payload.get("exp")}
     except (JWTError, KeyError, ValueError, TypeError):
         raise HTTPException(status_code=401, detail="无效的认证令牌")
 

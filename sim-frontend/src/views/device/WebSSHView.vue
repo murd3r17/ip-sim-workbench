@@ -2,10 +2,11 @@
   <div class="webssh-page v7b-page">
     <el-alert v-if="deviceListError" :title="deviceListError" type="error" :closable="false" show-icon><el-button @click="loadDevices">重试设备列表</el-button></el-alert>
     <div style="margin-bottom: 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap">
-      <el-select v-model="selectedDeviceId" :disabled="connectionActive" placeholder="选择设备" style="width: min(300px, 100%)" @change="syncSelection()">
+      <el-select v-model="selectedDeviceId" :disabled="connectionActive" placeholder="选择设备" style="width: min(300px, 100%)" @change="onDeviceChange">
         <el-option v-for="d in devices" :key="d.id" :label="`${d.hostname} (${d.mgmt_ip})`" :value="d.id" />
       </el-select>
-      <el-button v-if="!connectionActive" type="primary" :disabled="!selectedDeviceId" @click="connect">{{ phase === 'failed' ? '重新连接' : '连接' }}</el-button>
+      <el-button v-if="!connectionActive" type="primary" :disabled="!selectedDeviceId" :loading="checkingAccess"
+        @click="connect()">{{ phase === 'failed' ? '重新连接' : '连接' }}</el-button>
       <el-button v-else @click="disconnect">{{ phase === 'ready' ? '断开' : '取消连接' }}</el-button>
       <el-tag :type="phase === 'ready' ? 'success' : phase === 'failed' ? 'danger' : 'info'" role="status">{{ phaseLabel }}</el-tag>
       <el-button @click="router.push('/devices')">返回设备</el-button>
@@ -15,6 +16,8 @@
       >返回实训</el-button>
     </div>
     <el-alert v-if="connectionError" :title="connectionError" type="error" :closable="false" show-icon class="terminal-feedback" />
+    <el-alert v-else-if="connectedMode === 'ssh'" title="真实设备。终端中的配置命令会作用于当前设备。"
+      type="warning" :closable="false" show-icon class="terminal-feedback" />
     <el-alert
       v-if="labCtx.isActive"
       :type="labModeAlertType"
@@ -56,7 +59,8 @@
 import { computed, nextTick, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getDevices, type DeviceRecord } from '../../api/device'
-import { notifyRequestError } from '../../utils/requestError'
+import { getTerminalAccess, type TerminalAccess } from '../../api/auth'
+import { notifyRequestError, requestErrorMessage } from '../../utils/requestError'
 import { useAutoRefresh } from '../../utils/autoRefresh'
 import WebSSHConsole from '../../components/WebSSHConsole.vue'
 import { useAiCopilotStore } from '../../stores/aiCopilot'
@@ -72,7 +76,8 @@ const devices = ref<DeviceRecord[]>([])
 const loading = ref(false)
 const deviceListError = ref('')
 let deviceListEpoch = 0
-onBeforeUnmount(() => { deviceListEpoch++ })
+let accessEpoch = 0
+onBeforeUnmount(() => { deviceListEpoch++; accessEpoch++ })
 const selectedDeviceId = ref<number | null>(null)
 const phases = {
   idle: '未连接',
@@ -87,6 +92,8 @@ const phaseLabel = computed(() => phases[phase.value])
 const connectionActive = computed(() => phase.value !== 'idle' && phase.value !== 'failed')
 const connectRequested = ref(false)
 const connectionError = ref('')
+const checkingAccess = ref(false)
+const connectedMode = ref<TerminalAccess['mode']>()
 // AF-04：终端横幅按会话开始时的服务端事实显示，不把“模拟下发”当成 SSH 只读保证
 const labModeTitle = computed(() => {
   const facts = (labCtx.modeFacts || {}) as Record<string, string>
@@ -140,9 +147,9 @@ const loadDevices = async () => {
       const deviceId = route.params.deviceId || labCtx.device?.id
       if (deviceId) selectedDeviceId.value = Number(deviceId)
       else if (devices.value.length) selectedDeviceId.value = devices.value[0].id
-      connectRequested.value = !!route.params.deviceId
       autoConnectHandled = true
-      if (route.params.deviceId) syncSelection()
+      syncSelection()
+      if (route.params.deviceId) void connect()
     }
   } catch (err) {
     if (epoch === deviceListEpoch) {
@@ -168,22 +175,53 @@ const onTerminalCommand = (payload: { command: string; success: boolean; result:
   logTerminalCommand({ ...payload, hostname: d?.hostname })
 }
 
+const invalidateAccess = () => {
+  accessEpoch++
+  checkingAccess.value = false
+  connectionError.value = ''
+}
+
+const onDeviceChange = () => {
+  invalidateAccess()
+  connectedMode.value = undefined
+  phase.value = 'idle'
+  syncSelection()
+}
+
 const connect = async () => {
   const target = selectedDeviceId.value
   if (!target || connectionActive.value) return
+  const epoch = ++accessEpoch
   connectionError.value = ''
   if (connectRequested.value) {
     connectRequested.value = false
     await nextTick()
     if (target !== selectedDeviceId.value) return
   }
-  connectRequested.value = true
-  syncSelection()
+  checkingAccess.value = true
+  try {
+    const access = await getTerminalAccess(target)
+    if (epoch !== accessEpoch || target !== selectedDeviceId.value) return
+    connectedMode.value = access.mode
+    if (!access.allowed) {
+      phase.value = 'failed'
+      connectionError.value = access.reason || '请联系管理员获取该设备的终端权限。'
+      return
+    }
+    connectRequested.value = true
+  } catch (error) {
+    if (epoch !== accessEpoch || target !== selectedDeviceId.value) return
+    phase.value = 'failed'
+    connectionError.value = requestErrorMessage(error, '无法核对终端授权，请重新连接。')
+  } finally {
+    if (epoch === accessEpoch) checkingAccess.value = false
+  }
 }
 
 const disconnect = () => {
-  connectionError.value = ''
+  invalidateAccess()
   connectRequested.value = false
+  connectedMode.value = undefined
 }
 
 // 路由参数变化（如从设备列表跳转 /webssh/:id）时重新装载目标设备
@@ -191,10 +229,10 @@ watch(
   () => route.params.deviceId,
   (newId) => {
     if (!newId || !autoConnectHandled) return
-    connectionError.value = ''
     selectedDeviceId.value = Number(newId)
-    connectRequested.value = true
-    syncSelection()
+    connectRequested.value = false
+    onDeviceChange()
+    void connect()
   }
 )
 

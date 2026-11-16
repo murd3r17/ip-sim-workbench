@@ -1,6 +1,7 @@
 """FastAPI应用入口"""
 from contextlib import asynccontextmanager
 from pathlib import Path
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,10 +25,16 @@ async def lifespan(app: FastAPI):
             level, "%s: %s%s", issue.key, issue.message, f" → {issue.hint}" if issue.hint else ""
         )
     if preflight.fatal:
+        startup = (
+            "python scripts/bootstrap_local.py" if os.name == "nt" else "python3 scripts/bootstrap_local.py"
+        )
+        if settings.workbench_mode == "full":
+            startup = ("powershell -File scripts/start-full.ps1" if os.name == "nt"
+                       else "核对完整模式指南中当前平台支持的启动方式")
         raise RuntimeError(
             "启动配置不完整：\n" + preflight.summary()
-            + "\n\n检查【根目录 .env】（参考 .env.example）与 backend/.env。"
-            "最快的办法：powershell -ExecutionPolicy Bypass -File scripts\\bootstrap-local.ps1"
+            + "\n\n请检查根目录 .env，并参考 .env.example。"
+            + "\n启动入口：" + startup
         )
     # 预检里已包含 JWT/FERNET 的缺失与长度检查，这里只负责把问题暴露出来
     setup_logging()
@@ -44,14 +51,21 @@ async def lifespan(app: FastAPI):
 
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    lifespan=lifespan,
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Workbench-Login", "X-Workbench-CSRF", "X-Workbench-Session"],
 )
 
 
@@ -67,10 +81,24 @@ async def add_security_headers(request, call_next):
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     # 允许同源、data: 图片与 blob:（xterm/echarts 需要）；内联样式是 Element Plus 的既有依赖
+    from core.browser_session import request_origin
+    origin = request_origin(request)
+    websocket_origin = (" " + origin.replace("https://", "wss://", 1)
+                         if origin.startswith("https://") else
+                         " " + origin.replace("http://", "ws://", 1) if origin else "")
+    if settings.api_docs_enabled and request.url.path in {"/docs", "/redoc", "/docs/oauth2-redirect"}:
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https://fastapi.tiangolo.com data:",
+            )
+            return response
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:",
+        f"img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'{websocket_origin}",
     )
     return response
 
@@ -82,7 +110,7 @@ async def health_check():
     from core.health import get_health_status
     from fastapi.responses import JSONResponse
     result = await get_health_status()
-    status_code = 503 if result["status"] == "unhealthy" else 200
+    status_code = 503 if result["status"] == "unhealthy" or (result["profile"] == "full" and not result["ready"]) else 200
     return JSONResponse(content=result, status_code=status_code)
 
 
@@ -96,6 +124,7 @@ from modules.ai_text.models import AILog
 
 # 注册路由
 from modules.auth.router import router as auth_router
+from modules.auth.terminal_grants import router as terminal_grants_router
 from modules.device.router import router as device_router
 from modules.webssh.router import router as webssh_router
 from modules.ai_text.router import router as ai_router
@@ -107,6 +136,7 @@ from modules.dashboard.router import router as dashboard_router
 from modules.trust.router import router as trust_router
 
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(terminal_grants_router, prefix="/api/v1")
 app.include_router(device_router, prefix="/api/v1")
 app.include_router(webssh_router, prefix="/api/v1")
 app.include_router(ai_router, prefix="/api/v1")
@@ -134,7 +164,7 @@ if _DIST_DIR.is_dir():
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         """SPA 兜底：静态文件优先，其余交给 index.html 由前端路由处理。"""
-        if full_path.startswith(("api/", "ws/")):
+        if full_path.startswith(("api/", "ws/")) or full_path.split("/", 1)[0] in {"docs", "redoc", "openapi.json"}:
             raise HTTPException(status_code=404, detail="Not Found")
         candidate = (_DIST_DIR / full_path).resolve()
         try:

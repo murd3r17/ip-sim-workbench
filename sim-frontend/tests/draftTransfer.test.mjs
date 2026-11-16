@@ -7,11 +7,12 @@ const vue = await readFile(new URL('../src/views/deploy/DeployCenterView.vue', i
 const source = vue.slice(vue.indexOf('async function loadAiDraft()'), vue.indexOf('function maybeAutoLoadDraft()'))
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 async function load(text, metadata, acceptReplacement = true) {
-  const data = new Map([['deploy_ai_draft', text], ['deploy_ai_draft_context', metadata]])
+  const transferKey = 'workbench:1:learner:copilot:transfer:'
+  const data = new Map([[transferKey + 'text', text], [transferKey + 'context', metadata]])
   const form = { value: { device_ids: [3, 4], config_content: 'old' } }
   const tab = { value: 'tasks' }
   const deps = {
-    localStorage: { getItem: key => data.get(key) }, deployForm: form,
+    transferKey, localStorage: { getItem: key => data.get(key) }, deployForm: form,
     devices: { value: [{ id: 2 }, { id: 3 }] }, activeTab: tab, ElMessage: { success() {} },
     refreshDraftState() {}, drafts: { deploy: { form: form.value, submitting: false } },
     hasDraft: { value: true }, confirmDraftReplacement: async () => acceptReplacement, viewActive: true,

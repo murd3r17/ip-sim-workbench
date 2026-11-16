@@ -263,13 +263,9 @@
 
 <script setup lang="ts">
 import { formatApiTime } from '../../utils/datetime'
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
-import * as echarts from 'echarts/core'
-import { LineChart, BarChart, PieChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
 import type { ECharts } from 'echarts/core'
 import { getTopologies, type TopologyRecord } from '../../api/device'
 import { getAlarms, getMonitorStats, getMonitorTasks, getMonitorTrends, triggerCollection, runInspection, createMonitorStream, type AlarmRecord, type MonitorStats, type MonitorTaskRecord, type MonitorTrend } from '../../api/monitor'
@@ -283,7 +279,6 @@ import { useLabContextStore } from '../../stores/labContext'
 import AdminAction from '../../components/AdminAction.vue'
 import MonitorPorts from '../../components/MonitorPorts.vue'
 
-echarts.use([LineChart, BarChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const copilot = useAiCopilotStore()
 const labCtx = useLabContextStore()
@@ -490,6 +485,16 @@ const loadChartData = async (silent = false) => {
     if (seq !== chartReqSeq) return
     trendData.value = trends
     chartError.value = ''
+    if (chartsHaveData.value && !cpuChartInstance) {
+      await nextTick()
+      if (seq !== chartReqSeq) return
+      chartInitialization ??= initCharts().catch(error => {
+        chartInitialization = undefined
+        throw error
+      })
+      await chartInitialization
+      if (seq !== chartReqSeq) return
+    }
     updateCpuChart(trendData.value.metrics?.cpu_usage || [])
     updateMemoryChart(trendData.value.metrics?.memory_usage || [])
     updateInterfaceChart([
@@ -571,12 +576,10 @@ const getAlarmStatusLabel = (status?: string) => {
 }
 
 // 初始化图表
-const initCharts = () => {
-  cpuChartInstance?.dispose()
-  memoryChartInstance?.dispose()
-  interfaceChartInstance?.dispose()
-  ospfChartInstance?.dispose()
-
+let chartInitialization: Promise<void> | undefined
+const initCharts = async () => {
+  const echarts = await import('../../charts')
+  if (sseClosed) return
   if (cpuChart.value) {
     cpuChartInstance = echarts.init(cpuChart.value)
   }
@@ -588,6 +591,9 @@ const initCharts = () => {
   }
   if (ospfChart.value) {
     ospfChartInstance = echarts.init(ospfChart.value)
+  }
+  for (const element of [cpuChart.value, memoryChart.value, interfaceChart.value, ospfChart.value]) {
+    if (element) chartResizeObserver?.observe(element)
   }
 }
 
@@ -619,7 +625,6 @@ const connectSSE = () => {
 }
 
 onMounted(() => {
-  initCharts()
   loadTopologies()
   refreshData()
   connectSSE()

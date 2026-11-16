@@ -84,6 +84,51 @@ function Resolve-Python {
   return $null
 }
 
+if ($Mode -eq 'minimal') {
+  $PythonCommand = if (Test-Path $VenvPy) { @{ Exe = $VenvPy; Args = @() } } else { Resolve-Python }
+  if (-not $PythonCommand) { throw '未找到 Python 3.11+。请安装 Python 3.12 后重试。' }
+  $entry = Join-Path $PSScriptRoot 'bootstrap_local.py'
+  $prepare = @($entry, '--no-start', '--port', "$BackendPort")
+  if ($MinimalDbPath) { $prepare += @('--db-path', $MinimalDbPath) }
+  if ($BackupDir) { $prepare += @('--backup-dir', $BackupDir) }
+  if ($SkipDependencyInstall) { $prepare += '--skip-dependency-install' }
+  if ($RebuildFrontend) { $prepare += '--rebuild-frontend' }
+  & $PythonCommand.Exe @($PythonCommand.Args) @prepare
+  if ($LASTEXITCODE -ne 0) { throw '最小模式初始化失败。请查看上方提示。' }
+  if ($NoStart) {
+    Info '已完成初始化。重新运行同一脚本并移除 -NoStart 即可启动。'
+    exit 0
+  }
+  $appUrl = "http://127.0.0.1:$BackendPort"
+  if ($MinimalDbPath) { $env:DB_SQLITE_PATH = [System.IO.Path]::GetFullPath($MinimalDbPath) }
+  $logs = Join-Path $Root '.runtime\logs'
+  New-Item -ItemType Directory -Force -Path $logs | Out-Null
+  $runId = [Guid]::NewGuid().ToString('N')
+  $stderrPath = Join-Path $logs "minimal-$runId.err"
+  $startOptions = @{
+    FilePath = $VenvPy
+    PassThru = $true
+    WorkingDirectory = $Root
+    WindowStyle = 'Hidden'
+    ArgumentList = @('scripts/bootstrap_local.py', '--start-only', '--port', "$BackendPort")
+    RedirectStandardOutput = Join-Path $logs "minimal-$runId.out"
+    RedirectStandardError = $stderrPath
+  }
+  $backendProcess = Start-Process @startOptions
+  $deadline = (Get-Date).AddSeconds(60)
+  while ((Get-Date) -lt $deadline -and -not $backendProcess.HasExited) {
+    try {
+      $resp = Invoke-WebRequest -Uri "$appUrl/api/v1/health" -UseBasicParsing -TimeoutSec 3
+      if ($resp.StatusCode -eq 200) {
+        Info "打开 $appUrl。管理员账号见本机 .env。"
+        exit 0
+      }
+    } catch { Start-Sleep -Milliseconds 700 }
+  }
+  if (-not $backendProcess.HasExited) { $backendProcess.Kill($true) }
+  throw "工作台未就绪，请查看 $stderrPath"
+}
+
 if (-not (Test-Path $VenvPy)) {
   $python = Resolve-Python
   if (-not $python) {
@@ -112,45 +157,7 @@ if ($SkipDependencyInstall) {
   Info "后端依赖安装完成"
 }
 
-# ── 3) 生成 .env（不覆盖已有）────────────────────────────────────────
-function New-Secret([int]$bytes = 48) {
-  return (& $VenvPy -c "import secrets;print(secrets.token_urlsafe($bytes))").Trim()
-}
-function New-FernetKey {
-  return (& $VenvPy -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())").Trim()
-}
-
-if ($Mode -eq 'full') {
-  & (Join-Path $PSScriptRoot 'configure-full.ps1') -Root $Root -Python $VenvPy
-} elseif (Test-Path $EnvFile) {
-  Info "已存在根 .env，保持不变（如需重置请先备份并删除）"
-} else {
-  if (-not (Test-Path $EnvExample)) { throw "缺少 .env.example，无法生成 .env" }
-  $adminPassword = New-Secret 12
-  $content = Get-Content $EnvExample -Raw -Encoding UTF8
-  $content = $content -replace '(?m)^DB_PASSWORD=.*$', 'DB_PASSWORD='
-  $content = $content -replace '(?m)^JWT_SECRET_KEY=.*$', ("JWT_SECRET_KEY=" + (New-Secret 48))
-  $content = $content -replace '(?m)^FERNET_KEY=.*$', ("FERNET_KEY=" + (New-FernetKey))
-  $content = $content -replace '(?m)^ADMIN_PASSWORD=.*$', ("ADMIN_PASSWORD=" + $adminPassword)
-  if ($Mode -eq 'minimal') {
-    $content = $content -replace '(?m)^# DB_BACKEND=sqlite$', 'DB_BACKEND=sqlite'
-    $content = $content -replace '(?m)^DEVICE_MODE=.*$', 'DEVICE_MODE=sim'
-    $content = $content -replace '(?m)^KNOWLEDGE_PROVIDER=.*$', 'KNOWLEDGE_PROVIDER=local'
-    $content = $content -replace '(?m)^LLM_API_KEY=.*$', 'LLM_API_KEY='
-    $content = $content -replace '(?m)^KNOWLEDGE_API_KEY=.*$', 'KNOWLEDGE_API_KEY='
-    $content = $content -replace '(?m)^LLM_BASE_URL=.*$', 'LLM_BASE_URL=http://127.0.0.1:1'
-  }
-  [System.IO.File]::WriteAllText($EnvFile, $content, (New-Object System.Text.UTF8Encoding($false)))
-  Info "已生成根 .env（模式=$Mode）"
-  Write-Host ""
-  Write-Host "  初始管理员信息已写入本机根 .env，请在本机安全查看；不会回显到日志。" -ForegroundColor Green
-  Write-Host ""
-  if ($Mode -eq 'full') {
-    Warn "full 模式还需在 .env 填写 DB_PASSWORD / DEVICE_DEFAULT_* / LLM_API_KEY / KNOWLEDGE_API_KEY"
-  } else {
-    Warn "minimal 模式不需要数据库与设备凭据；如需真机或真实知识库，改用 -Mode full 并补 .env"
-  }
-}
+& (Join-Path $PSScriptRoot 'configure-full.ps1') -Root $Root -Python $VenvPy
 
 # ── 4) 前端 dist ──────────────────────────────────────────────────────
 $Dist = Join-Path $Root "sim-frontend\dist"
@@ -175,78 +182,14 @@ if ($RebuildFrontend -or -not (Test-Path (Join-Path $Dist "index.html"))) {
 }
 
 if (-not (Test-Path (Join-Path $Dist 'index.html'))) { throw "缺少前端 dist/index.html" }
-# ── 5) 初始化数据库与演示数据 ─────────────────────────────────────────
-Info "初始化数据库（$Mode 模式）…"
-if ($Mode -eq 'minimal') {
-  # 最小模式必须**强制**走 SQLite：否则一旦目录里已有根 .env（例如使用者本机，
-  # 或从已有环境拷贝过来的目录），下面的初始化与播种会连上真实 MySQL 并写入演示数据。
-  # 进程环境变量优先于 .env，子进程（python/uvicorn）会继承。
-  $env:DB_BACKEND = 'sqlite'
-  if ($MinimalDbPath) {
-    $DbPath = [System.IO.Path]::GetFullPath($MinimalDbPath).Replace('\', '/')
-    $env:DB_URL = "sqlite+aiosqlite:///$DbPath"
-  } else {
-    $env:DB_URL = ''
-  }
-  $env:DEVICE_MODE = 'sim'
-  $env:KNOWLEDGE_PROVIDER = 'local'
-  Info "已强制最小模式环境变量：DB_BACKEND=sqlite / DEVICE_MODE=sim / KNOWLEDGE_PROVIDER=local"
-}
+Info '初始化 full 数据库…'
 Push-Location $Backend
 try {
   Initialize-WorkbenchDatabase $Mode $VenvPy $Backend $Root $BackupDir $BackupFile
-
-  if ($Mode -eq 'minimal') {
-    Info "播种离线演示数据（幂等，已存在则跳过）…"
-    & $VenvPy (Join-Path $Backend "scripts\seed_sim_devices.py")
-    if ($LASTEXITCODE -ne 0) { throw "模拟设备播种失败" }
-    & $VenvPy (Join-Path $Backend "scripts\seed_training_labs.py")
-    if ($LASTEXITCODE -ne 0) { throw "实训样例播种失败" }
-  }
 } finally { Pop-Location }
 
-# ── 6) 启动 ───────────────────────────────────────────────────────────
 if ($NoStart) {
-  Info "已按 -NoStart 跳过启动。手动启动："
-  if ($Mode -eq 'full') {
-    Write-Host "  powershell -ExecutionPolicy Bypass -File scripts\start-full.ps1 -BackendPort $BackendPort"
-  } else {
-    Write-Host "  Set-Location .\backend"
-    Write-Host "  .\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
-  }
+  Info "已完成初始化。启动：powershell -File scripts\start-full.ps1 -BackendPort $BackendPort"
   exit 0
 }
-
-if ($Mode -eq 'full') {
-  Info "启动 full 后端；外部依赖已经通过认证预检"
-  & (Join-Path $PSScriptRoot 'start-full.ps1') -Root $Root -BackendPort $BackendPort
-} else {
-  Info "启动后端（前端由后端托管）…"
-  $appUrl = "http://127.0.0.1:$BackendPort"
-  New-Item -ItemType Directory -Force -Path (Join-Path $Root '.runtime\logs') | Out-Null
-  $env:PYTHONPATH = $Backend
-  $backendProcess = Start-Process -FilePath $VenvPy `
-    -ArgumentList @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "$BackendPort") `
-    -PassThru `
-    -WorkingDirectory $Backend -WindowStyle Hidden `
-    -RedirectStandardOutput (Join-Path $Root ".runtime\logs\backend.out") `
-    -RedirectStandardError (Join-Path $Root ".runtime\logs\backend.err")
-  $deadline = (Get-Date).AddSeconds(60)
-  $up = $false
-  while ((Get-Date) -lt $deadline) {
-    if ($backendProcess.HasExited) { break }
-    try {
-      $resp = Invoke-WebRequest -Uri "$appUrl/api/v1/health" -UseBasicParsing -TimeoutSec 3
-      if ($resp.StatusCode -eq 200) { $up = $true; break }
-    } catch { Start-Sleep -Milliseconds 800 }
-  }
-  if ($up) {
-    Write-Host ""
-    Write-Host "  ★ 打开 $appUrl  （登录见根 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD）" -ForegroundColor Green
-    Write-Host ""
-  } elseif ($backendProcess.HasExited) {
-    throw "后端启动进程已退出，请查看 .runtime\logs\backend.err"
-  } else {
-    throw "后端 60s 内未就绪，请查看 .runtime\logs\backend.err"
-  }
-}
+& (Join-Path $PSScriptRoot 'start-full.ps1') -Root $Root -BackendPort $BackendPort

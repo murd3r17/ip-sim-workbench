@@ -16,7 +16,15 @@ from sqlalchemy import Index, MetaData, String, Table, create_engine, inspect, t
 from sqlalchemy.engine import make_url
 
 BACKEND = Path(__file__).resolve().parents[1]
-_SUPPORTED_UPGRADE_SOURCES = {None, "0001_initial", "0011_v7b_bf5_instance", "0012_copilot_request"}
+_ADDITIVE_TABLES_BY_REVISION = {
+    "0014_terminal_grants": {"terminal_grant"},
+    "0015_browser_sessions": {"browser_session", "login_attempt_window"},
+}
+_PROMPT_REPORT_REVISION = "0013_training_report_prompt"
+_SUPPORTED_UPGRADE_SOURCES = {
+    None, "0001_initial", "0011_v7b_bf5_instance", "0012_copilot_request",
+    _PROMPT_REPORT_REVISION, *_ADDITIVE_TABLES_BY_REVISION,
+}
 
 
 def migration_config(connection=None):
@@ -128,16 +136,27 @@ def _assert_unversioned_baseline(connection):
 def _assert_upgrade_source(connection, revision):
     if revision in {None, "0001_initial"}:
         return _assert_unversioned_baseline(connection)
-    if revision in {"0011_v7b_bf5_instance", "0012_copilot_request"} and _head() == "0013_training_report_prompt":
+    if revision in _SUPPORTED_UPGRADE_SOURCES:
         # Compare against the saved revision's declarations before any DDL.
         from core.database import Base, _import_all_models
         from core.legacy_schema import matches_legacy_profile
         _import_all_models()
         previous = MetaData()
+        excluded: set[str] = set()
+        for new_revision, added_tables in reversed(_ADDITIVE_TABLES_BY_REVISION.items()):
+            if revision == new_revision:
+                break
+            excluded.update(added_tables)
+        if revision == "0011_v7b_bf5_instance":
+            excluded.add("copilot_request")
         for name, table in Base.metadata.tables.items():
-            if revision != "0011_v7b_bf5_instance" or name != "copilot_request":
+            if name not in excluded:
                 table.to_metadata(previous)
-        previous.tables["training_report"].c.prompt_version.type = String(32)
+        if "browser_session" in excluded:
+            service_instance = previous.tables["service_instance"]
+            service_instance._columns.remove(service_instance.c.process_identity)
+        if revision in {"0011_v7b_bf5_instance", "0012_copilot_request"}:
+            previous.tables["training_report"].c.prompt_version.type = String(32)
         differences = _schema_differences(connection, previous)
         if not differences or matches_legacy_profile(connection, previous, repaired=True):
             return "versioned"

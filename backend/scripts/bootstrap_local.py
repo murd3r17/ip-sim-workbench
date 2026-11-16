@@ -32,7 +32,7 @@ def _resolve_admin_password() -> tuple[str, bool]:
     """Only accept explicitly configured credentials; never generate or print a secret."""
     settings = get_settings()
     configured = (settings.admin_password or os.environ.get("ADMIN_PASSWORD") or "").strip()
-    if configured:
+    if configured and configured not in {"<set-a-strong-password>", "<set-in-local-.env>", "CHANGE_ME"}:
         return configured, False
     raise ValueError("请先在本机环境变量或 .env 设置 ADMIN_PASSWORD，再初始化数据库；本脚本不会生成或回显口令。")
 
