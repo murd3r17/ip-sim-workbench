@@ -128,6 +128,27 @@ class TestLocalKnowledgeProvider:
         chunks = _split_chunks("---\na: 1\n---\n## 标题\n正文内容")
         assert chunks and all("a: 1" not in chunk for chunk in chunks)
 
+    def test_bundled_protocol_lookup_distinguishes_concepts_and_commands(self):
+        import asyncio
+        from modules.knowledge.local_provider import DEFAULT_CORPUS_DIR
+
+        provider = LocalKnowledgeProvider(corpus_dir=DEFAULT_CORPUS_DIR, corpus_only=True)
+
+        async def check():
+            for query in ("OSPF", "OSPF 是什么"):
+                first = (await provider.search(query, top_k=3))[0]
+                assert "OSPF" in first["title"]
+                assert "链路状态" in first["text"][:300] and "OSPF" in first["text"][:125]
+            first = (await provider.search("OSPF 邻居", top_k=3))[0]
+            assert "邻居" in first["text"][:450]
+            for query in ("怎么查看 OSPF 邻居状态", "display ospf peer brief"):
+                first = (await provider.search(query, top_k=3))[0]
+                assert "display ospf peer brief" in first["text"].casefold()
+                assert "undo " not in first["text"].casefold()
+            assert await provider.search("这里怎么做") == []
+
+        asyncio.run(check())
+
 
 class TestEnvExampleHygiene:
     """2026-09-09 实测发现：`.env.example` 里写成 `KEY=   # 说明` 时，等号后面的

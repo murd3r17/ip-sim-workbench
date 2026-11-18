@@ -50,11 +50,9 @@ export default defineConfig({
     reportCompressedSize: true,
     rollupOptions: {
       output: {
-        // Chart and terminal libraries follow their routes; login shares
-        // only its own controls with the workbench.
+        // Keep the chart imports split by the views that consume them.
         manualChunks(id: string) {
           if (!id.includes('node_modules')) return undefined
-          if (id.includes('echarts') || id.includes('zrender')) return 'echarts'
           if (id.includes('xterm')) return 'xterm'
           if (id.includes('/vue/') || id.includes('vue-router') || id.includes('pinia') || id.includes('@vue/')) {
             return 'vendor'

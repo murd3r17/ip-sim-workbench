@@ -87,6 +87,11 @@ export interface KnowledgeSearchResult {
   text?: string
   content?: string
   title?: string
+  filename?: string
+  document_id?: string
+  document_version?: string | null
+  section_id?: string | null
+  page?: number | null
   reviewed_notes?: KnowledgeReviewNote[]
   [key: string]: unknown
 }

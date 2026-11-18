@@ -157,7 +157,12 @@ test('最小模式健康和教材检索能指导下一步', async ({ page }) => 
   await page.getByRole('tab', { name: '检索资料' }).click()
   await page.getByRole('textbox', { name: '检索关键词' }).fill('OSPF')
   await page.getByRole('button', { name: '检索', exact: true }).click()
-  await expect(page.locator('.search-result').first().locator('header')).toContainText('OSPF')
+  const firstResult = page.locator('.search-result').first()
+  await expect(firstResult.locator('header')).toContainText('OSPF')
+  await expect(firstResult.locator('.search-excerpt')).toContainText('链路状态')
+  await firstResult.getByRole('button', { name: '片段详情' }).click()
+  await page.getByRole('button', { name: '查看随包整理稿' }).click()
+  await expect(page.getByRole('dialog', { name: '资料全文' }).getByRole('heading', { name: /OSPF/ }).first()).toBeVisible()
 })
 
 test('浏览器凭据随服务器会话退出，刷新可以重新核对登录', async ({ page }) => {
@@ -168,11 +173,35 @@ test('浏览器凭据随服务器会话退出，刷新可以重新核对登录',
   expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull()
   const headers = await sessionHeaders(page)
   expect((await page.request.delete('/api/v1/auth/session', { headers: { Origin: origin } })).status()).toBe(403)
-  await page.reload()
-  await expect(page.locator('#main-content')).toBeVisible()
-  expect((await page.request.delete('/api/v1/auth/session', { headers })).status()).toBe(204)
-  await page.goto(origin + '/dashboard', { waitUntil: 'commit' })
-  await expect(page).toHaveURL(/\/login\?redirect=/)
+  const isLoginRedirect = (url: URL) => url.origin === origin && url.pathname === '/login'
+    && url.searchParams.get('redirect') === '/dashboard'
+    && !url.searchParams.has('unavailable')
+
+  // Let an actual request from the mounted dashboard observe the revoked session.
+  let releaseServices!: () => void
+  const afterLogout = new Promise<void>(resolve => { releaseServices = resolve })
+  await page.route('**/api/v1/dashboard/services', async route => {
+    await afterLogout
+    await route.continue()
+  }, { times: 1 })
+  try {
+    await page.reload()
+    await expect(page.locator('#main-content')).toBeVisible()
+    expect((await page.request.delete('/api/v1/auth/session', { headers })).status()).toBe(204)
+    expect((await page.request.get('/api/v1/dashboard/summary')).status()).toBe(401)
+  } finally {
+    releaseServices()
+  }
+  // Poll the committed address so an interrupted intermediate navigation does
+  // not cause a navigation waiter to reject before the final page settles.
+  await expect.poll(() => isLoginRedirect(new URL(page.url()))).toBe(true)
+
+  // A fresh document exercises the route guard without competing with that redirect.
+  const reopened = await page.context().newPage()
+  await reopened.goto(origin + '/dashboard')
+  await expect(reopened).toHaveURL(isLoginRedirect)
+  await expect(reopened.getByRole('button', { name: '登录', exact: true })).toBeEnabled()
+  await expect(reopened.locator('#main-content')).toBeHidden()
 })
 
 test('模拟配置任务确认后才能执行，报告说明为何没有设备回读', async ({ page }) => {
