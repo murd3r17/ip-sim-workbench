@@ -125,7 +125,7 @@ jobs:
           curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 "$E2E_BASE_URL/api/v1/health" > /dev/null
           E2E_ROOT_FINGERPRINT="$(python -c 'import hashlib; from pathlib import Path; print(hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest())')"
           export E2E_ROOT_FINGERPRINT
-          npm --prefix sim-frontend run test:e2e:strict -- --reporter=list,html --output=test-results
+          npm --prefix sim-frontend run test:e2e:strict -- --reporter=list,html --trace retain-on-failure --output=test-results
           npm --prefix sim-frontend run test:e2e:strict -- --grep '浏览器凭据随服务器会话退出' --repeat-each=20 --retries=0 --reporter=list --trace retain-on-failure --output=test-results/logout-repeat
       - name: Browser failure evidence
         if: failure()

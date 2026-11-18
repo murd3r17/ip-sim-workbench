@@ -55,11 +55,12 @@ test('管理员可从导航打开 V7 的 18 个页面', async ({ page }) => {
 test('普通学员保留 11 个入口，管理路由和接口均拒绝访问', async ({ page, browser }) => {
   await login(page)
   const username = 'e07-learner-' + randomBytes(4).toString('hex')
-  const password = randomBytes(24).toString('base64url')
+  // Guarantee all required character classes in the disposable password.
+  const password = 'Qa4-' + randomBytes(24).toString('base64url')
   const create = await page.request.post('/api/v1/auth/users', {
     headers: await sessionHeaders(page), data: { username, password, role: 'user' },
   })
-  expect(create.ok()).toBeTruthy()
+  expect(create.status(), '创建普通学员账号').toBe(200)
   const context = await browser.newContext()
   try {
     const learner = await context.newPage()
