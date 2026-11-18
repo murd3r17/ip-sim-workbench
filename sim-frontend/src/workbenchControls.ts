@@ -1,5 +1,4 @@
 import type { App } from 'vue'
-import { ElButtonGroup } from 'element-plus/es/components/button/index'
 import { ElCard } from 'element-plus/es/components/card/index'
 import { ElCheckbox } from 'element-plus/es/components/checkbox/index'
 import { ElCol } from 'element-plus/es/components/col/index'
@@ -21,7 +20,6 @@ import { ElSwitch } from 'element-plus/es/components/switch/index'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index'
 import { ElTag } from 'element-plus/es/components/tag/index'
-import { ElUpload } from 'element-plus/es/components/upload/index'
 import { ElEmpty } from 'element-plus/es/components/empty/index'
 import { ElSkeleton, ElSkeletonItem } from 'element-plus/es/components/skeleton/index'
 import { ElStep, ElSteps } from 'element-plus/es/components/steps/index'
@@ -56,7 +54,6 @@ import 'element-plus/es/components/table/style/css'
 import 'element-plus/es/components/tabs/style/css'
 import 'element-plus/es/components/tag/style/css'
 import 'element-plus/es/components/tooltip/style/css'
-import 'element-plus/es/components/upload/style/css'
 import 'element-plus/es/components/loading/style/css'
 import 'element-plus/es/components/radio-group/style/css'
 import 'element-plus/es/components/table-column/style/css'
@@ -65,7 +62,6 @@ import 'element-plus/es/components/step/style/css'
 export function registerWorkbenchControls(app: App) {
   const elementComponents = [
     ElAside,
-    ElButtonGroup,
     ElCard,
     ElCheckbox,
     ElCol,
@@ -100,7 +96,6 @@ export function registerWorkbenchControls(app: App) {
     ElTableColumn,
     ElTabs,
     ElTag,
-    ElUpload,
     ElEmpty,
     ElSkeleton,
     ElSkeletonItem,

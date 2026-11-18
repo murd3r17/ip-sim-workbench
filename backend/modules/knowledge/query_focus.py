@@ -13,6 +13,13 @@ _ALIASES = (
 )
 _QUESTION_WORDS = re.compile(r"^(?:请|帮我|分别|想了解|解释|说明|讲讲|讲解|介绍|查询|请问|对照|教材中|关于)\s*")
 _QUESTION_END = re.compile(r"(?:的?(?:机制|原理|含义|工作过程)|是什么|怎么做|如何工作|有何区别)\s*$")
+_INTRO_LOOKUP = re.compile(
+    r"(?:(?:请问|请)?(?:解释|介绍|讲解|了解)(?:一下)?|什么是)?"
+    r"(?:的?(?:基础|概述|概念|原理|机制|作用|含义|工作过程|邻居(?:关系|状态)?|邻接(?:关系|状态)?)"
+    r"|是什么|用来做什么|如何工作)?"
+)
+_INSPECTION_LOOKUP = re.compile(r"命令|回显|(?:怎么|如何|怎样)\s*(?:查看|检查|查询|核对|确认)")
+OSPF_PEER_COMMAND = "display ospf peer brief"
 _SHORT_TECHNICAL_ALIASES = {
     "isis 邻接": "Hello 邻居 级别 建立",
     "ospf stub": "Stub 区域 缺省路由 外部 LSA",
@@ -28,6 +35,18 @@ def technical_aliases(text: str) -> str:
     return _SHORT_TECHNICAL_ALIASES.get(key, "")
 
 
+def introductory_query(text: str) -> bool:
+    if len(protocol_names(text)) != 1:
+        return False
+    remainder = re.sub(r"[\s？?。！!]+", "", _SUBJECT.sub("", text))
+    return bool(_INTRO_LOOKUP.fullmatch(remainder))
+
+
+def ospf_peer_lookup(text: str) -> bool:
+    return (protocol_names(text) == {"ospf"} and ("邻居" in text or "邻接" in text)
+            and bool(_INSPECTION_LOOKUP.search(text)))
+
+
 @dataclass(frozen=True)
 class QueryFocus:
     query: str
@@ -41,8 +60,8 @@ def focused_queries(text: str) -> list[QueryFocus]:
     results = []
     if subjects == {"VRRP"} and _UPLINK_TRACK.search(text) and "优先级" in text:
         results.append(QueryFocus("VRRP 上行接口故障 降低优先级", "VRRP", "降低优先级"))
-    if subjects == {"OSPF"} and ("邻居" in text or "邻接" in text) and ("命令" in text or "回显" in text):
-        results.append(QueryFocus("OSPF 邻居关系 display ospf peer brief", "OSPF", "display ospf peer brief"))
+    if ospf_peer_lookup(text):
+        results.append(QueryFocus(f"OSPF 邻居关系 {OSPF_PEER_COMMAND}", "OSPF", OSPF_PEER_COMMAND))
         if re.search(r"2[- ]?Way|DROther", text, re.I):
             results.append(QueryFocus("OSPF 广播网 DROther 2-Way Full 邻接", "OSPF", "2-Way"))
     for clause in re.split(r"[。；;！!？?，,\n]", text):

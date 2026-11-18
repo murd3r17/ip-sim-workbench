@@ -43,7 +43,7 @@
         <p v-if="searchResults.length" class="knowledge-tip">结果按本次查询的匹配程度排序。请打开片段核对内容。</p>
         <el-card v-for="(result, i) in searchResults" :key="i" shadow="never" class="search-result">
           <header><strong>{{ result.title || result.filename || '检索片段' }}</strong><el-button link type="primary" @click="openCitation(result)">片段详情</el-button></header>
-          <p v-if="result.page" class="document-secondary">原教材 PDF 第 {{ result.page }} 页</p>
+          <p v-if="result.page && result.document_version" class="document-secondary">原教材 PDF 第 {{ result.page }} 页</p>
           <p v-for="note in result.reviewed_notes" :key="note.id"><strong>{{ note.title }}</strong> · {{ note.content }}</p>
           <p class="search-excerpt">{{ resultExcerpt(result) }}</p>
         </el-card>
@@ -52,10 +52,15 @@
     <el-drawer v-model="citationVisible" title="检索片段" size="min(620px, 96vw)" @closed="citation = null">
       <template v-if="citation">
         <h3>{{ citation.title || citation.filename || '知识资料' }}</h3>
-        <p v-if="citation.page">原教材 PDF 第 {{ citation.page }} 页</p>
+        <p v-if="citation.page && citation.document_version">原教材 PDF 第 {{ citation.page }} 页</p>
         <pre class="citation-text">{{ citation.text || citation.content || '未附正文' }}</pre>
-        <p v-if="!citation.document_version" class="knowledge-tip">该片段暂未定位到同版正文。</p>
-        <el-button type="primary" @click="openSearchDocument">{{ citation.document_version ? '阅读同版正文' : '查阅当前全文' }}</el-button>
+        <el-button v-if="citation.document_version || readableCitation" type="primary" @click="openSearchDocument">
+          {{ citation.document_version ? '阅读同版正文' : readableCitation?.bundled ? '查看随包整理稿' : '查看当前全文' }}
+        </el-button>
+        <template v-else>
+          <p class="knowledge-tip">{{ docsLoading ? '正在查找可读全文。' : '当前可阅读检索片段，也可从资料目录查找原章节。' }}</p>
+          <el-button @click="findCitationInCatalog">去资料目录</el-button>
+        </template>
       </template>
       <template #footer><el-button @click="citationVisible = false">返回检索结果</el-button></template>
     </el-drawer>
@@ -107,6 +112,15 @@ function openDocument(doc: KnowledgeDocument) {
   readerExcerpt.value = ''; readerSection.value = ''; readerVisible.value = true
 }
 function openCitation(result: KnowledgeSearchResult) { citation.value = result; citationVisible.value = true }
+const readableCitation = computed(() => {
+  const source = citation.value
+  if (!source?.document_id && !source?.filename) return undefined
+  const documents = catalog.value?.documents || []
+  const matches = documents.filter(document => source.document_id
+    ? document.id === source.document_id
+    : document.filename === source.filename)
+  return matches.length === 1 && matches[0].readable ? matches[0] : undefined
+})
 function resultExcerpt(result: KnowledgeSearchResult) {
   const raw = result.text || result.content || ''
   const text = raw.replace(/^\s*#{1,6}\s+.*$/gm, '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
@@ -114,13 +128,19 @@ function resultExcerpt(result: KnowledgeSearchResult) {
 }
 function openSearchDocument() {
   const source = citation.value
-  if (!source) return
-  readerId.value = typeof source.document_id === 'string' ? source.document_id : ''
+  if (!source || (!source.document_version && !readableCitation.value)) return
+  readerId.value = readableCitation.value?.id || source.document_id || ''
   readerFilename.value = String(source.filename || source.title || '')
   readerVersion.value = String(source.document_version || '')
   readerSection.value = String(source.section_id || '')
   readerExcerpt.value = String(source.text || source.content || '')
   readerVisible.value = true
+}
+function findCitationInCatalog() {
+  filter.value = citation.value?.title || citation.value?.filename || ''
+  book.value = ''
+  activeTab.value = 'docs'
+  citationVisible.value = false
 }
 async function loadDocuments() {
   const current = ++docsEpoch; docsLoading.value = true

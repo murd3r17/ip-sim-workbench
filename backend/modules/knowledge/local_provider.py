@@ -24,9 +24,11 @@ from typing import Any
 
 from core.config import get_settings
 from core.logger import get_logger
-from core.markdown_blocks import retrieval_body, split_markdown
+from core.markdown_blocks import blocks, retrieval_body, split_markdown
 from modules.knowledge.provider import KnowledgeProvider
-from modules.knowledge.query_focus import context_only_query, protocol_names, technical_aliases
+from modules.knowledge.query_focus import (
+    OSPF_PEER_COMMAND, context_only_query, introductory_query, ospf_peer_lookup, protocol_names, technical_aliases,
+)
 
 logger = get_logger("knowledge")
 
@@ -122,6 +124,52 @@ def _split_chunks(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[str]:
     return split_markdown(body, max_chars)
 
 
+_INSTRUCTION_LEAD = re.compile(r"^(?:[图表]\s*\d|步骤|任务|实验|操作|配置(?:要求|如下|步骤)|查看|执行|验证)")
+_DEFINITION_LANGUAGE = re.compile(r"是一种|是指|简称|用于|作用是|基于|采用|主要承担")
+_MECHANISM_LANGUAGE = re.compile(r"通过|建立|交换|转发|运行在|选举|决定|描述|计算|生成|维护")
+_LEADING_TERM = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
+_DEVICE_COMMAND = re.compile(r"^\s*(?:\[[^\]\n]+\]|<[^>\n]+>)\s*(\S.*)$", re.M)
+_PEER_COMMAND_LINE = re.compile(
+    rf"^\s*(?:\[[^\]\n]+\]|<[^>\n]+>)?\s*{re.escape(OSPF_PEER_COMMAND)}(?:\s|$)", re.I | re.M,
+)
+
+
+def _learning_passages(text: str) -> tuple[list[tuple[set[str], set[str], int, str]], str]:
+    explanations = []
+    peer_excerpt = ""
+    for kind, start, end in blocks(text):
+        passage = text[start:end].strip()
+        if kind == "fence" and not peer_excerpt and _PEER_COMMAND_LINE.search(passage):
+            commands = _DEVICE_COMMAND.findall(passage)
+            if all(command.casefold().startswith("display ") for command in commands):
+                peer_excerpt = passage
+        if kind != "paragraph" or len(passage) > _MAX_CHUNK_CHARS:
+            continue
+        lead = passage.lstrip("-*>` ")
+        if _INSTRUCTION_LEAD.match(lead):
+            continue
+        subjects = protocol_names(passage)
+        if subjects:
+            definition = _DEFINITION_LANGUAGE.search(passage)
+            if definition or _MECHANISM_LANGUAGE.search(passage):
+                term = _LEADING_TERM.match(lead)
+                opening = protocol_names(term.group()) if term else set()
+                explanations.append((subjects, opening, 2 if definition else 1, passage))
+    return explanations, peer_excerpt
+
+
+def _choose_explanation(chunk: dict, subject: str, query: str) -> tuple[int, str]:
+    asks_about_neighbors = subject == "ospf" and ("邻居" in query or "邻接" in query)
+    best = (0, chunk["text"])
+    for subjects, opening, quality, passage in chunk["explanations"]:
+        if subject not in subjects or (asks_about_neighbors and "邻居" not in passage and "邻接" not in passage):
+            continue
+        score = quality + (2 if subject in opening else 0)
+        if score > best[0]:
+            best = (score, passage)
+    return best
+
+
 class LocalKnowledgeProvider(KnowledgeProvider):
     """基于本地 Markdown 语料的关键词检索 provider。"""
 
@@ -210,6 +258,7 @@ class LocalKnowledgeProvider(KnowledgeProvider):
                     if not tokens:
                         continue
                     counts = Counter(tokens)
+                    explanations, peer_excerpt = _learning_passages(chunk)
                     chunks.append({
                         "id": f"{document_id}#{seq}",
                         "document_id": document_id,
@@ -222,6 +271,8 @@ class LocalKnowledgeProvider(KnowledgeProvider):
                         "text": chunk,
                         "counts": counts,
                         "length": len(tokens),
+                        "explanations": explanations,
+                        "peer_excerpt": peer_excerpt,
                     })
                     df.update(counts.keys())
             self._chunks = chunks
@@ -290,7 +341,9 @@ class LocalKnowledgeProvider(KnowledgeProvider):
             raise DocumentReadError('source_unavailable', '持久源文件身份已变化，请刷新目录。')
         root = self.storage_dir if str(document['id']).startswith('upload-') else self.corpus_dir
         raw, modified = read_bounded(path, root)
-        return document_payload(document, raw, modified, 'local_source')
+        payload = document_payload(document, raw, modified, 'local_source')
+        payload["bundled"] = identity.startswith("corpus-") and self.corpus_dir == DEFAULT_CORPUS_DIR
+        return payload
 
     def _list_documents(self) -> list[dict[str, Any]]:
         self._ensure_index()
@@ -375,7 +428,8 @@ class LocalKnowledgeProvider(KnowledgeProvider):
             return self._search_locked(query, top_k)
 
     def _search_locked(self, query: str, top_k: int) -> list[dict[str, Any]]:
-        alias = technical_aliases(query or "")
+        peer_lookup = ospf_peer_lookup(query or "") or (query or "").strip().casefold() == OSPF_PEER_COMMAND
+        alias = OSPF_PEER_COMMAND if peer_lookup else technical_aliases(query or "")
         query_tokens = _query_tokens(f"{query} {alias}" if alias else query or "")
         if not query_tokens:
             return []
@@ -394,15 +448,25 @@ class LocalKnowledgeProvider(KnowledgeProvider):
                 scored.append((score, title_match, chunk))
         if not scored:
             return []
-        if any(preferred for _, preferred, _ in scored):
-            title_weight = max(score for score, _, _ in scored)
-            scored = [(score + (title_weight if preferred else 0), preferred, chunk)
-                      for score, preferred, chunk in scored]
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        best = scored[0][0]
+        weight = max(score for score, _, _ in scored)
+        prefer_explanation = short_subject is not None and introductory_query(query)
+        ranked = []
+        for score, preferred, chunk in scored:
+            passage = chunk["text"]
+            if preferred:
+                score += weight
+                if prefer_explanation:
+                    explanation, passage = _choose_explanation(chunk, short_subject, query)
+                    score += explanation * weight
+            if peer_lookup and chunk["peer_excerpt"]:
+                score += weight * 2
+                passage = chunk["peer_excerpt"]
+            ranked.append((score, chunk, passage))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        best = ranked[0][0]
         limit = top_k or self.top_k
         results: list[dict[str, Any]] = []
-        for score, _, chunk in scored[:limit]:
+        for score, chunk, passage in ranked[:limit]:
             normalized = round(score / best, 4) if best else 0.0
             if normalized < self.similarity_threshold and results:
                 continue
@@ -415,7 +479,7 @@ class LocalKnowledgeProvider(KnowledgeProvider):
                 "metadata": dict(chunk["metadata"]),
                 "filename": chunk["filename"],
                 "title": chunk["title"],
-                "text": chunk["text"],
+                "text": passage,
                 "score": normalized,
                 "score_kind": "relative_within_query",
             })

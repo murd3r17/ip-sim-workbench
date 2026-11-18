@@ -1,1 +1,0 @@
-import{a8 as u}from"./index-CX5S5xIX.js";import{c as s}from"./vendor-BWVJ1ti6.js";function a(){const e=s(()=>{var r;return((r=u.value)==null?void 0:r.user)||null}),o=s(()=>{var r;return((r=e.value)==null?void 0:r.role)==="admin"});return{user:e,isAdmin:o}}export{a as u};

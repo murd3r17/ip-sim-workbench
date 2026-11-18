@@ -109,10 +109,10 @@ def main() -> int:
         for script in ("seed_sim_devices.py", "seed_training_labs.py"):
             subprocess.run([interpreter, "scripts/" + script], env=env, cwd=BACKEND, check=True)
     if args.no_start:
+        print("本地初始化完成。", flush=True)
         return 0
     if not interpreter.is_file() or not (FRONTEND / "dist/index.html").is_file():
         raise RuntimeError("请先运行 scripts/bootstrap_local.py 完成初始化。")
-    print(f"启动后打开 http://127.0.0.1:{args.port}。账号见本机 .env，Ctrl+C 停止。", flush=True)
     if Path(sys.executable) != interpreter:
         return subprocess.run([interpreter, __file__, "--start-only", "--port", str(args.port)],
                               env=env, cwd=ROOT).returncode
@@ -120,6 +120,7 @@ def main() -> int:
     os.chdir(BACKEND)
     sys.path.insert(0, str(BACKEND))
     import uvicorn
+    print(f"启动后打开 http://127.0.0.1:{args.port}。账号见本机 .env，Ctrl+C 停止。", flush=True)
     uvicorn.run("main:app", host="127.0.0.1", port=args.port, proxy_headers=False)
     return 0
 

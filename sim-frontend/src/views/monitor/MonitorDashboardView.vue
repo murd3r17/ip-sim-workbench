@@ -578,7 +578,7 @@ const getAlarmStatusLabel = (status?: string) => {
 // 初始化图表
 let chartInitialization: Promise<void> | undefined
 const initCharts = async () => {
-  const echarts = await import('../../charts')
+  const echarts = await import('../../charts/monitor')
   if (sseClosed) return
   if (cpuChart.value) {
     cpuChartInstance = echarts.init(cpuChart.value)
