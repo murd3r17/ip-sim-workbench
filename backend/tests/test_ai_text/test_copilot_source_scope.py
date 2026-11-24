@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
+from hashlib import sha256
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from modules.ai_text import router
 from modules.ai_text.context_bundle import prepare_sources
 from modules.ai_text.source_scope import prepare_scoped_sources
 from modules.knowledge.query_focus import lookup_parts
+from modules.knowledge.ranked_evidence import RankedEvidence
 from modules.knowledge.service import KnowledgeService
 from tests.test_c3_request_api import api_case, events
 
@@ -82,6 +84,11 @@ def test_only_the_reopened_chapter_sets_scope_for_continuation(edition):
     assert not notice and SAME_SCOPE not in page[0]['content'] and POINTER not in page[0]['content']
 
 
+def test_unresolved_explicit_page_cannot_use_broad_search_hits(edition):
+    sources, notice = prepare_scoped_sources('请只用《未登记教材》PDF 第 71 页。', [hit(71, SUPPORT)], 6, edition, '')
+    assert sources == [] and '未能核定' in notice
+
+
 def use_frozen_reader(monkeypatch, edition, pages):
     rows = [hit(71, SUPPORT + POINTER), hit(73, '恢复后先等待窗口结束。')]
     content = '\n\n'.join(row['text'] for row in rows)
@@ -97,6 +104,33 @@ def use_frozen_reader(monkeypatch, edition, pages):
     monkeypatch.setattr(service, 'edition', lambda: edition)
     monkeypatch.setattr(router, '_get_knowledge_service', lambda: service)
     return rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+async def test_ambiguous_source_guide_can_be_replayed_without_turning_locations_into_references(api_case, edition, monkeypatch, path):
+    client, headers, provider, retrieval = api_case
+    candidates = [{**hit, 'facet_ids': (1,)} for hit in use_frozen_reader(monkeypatch, edition, (71,))]
+    question = '只依据教材解释 OSPF 实验中 R4 去 R7 的回显显示什么。'
+    ranked = RankedEvidence(sha256(question.encode()).hexdigest(), EDITION, (), (), (), ambiguous_precise_case=True)
+    wrong_version = {**hit(71, '旧稿的不同结论。', version='archived'), 'facet_ids': (1,)}
+    retrieval.return_value = router._FacetHits([wrong_version, *candidates], None, ranked, [wrong_version, *candidates])
+    request_id = f'guide-{uuid4().hex}'
+    request = {'request_id': request_id, 'message': question, 'context': {'route': '/knowledge'}}
+    response = await client.post('/api/v1/ai/copilot' + path, json=request, headers=headers)
+    assert response.status_code == 200
+    expected = {'status': 'ambiguous', 'candidates': [{
+        'document_id': DOC, 'document_version': VERSION, 'edition_version': EDITION,
+        'book_title': BOOK, 'title': BOOK, 'page': 71,
+    }]}
+    if path.endswith('/stream'):
+        emitted = events(response)
+        assert next(frame for frame in emitted if frame['type'] == 'source_guide')['source_guide'] == expected
+        assert next(frame for frame in emitted if frame['type'] == 'references')['sources'] == []
+    else:
+        assert response.json()['source_guide'] == expected and response.json()['sources'] == []
+    recovered = (await client.get(f'/api/v1/ai/copilot/requests/{request_id}', headers=headers)).json()
+    assert recovered['response']['source_guide'] == expected and provider.calls == 0
 
 
 @pytest.mark.asyncio

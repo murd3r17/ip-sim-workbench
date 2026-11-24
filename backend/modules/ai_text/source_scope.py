@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import re
 
 from core.markdown_blocks import blocks
-from modules.knowledge.query_focus import lookup_parts, separate_pdf_pages
+from modules.knowledge.query_focus import _SOURCE_QUOTE, lookup_parts, separate_pdf_pages
 from modules.knowledge.reviewed_source_notes import notes_for_excerpt
 
 from .context_bundle import prepare_sources
@@ -57,7 +57,8 @@ class PageScope:
 
 
 def explicit_physical_scope(question: str) -> bool:
-    return bool(_PHYSICAL_PAGE.search(question) and not _AMBIGUOUS_SCOPE.search(question))
+    outside = _SOURCE_QUOTE.sub(' ', question)
+    return bool(_PHYSICAL_PAGE.search(outside) and not _AMBIGUOUS_SCOPE.search(outside))
 
 
 def _page_scope(question, edition, hits, continuity) -> PageScope | None:
@@ -70,7 +71,7 @@ def _page_scope(question, edition, hits, continuity) -> PageScope | None:
         else:
             query = question
             _, _, pages, _ = lookup_parts(question)
-            if not pages or not 0 < pages[0] <= pages[1] or len(_PAGE_REFERENCE.findall(question)) > 1:
+            if not pages or not 0 < pages[0] <= pages[1] or len(_PAGE_REFERENCE.findall(_SOURCE_QUOTE.sub(' ', question))) > 1:
                 # Two standalone page numbers without an unambiguous list do not
                 # authorize assuming that the first page is the entire scope.
                 return None
@@ -142,6 +143,10 @@ def prepare_scoped_sources(question: str, hits: list[dict], limit: int, edition,
                            *, keep_page_pointers: bool = False) -> tuple[list[dict], str]:
     scope = _page_scope(question, edition, hits, continuity) if edition else None
     if scope is None:
+        if explicit_physical_scope(question):
+            return [], '未能核定这次指定的教材和 PDF 物理页。请提供教材全名及物理页码，或从知识库打开对应页面。'
+        if continuity in {'page', 'chapter'}:
+            return [], '未能回读指定的同版教材。请从知识库重新打开对应页面。'
         return prepare_sources(hits[:limit]), ''
     selected = [hit if keep_page_pointers else _scoped_hit(hit, scope) for hit in hits if scope.keeps(hit, edition)]
     sources = prepare_sources(selected, max_documents=limit)

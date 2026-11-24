@@ -1055,8 +1055,10 @@ WebSSH终端（做命令类实验的主战场）：
 
         ui = ui_context or {}
         if scope_notice := ui.get('server_source_scope_notice'):
+            absent = ('缺失页不写入出处，不从其他页或一般知识补证。' if '物理页（' in scope_notice else
+                      '未核对的字段只说明缺口，不从其他案例、阶段或一般知识补证。')
             docs_block += ('\n服务端已核对本轮教材范围。' + scope_notice
-                           + '只回答所列片段能直接支持的部分。缺失页不写入出处，不从其他页或一般知识补证。')
+                           + '只回答所列片段能直接支持的部分。' + absent)
         continuation = ui.get('server_source_continuity')
         if continuation in {'page', 'chapter'}:
             docs_block += ('\n本轮只采用重新打开并核对过的同版教材。引用编号按本轮实际所列片段。'

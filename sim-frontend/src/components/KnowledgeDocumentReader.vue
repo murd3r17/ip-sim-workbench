@@ -72,7 +72,11 @@
         </div>
       </template>
     </div>
-    <template #footer><el-button v-if="previousDocs.length" @click="returnToChapter">返回上一级资料</el-button><el-button type="primary" plain @click="visible = false">返回原页面</el-button></template>
+    <template #footer>
+      <slot v-if="followupLocation" name="page-action" :location="followupLocation" />
+      <el-button v-if="previousDocs.length" @click="returnToChapter">返回上一级资料</el-button>
+      <el-button type="primary" plain @click="visible = false">返回原页面</el-button>
+    </template>
   </el-dialog>
   <el-dialog v-model="figureVisible" :title="'原教材 PDF 第 ' + figurePage + ' 页'" width="min(980px, 96vw)" top="3vh" append-to-body destroy-on-close @closed="clearFigure">
     <div class="reader-figure-controls" aria-label="原书页操作">
@@ -98,10 +102,11 @@ import { renderMarkdown } from '../utils/markdownLite'
 import { errorResponseMessage, extractErrorMessage } from '../utils/requestError'
 import { useAiCopilotStore } from '../stores/aiCopilot'
 import { findKnowledgeReadingLocation } from '../utils/knowledgeReadingLocation'
+import type { TextbookPageLocation } from '../utils/copilotSourceGuide'
 const visible = defineModel<boolean>({ default: false })
 const copilot = useAiCopilotStore()
 const props = defineProps<{
-  documentId?: string; filename?: string; version?: string; editionVersion?: string
+  documentId?: string; filename?: string; version?: string; editionVersion?: string; bookTitle?: string
   excerpt?: string; sectionId?: string; originalPage?: number; requirePage?: boolean; openOriginal?: boolean
 }>()
 const document = ref<KnowledgeFullDocument | null>(null)
@@ -240,6 +245,16 @@ const readingLocation = computed(() => {
 })
 const matchedOriginal = computed(() => document.value?.original_pages?.find(page =>
   page.physical === readingLocation.value?.page))
+const followupLocation = computed<TextbookPageLocation | undefined>(() => {
+  const doc = document.value
+  const bookTitle = doc?.book_title || props.bookTitle
+  const page = doc?.original_pages?.find(entry => entry.physical === props.originalPage)
+  if (loading.value || error.value || !doc || doc.historical_edition || !bookTitle || !page?.evidence_eligible
+    || !doc.version || !doc.edition_version || doc.id !== props.documentId
+    || doc.version !== props.version || doc.edition_version !== props.editionVersion) return
+  return { document_id: doc.id, document_version: doc.version, edition_version: doc.edition_version,
+    book_title: bookTitle, title: doc.title || '', page: page.physical }
+})
 function formatted(text: string) {
   const lines = text.split('\n')
   if (lines[0]?.trim() === '# ' + document.value?.title) lines.shift()
@@ -263,7 +278,7 @@ async function load() {
       const followCitation = (props.requirePage || props.openOriginal) && (!currentDoc.value || currentDoc.value.id === props.documentId)
       const target = followCitation ? result.original_pages?.find(page => page.physical === props.originalPage) : undefined
       if (followCitation && !target?.section_id && !target?.preview) {
-        error.value = `PDF 第 ${props.originalPage} 页当前无法回读。可返回查看原回答保存的片段。`
+        error.value = `PDF 第 ${props.originalPage} 页当前无法回读。请返回来源确认页号。`
         return
       }
       document.value = result

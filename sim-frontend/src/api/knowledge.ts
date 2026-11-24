@@ -79,6 +79,7 @@ export interface KnowledgeFullDocument extends KnowledgeDocument {
 
 export interface KnowledgeOriginalPage {
   physical: number
+  evidence_eligible?: boolean
   section_id?: string | null
   preview: boolean
   printed_hint?: string

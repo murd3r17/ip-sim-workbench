@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { accountStorageKey } from './browserSession'
 import type { CopilotConfigComparison, CopilotKnowledgeSource, CopilotPageRecord, CopilotReference } from '../api/ai'
+import { readSourceGuide, type CopilotSourceGuide } from '../utils/copilotSourceGuide'
 
 export type CopilotRole = 'user' | 'assistant' | 'system'
 
@@ -23,6 +24,7 @@ export interface CopilotMessage {
   sources?: CopilotReference[]
   knowledgeStatus?: string
   generationStatus?: string
+  sourceGuide?: CopilotSourceGuide
   modelUnavailable?: boolean
   draftCommands?: string[]
   draftTarget?: { deviceId: number; label: string; alarmId?: number | string; verifiedByServer?: boolean } | null
@@ -137,6 +139,7 @@ export function compressAttachmentAsync(att: CopilotAttachment): Promise<Copilot
 function sanitizeMessages(msgs: CopilotMessage[]): CopilotMessage[] {
   return msgs.map((m) => ({
     ...m,
+    ...(m.sourceGuide ? { sourceGuide: readSourceGuide(m.sourceGuide) } : {}),
     streaming: false,
     reasoningOpen: m.reasoningOpen ?? false,
   }))
@@ -725,6 +728,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       sources: msg.sources,
       knowledgeStatus: msg.knowledgeStatus,
       generationStatus: msg.generationStatus,
+      sourceGuide: msg.sourceGuide,
       draftCommands: msg.draftCommands,
       draftTarget: msg.draftTarget,
       attachments: msg.attachments,

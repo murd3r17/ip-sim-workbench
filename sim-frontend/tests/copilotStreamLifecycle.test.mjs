@@ -6,9 +6,13 @@ import ts from 'typescript'
 // Execute the actual <script setup> with mocked UI/network dependencies, on Node >= 20.
 const vue = await readFile(new URL('../src/components/AiCopilotPanel.vue', import.meta.url), 'utf8')
 const script = vue.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
-const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation, priorUpload };', {
+const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation, priorUpload, input, fillTextbookQuestion, openKnowledgeSearch };', {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 })
+const sourceGuideModule = { exports: {} }
+new Function('exports', ts.transpileModule(await readFile(new URL('../src/utils/copilotSourceGuide.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText)(sourceGuideModule.exports)
 const deferred = () => {
   let resolve, reject
   const promise = new Promise((res, rej) => { resolve = res; reject = rej })
@@ -41,6 +45,7 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     appendContent(id, text) { const msg = this.messages.find(m => m.id === id); if (msg) msg.content += text },
     appendReasoning(id, text) { const msg = this.messages.find(m => m.id === id); if (msg) msg.reasoning = (msg.reasoning || '') + text },
     syncActiveToList() {},
+    ensureActiveConversation() {},
     async flushConversation() { return true },
     saveDraftToDeploy(...args) { drafts.push(args) },
     selectKnowledgeSource(reference, label) { this.knowledgeSource = { reference, label } },
@@ -76,6 +81,7 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     '../utils/copilotContext': { resolvePageMeta: () => ({ title: 'Devices' }) },
     '../utils/pageDataContext': { buildPageDataContext: snapshot },
     '../utils/deviceModel': { resolveWorkbenchDeviceModel: () => 'NE40E' },
+    '../utils/copilotSourceGuide': sourceGuideModule.exports,
   }
   const module = { exports: {} }
   new Function('require', 'module', 'exports', outputText)(name => {
@@ -84,6 +90,49 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
   }, module, module.exports)
   return { ...module.exports, store, labCtx, requests, recoveries, citations, drafts, navigations }
 }
+
+const guidePage = { document_id: 'corpus-synthetic', document_version: 'a'.repeat(64), edition_version: 'public-training-v1',
+  book_title: '公开教材', title: '端口观察', page: 7 }
+
+test('source guidance after a failed provider is separate from original answer references and survives recovery', async () => {
+  const h = harness()
+  const pending = h.send('请核对教材。')
+  await until(() => h.requests.length === 1)
+  const request = h.requests[0]
+  request.onEvent({ type: 'error', code: 'provider_unavailable' })
+  request.onEvent({ type: 'source_guide', source_guide: { status: 'partial', candidates: [guidePage, { ...guidePage, page: 0 }] } })
+  const citation = { source_id: 'answer-excerpt', page: 12 }
+  request.onEvent({ type: 'references', sources: [citation] })
+  request.onEvent({ type: 'done', status: 'failed' })
+  request.resolve()
+  await pending
+  const reply = h.store.messages.at(-1)
+  assert.deepEqual(reply.sourceGuide, { status: 'partial', candidates: [guidePage] })
+  assert.deepEqual(reply.sources, [citation])
+
+  const recovery = h.recoverReply(reply)
+  h.recoveries[0].resolve({ state: 'failed', response: { answer: '本次只有教材定位。', knowledge_status: 'empty',
+    source_guide: { status: 'no_match', candidates: [guidePage, guidePage] } } })
+  await recovery
+  assert.deepEqual(reply.sourceGuide, { status: 'no_match', candidates: [guidePage] })
+  assert.deepEqual(reply.sources, [])
+})
+
+test('using a verified page prefills a single explicit location and preserves the draft without sending it', async () => {
+  const h = harness()
+  h.input.value = '接口抖动后如何记录？'
+  h.store.selectKnowledgeSource({ mode: 'selected', request_id: 'old', source_id: 'old-source' })
+  await h.fillTextbookQuestion(guidePage)
+  assert.equal(h.input.value, '请只根据本地教材《公开教材》PDF 第 7 页回答。本页没有依据的内容请指出。\n\n接口抖动后如何记录？')
+  assert.deepEqual(h.store.knowledgeSource.reference, { mode: 'cleared' })
+  await h.fillTextbookQuestion({ ...guidePage, page: 12 })
+  assert.match(h.input.value, /PDF 第 12 页/)
+  assert.doesNotMatch(h.input.value, /PDF 第 7 页/)
+  assert.match(h.input.value, /接口抖动后如何记录？$/)
+  h.openKnowledgeSearch()
+  assert.deepEqual(h.navigations, [{ path: '/knowledge', query: { tab: 'search' } }])
+  assert.equal(h.requests.length, 0)
+})
 
 test('citation locator is scoped to the active conversation and a terminal response preserves a newer clear', async () => {
   const h = harness()
@@ -462,6 +511,66 @@ test('an unavailable model retains the locally found documents and the failed ge
   assert.equal(message.generationStatus, 'retrieval_only')
   assert.deepEqual(message.sources, references)
   assert.equal(h.requests.length, 1)
+})
+
+for (const phase of ['initialization', 'after first token']) {
+  test(`zero-source local outcome at ${phase} stays truthful and has no draft refusal or repeated failure`, async () => {
+    const h = harness()
+    const pending = h.send('这张表能核对到哪个证明环节？')
+    await until(() => h.requests.length === 1)
+    const request = h.requests[0]
+    const answer = '模型服务暂不可用，未完成对教材的归纳。\n\n本次检索没有找到可引用的教材片段。'
+    if (phase === 'after first token') {
+      request.onEvent({ type: 'meta', status: 'ok', knowledge_status: 'ok', generation_status: 'not_generated' })
+      request.onEvent({ type: 'token', text: '旧半段与引用 [1]' })
+    }
+    request.onEvent({ type: 'meta', status: 'failed', knowledge_status: 'empty', generation_status: 'not_generated' })
+    if (phase === 'after first token') {
+      request.onEvent({ type: 'policy', retrieval_only: false, replace_answer: answer })
+    } else {
+      request.onEvent({ type: 'token', text: answer })
+    }
+    request.onEvent({ type: 'meta', status: 'failed' })
+    request.onEvent({ type: 'references', generation_status: 'not_generated', sources: [] })
+    request.onEvent({ type: 'error', code: 'provider_unavailable' })
+    request.onEvent({ type: 'done', status: 'failed', reason: 'provider_unavailable' })
+    request.resolve()
+    await pending
+    const message = h.store.messages[1]
+    assert.equal(message.content, answer)
+    assert.equal(message.knowledgeStatus, 'empty')
+    assert.equal(message.generationStatus, 'not_generated')
+    assert.equal(message.requestState, 'failed')
+    assert.equal(message.modelUnavailable, true)
+    assert.equal(message.draftRefused, undefined)
+    assert.deepEqual(message.sources, [])
+
+    message.modelUnavailable = undefined
+    const recovery = h.recoverReply(message)
+    h.recoveries[0].resolve({ state: 'failed', response: {
+      answer, generation_status: 'not_generated', knowledge_status: 'empty', sources: [],
+      trace: { provider_error: 'provider_unavailable' },
+    } })
+    await recovery
+    assert.equal(message.content, answer)
+    assert.equal(message.modelUnavailable, true)
+    assert.equal(message.knowledgeStatus, 'empty')
+    assert.equal(h.requests.length, 1)
+  })
+}
+
+test('answer replacement leaves draft refusal unset until the server explicitly supplies it', async () => {
+  const h = harness()
+  const pending = h.send('查询当前页帮助')
+  await until(() => h.requests.length === 1)
+  const request = h.requests[0]
+  request.onEvent({ type: 'policy', replace_answer: '受限的正文。' })
+  assert.equal(h.store.messages[1].draftRefused, undefined)
+  request.onEvent({ type: 'policy', draft_refused_reason: '当前接口受保护' })
+  assert.equal(h.store.messages[1].draftRefused, '当前接口受保护')
+  request.onEvent({ type: 'done', status: 'ok' })
+  request.resolve()
+  await pending
 })
 
 test('a recovery response after switching conversations never changes the new chat', async () => {

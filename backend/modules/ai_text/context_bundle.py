@@ -15,7 +15,10 @@ MAX_DOCUMENTS = 8
 MAX_DOCUMENT_CHARS = 3000
 MAX_DOCUMENTS_CHARS = 12000
 INCOMPLETE_NOTE = "[来源不完整：仅保留完整段落，未提供全文，不得将缺失内容视为不存在。]\n"
-_REFERENCE = re.compile(r"\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?(\d{1,6})(?:[ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]", re.I)
+_REFERENCE = re.compile(
+    r"\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?([0-9]{1,6})"
+    r"(?:(?:[ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})|"
+    r"(?:[ \t]*[,，][ \t]*PDF[ \t]*第[ \t]*([0-9]{1,6})[ \t]*页[ \t]*))?\]", re.I)
 
 
 class SourceDocuments(list):
@@ -125,10 +128,15 @@ def source_documents(sources):
     return SourceDocuments(sources)
 
 
-def cited_indices(answer: str) -> tuple[int, ...]:
+def cited_indices(answer: str, sources: list[dict]) -> tuple[int, ...]:
     prose = '\n'.join(answer[start:end] for kind, start, end in blocks(answer) if kind != 'fence')
     prose = re.sub(r'`[^`\n]*`', '', prose)
-    return tuple(dict.fromkeys(int(value) for value in _REFERENCE.findall(prose)))
+    page_by_index = {source.get('reference_index', index): source.get('page')
+                     for index, source in enumerate(sources, 1) if isinstance(source, dict)}
+    return tuple(dict.fromkeys(
+        index for number, page in _REFERENCE.findall(prose)
+        if (index := int(number)) in page_by_index and (not page or int(page) == page_by_index[index])
+    ))
 
 
 def answer_references(sources: list[dict], answer: str, status: str) -> tuple[str, list[dict]]:
@@ -138,7 +146,7 @@ def answer_references(sources: list[dict], answer: str, status: str) -> tuple[st
         return "generated", sources
     # A failed or cancelled stream may contain usable prose. Keep only
     # markers that actually occurred, retaining their original number.
-    indices = set(cited_indices(answer))
+    indices = set(cited_indices(answer, sources))
     return "partial", [
         {**source, "reference_index": index}
         for index, source in enumerate(sources, 1) if index in indices

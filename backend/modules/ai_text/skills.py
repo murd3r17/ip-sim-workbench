@@ -144,12 +144,6 @@ _SAVED_EVIDENCE_ONLY = re.compile(r"(?:只|仅)(?:用|看|按|根据|依据).{0,
 _FOLLOW_UP_SCOPE = re.compile(r"同样|照旧|仍然|也只|还是只|同上|按刚才|沿用.{0,10}范围|换\s*(?:到\s*)?" + DEVICE_LABEL_PATTERN, re.I)
 _FRESH_READ_REQUEST = re.compile(r"(?:请|可以|现在|重新|再|改为|实际)\s*(?:实际|重新|现场|现在|再|去)?\s*"
     r"(?:查(?:看|询)?|读(?:取)?|采集|检查|执行).{0,22}(?:设备|接口|邻居|路由表|采集结果|\bdisplay\b|" + DEVICE_LABEL_PATTERN + r")", re.I)
-_OPERATIONAL_LOOKUP = re.compile(
-    r"(?:查看|读取|核对|查询|采集|检查).{0,24}(?:设备|接口|邻居|路由表|告警|当前状态|" + DEVICE_LABEL_PATTERN + r")"
-    r"|执行\s*display\b", re.I,
-)
-
-
 def _device_read_denied(text: str) -> bool:
     text = re.sub(r'(?:不是|并非)(?:说|要求|指)?\s*(?:不要|不用|不必|不再|禁止)', '', text)
     return bool(_NO_DEVICE_READ.search(text) or _DEVICE_READ_DENIAL.search(text)
@@ -168,8 +162,11 @@ class EvidenceScope:
 
 def request_evidence_scope(message: str, history: list | None = None) -> EvidenceScope:
     """Parse source restrictions independently of the selected answer style."""
+    from .evidence_refinement import classroom_route_question
     from .evidence_context import attachment_only
-    from .question_intent import explicit_device_read, explicit_study, page_operation, saved_record_only, study_followup
+    from .question_intent import (compares_written_evidence, explicit_device_read, explicit_study,
+                                  network_reasoning_question, new_device_read_scope, page_operation, saved_record_only,
+                                  study_followup, textbook_reference_question)
     # Commands or pasted records inside a fence cannot change tool permissions.
     text = re.sub(r"```[\s\S]*?(?:```|\Z)", "", message or "")
     provided = bool(_ONLY_PROVIDED.search(text) or attachment_only(text))
@@ -211,12 +208,16 @@ def request_evidence_scope(message: str, history: list | None = None) -> Evidenc
                          and not _MIXED_TEXTBOOK_AND_RECORD.search(text))
     if textbook_requested and knowledge is None:
         knowledge = True
-    if not provided and not explicit_device_read(text) and not page_operation(text, None):
+    if not provided and not page_operation(text, None):
         inherited = study_followup(text, history)
-        if inherited or explicit_study(text):
+        classroom = textbook_reference_question(text) or classroom_route_question(text) or network_reasoning_question(text)
+        if inherited or ((explicit_study(text) or classroom) and not explicit_device_read(text)):
             if inherited and knowledge is not False and not _ALLOW_GENERAL_KNOWLEDGE.search(text):
                 textbook_only = textbook_only or request_evidence_scope(inherited[0]).textbook_only
-            return EvidenceScope(False, False, True if knowledge is None else knowledge, textbook_only=textbook_only)
+            # Interpreting a written comparison does not specify an additional source.
+            if knowledge is None and not compares_written_evidence(text):
+                knowledge = True
+            return EvidenceScope(False, False, knowledge, textbook_only=textbook_only)
     return EvidenceScope(provided, not provided and not deny_read, knowledge, previous_material, textbook_only)
 
 
@@ -241,8 +242,8 @@ def knowledge_retrieval_query(message: str, history: list | None) -> str:
         previous_titles, _, _, _ = lookup_parts(inherited[0])
         same_book = not titles and len(previous_titles) == 1 and re.search(r'同(?:一)?(?:本|版)|同教材', message)
         book = f'《{previous_titles[0]}》 ' if same_book else ''
-        protocol = next(iter(inherited[1])).upper()
-        return f'{book}{protocol} {message}'
+        protocol = '' if protocol_names(message) else f'{next(iter(inherited[1])).upper()} '
+        return f'{book}{protocol}{message}'
     return message
 
 
@@ -509,20 +510,28 @@ def select_skill(
     evidence_scope: EvidenceScope | None = None,
     config_comparison: bool = False,
 ) -> SkillChoice:
+    from .evidence_refinement import classroom_route_question
     from .evidence_context import attachment_only, compare_user_material_and_observation, targeted_session_question
-    from .question_intent import (WORKFLOW_GUIDANCE,
-                                  explicit_device_read, explicit_study, new_device_read_scope,
-                                  page_operation, plain_question, study_followup, workflow_question)
+    from .question_intent import (WORKFLOW_GUIDANCE, explicit_device_read, explicit_study,
+                                  network_reasoning_question, new_device_read_scope, operational_evidence_question,
+                                  operational_followup_question, page_operation, plain_question, study_followup,
+                                  textbook_reference_question, workflow_question)
 
     text = message or ""
     intent_text = plain_question(text)
     scope = evidence_scope or request_evidence_scope(text, history)
-    live_text = _REQUEST_KNOWLEDGE.sub('', text)
-    asks_live = bool(_OPERATIONAL_LOOKUP.search(live_text) or explicit_status_question(live_text))
+    live_text = _REQUEST_KNOWLEDGE.sub('', intent_text)
+    requests_new_read = bool(new_device_read_scope(intent_text))
+    asks_live = (requests_new_read or operational_evidence_question(live_text)
+                 or operational_followup_question(live_text, history))
     navigation_text = re.sub(r'入口\s*(?:和|及|与|到|、|至)\s*出口', '', text)
     only_attachment = has_attachments and attachment_only(intent_text)
     page_intent = page_operation(intent_text, route)
-    learning_intent = (explicit_study(intent_text) or study_followup(intent_text, history)) and not explicit_device_read(intent_text)
+    classroom = (scope.knowledge_lookup is not False and not (saved_observation and asks_live)
+                 and not requests_new_read and (textbook_reference_question(intent_text, route)
+                      or classroom_route_question(intent_text) or network_reasoning_question(intent_text)))
+    learning_intent = (classroom or (not requests_new_read and bool(study_followup(intent_text, history)))
+                       or (explicit_study(intent_text) and not explicit_device_read(intent_text)))
     workflow = workflow_question(intent_text, route) if page_intent else None
     if want_draft:
         key, reason = "config_draft", "want_draft"
@@ -560,7 +569,7 @@ def select_skill(
         key, reason = 'lab_coach', 'verified_lab_step_explanation' if step_help else 'lab_followup'
     elif _provided_record_recap(text, history) or _history_recap(text, history):
         key, reason = 'live_evidence', 'operational_history_recap'
-    elif _observation_provenance_question(text):
+    elif not requests_new_read and _observation_provenance_question(text):
         key, reason = 'live_evidence', 'observation_provenance_explanation'
     elif _workbench_question(text) or (_PAGE_ONLY.search(text) and not _separate_knowledge_question(text)):
         key, reason = "page_help", "workbench_controls_or_capability"
@@ -572,7 +581,7 @@ def select_skill(
         key, reason = "page_help", "dashboard_summary_explanation"
     elif PAGE.search(navigation_text) and not _separate_knowledge_question(navigation_text):
         key, reason = "page_help", "page_question"
-    elif LIVE.search(live_text) or new_device_read_scope(text):
+    elif asks_live:
         key, reason = "live_evidence", "explicit_live_question"
     elif KNOW.search(text):
         key, reason = "knowledge_answer", "knowledge_keywords"

@@ -104,3 +104,28 @@ test('real model equals citations share numbering between the answer and source 
   assert.match(html, /<code class="md-inline">array\[n=7\]<\/code>/)
   assert.deepEqual([...referencedSourceIndices(text)], [1, 0, 8])
 })
+
+test('page-qualified model citations link to the saved physical page and preserve their labels', () => {
+  const text = '甲侧的邻居记录为 Full。[1，PDF第7页]\n\n第二项[来源2, pdf 第 20 页 ]。'
+  const pages = new Map([[0, 7], [1, 20]])
+  const html = renderMarkdown(text, pages)
+  assert.match(html, /data-source-index="0"[^>]*>\[1，PDF第7页\]<\/button>/)
+  assert.match(html, /data-source-index="1"[^>]*>\[2, pdf 第 20 页 \]<\/button>/)
+  assert.deepEqual([...referencedSourceIndices(text, pages)], [0, 1])
+})
+
+test('page annotations on the wrong source, unknown reference number and code cannot create links', () => {
+  const text = '错页[1，PDF第8页]，未知编号[9，PDF第7页]，普通正文[1，印刷第7页]。'
+    + '\n\n`array[1，PDF第7页]`\n\n```text\nvalue=[1，PDF第7页]\n```'
+  const pages = new Map([[0, 7]])
+  const html = renderMarkdown(text, pages)
+  assert.doesNotMatch(html, /class="citation-inline"/)
+  assert.match(html, /PDF第8页 · PDF 页未核对/)
+  assert.match(html, /PDF第7页 · 无对应来源/)
+  assert.match(html, /\[1，印刷第7页\]/)
+  assert.match(html, /<code class="md-inline">array\[1，PDF第7页\]<\/code>/)
+  assert.match(html, /value=\[1，PDF第7页\]/)
+  assert.deepEqual([...referencedSourceIndices(text, pages)], [])
+  assert.doesNotMatch(renderMarkdown('生成中 [1，PDF第7页]'), /citation-inline|citation-unmatched/)
+  assert.doesNotMatch(renderMarkdown('旧记录 [1，PDF第7页]', new Set([0])), /class="citation-inline"/)
+})

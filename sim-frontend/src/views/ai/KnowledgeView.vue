@@ -103,7 +103,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { deleteKnowledgeDocument, getKnowledgeCatalog, getKnowledgeHealth, searchKnowledge, searchOriginalQuote, type KnowledgeDocument, type KnowledgeHealth, type KnowledgeSearchResult, type KnowledgeCatalog, type OriginalQuoteResult } from '../../api/knowledge'
@@ -114,6 +115,10 @@ import KnowledgeDocumentReader from '../../components/KnowledgeDocumentReader.vu
 import { originalQuoteForLookup } from '../../utils/knowledgeSearchInput'
 const copilot = useAiCopilotStore()
 const activeTab = ref('docs'), filter = ref(''), book = ref('')
+const route = useRoute()
+watch(() => route.query.tab, (tab) => {
+  if (tab === 'search') activeTab.value = 'search'
+}, { immediate: true })
 const searchBook = ref('')
 const showSubsections = ref(false)
 const catalog = ref<KnowledgeCatalog | null>(null), knowledgeHealth = ref<KnowledgeHealth | null>(null)

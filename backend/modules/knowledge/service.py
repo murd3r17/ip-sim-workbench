@@ -4,11 +4,16 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.config import get_settings
 from core.logger import get_logger
 from modules.knowledge.provider import KnowledgeProvider
+
+from .facet_evidence import FacetEvidence
+
+if TYPE_CHECKING:
+    from .ranked_evidence import EvidenceSearchResult
 
 logger = get_logger("knowledge")
 _EDITION_VECTOR_TIMEOUT = 4.0
@@ -422,6 +427,36 @@ class KnowledgeService:
         workspace_id: str | None = None,
         top_k: int | None = None,
     ) -> list[dict[str, Any]]:
+        return await self._search(query, workspace_id, top_k)
+
+    async def search_with_facet_evidence(
+        self,
+        query: str,
+        workspace_id: str | None = None,
+        top_k: int | None = None,
+    ) -> tuple[list[dict[str, Any]], FacetEvidence | None]:
+        """Return normal hits and an optional server-verified pair from one retrieval."""
+        evidence: list[FacetEvidence] = []
+        hits = await self._search(query, workspace_id, top_k, facet_evidence=evidence)
+        return hits, evidence[0] if evidence else None
+
+    async def search_ranked_evidence(self, query: str, workspace_id: str | None = None, top_k: int = 6) -> EvidenceSearchResult:
+        """Return normal results and an internal pool of physically verified evidence."""
+        from .ranked_evidence import EvidenceSearchResult, rank_edition_evidence
+
+        limit = min(max(top_k, 1), 6)
+        evidence: list[FacetEvidence] = []
+        captured = []
+        hits = await self._search(query, workspace_id, limit, facet_evidence=evidence, ranked_context=captured)
+        selection = evidence[0] if evidence else None
+        if not captured:
+            return EvidenceSearchResult(hits, selection, [], None)
+        edition, workspace, terms, initial = captured[0]
+        pool, ranked = await rank_edition_evidence(edition, workspace, query, terms, [*hits, *initial], top_k=limit,
+                                                  preserve_selection=selection is not None)
+        return EvidenceSearchResult(hits, selection, pool, ranked)
+
+    async def _search(self, query, workspace_id, top_k, *, facet_evidence=None, ranked_context=None):
         workspace = self.resolve_workspace_id(workspace_id)
         limit = top_k or get_settings().knowledge_top_k
         from .local_provider import _query_tokens
@@ -433,7 +468,8 @@ class KnowledgeService:
         short = bool(technical_aliases(query)) or (len(protocol_names(query)) == 1 and len(set(_query_tokens(query))) == 1)
         if edition:
             explicit_vector = bool(workspace_id and workspace_id.strip() == edition.vector["workspace"])
-            return await self._search_edition(edition, query, workspace, limit, short, explicit_vector)
+            return await self._search_edition(edition, query, workspace, limit, short, explicit_vector,
+                                              facet_evidence=facet_evidence, ranked_context=ranked_context)
         references = [] if self.provider.name == "local" and short else await self._reviewed_learning_hits(query, workspace)
         if references:
             return references[:limit]
@@ -452,9 +488,13 @@ class KnowledgeService:
             return None
         return edition if edition and workspace == edition.vector["workspace"] else None
 
-    async def _search_edition(self, edition, query, workspace, limit, short, explicit_vector):
+    async def _search_edition(self, edition, query, workspace, limit, short, explicit_vector, *,
+                              facet_evidence=None, ranked_context=None):
+        from .complementary_facets import complementary_request, expand_complementary
         from .edition import literal_excerpt
+        from .evidence_anchors import evidence_anchor_request, verified_evidence_anchor
         from .local_provider import vlan_mapping_excerpt
+        from .page_evidence import coverage_request
         from .query_focus import compact_text, focused_queries, multiple_passage_facets, separate_pdf_pages, vlan_mapping_query
         from .reader import DocumentReadError
 
@@ -472,9 +512,15 @@ class KnowledgeService:
             return []
 
         keyword = edition.keyword_index
-        available, candidates = await keyword.search_pages(terms, max(limit * 5, 16), document_ids=document_ids,
+        base_depth = max(limit * 5, 16)
+        anchor_request = None
+        if 4 <= limit <= 8 and not (short or explicit_vector or pages or phrases or document_ids is not None):
+            anchor_request = evidence_anchor_request(terms)
+        depth = max(base_depth, 64) if anchor_request else base_depth
+        available, candidates = await keyword.search_pages(terms, depth, document_ids=document_ids,
                                                           pages=pages, phrases=phrases)
-        sources = await asyncio.to_thread(edition.resolve_hits, candidates, keyword, workspace, query="" if phrases else terms)
+        sources = await asyncio.to_thread(edition.resolve_hits, candidates[:base_depth], keyword, workspace,
+                                          query="" if phrases else terms)
         literals = tuple(compact_text(phrase) for phrase in phrases)
         if literals:
             sources = [{**hit, "text": literal_excerpt(hit["text"], literals)} for hit in sources
@@ -492,6 +538,8 @@ class KnowledgeService:
 
         add(exact)
         vlan_ids = vlan_mapping_query(terms) if not phrases else frozenset()
+        if ranked_context is not None and not (phrases or pages or vlan_ids or explicit_vector or document_ids is not None):
+            ranked_context.append((edition, workspace, terms, sources))
         if vlan_ids:
             add(hit for hit in sources if vlan_mapping_excerpt(hit["text"], vlan_ids))
         if len(results) < limit and not (short or phrases or pages or document_ids is not None):
@@ -521,6 +569,28 @@ class KnowledgeService:
             raise unavailable
         if results and multiple_passage_facets(terms) and not (short or phrases or exact):
             results = await asyncio.to_thread(edition.improve_page_excerpts, results, terms)
+        natural_search = not (short or exact or phrases or pages or vlan_ids or explicit_vector or document_ids is not None)
+        covered = False
+        if results and natural_search:
+            if request := coverage_request(terms):
+                enriched = await asyncio.to_thread(edition.cover_page_excerpts, results, request)
+                covered = enriched != results
+                results = enriched
+        if anchor_request and len(results) >= 4 and not (exact or vlan_ids):
+            anchored = await asyncio.to_thread(verified_evidence_anchor, edition, keyword, workspace,
+                                               candidates, terms, anchor_request)
+            if anchored and all((hit["book"], hit["page"]) != (anchored["book"], anchored["page"]) for hit in results):
+                results.insert(3, anchored)
+                return results[:limit]
+        if natural_search and not covered and 4 <= limit <= 8:
+            if plan := complementary_request(terms):
+                choices = []
+                results = await expand_complementary(edition, workspace, plan, results, sources, limit,
+                                                    on_pair=choices.append if facet_evidence is not None else None)
+                if facet_evidence is not None and choices:
+                    evidence = await asyncio.to_thread(FacetEvidence.capture, edition, query, *choices[0])
+                    if evidence and evidence.select_hits(query, results) is not None:
+                        facet_evidence.append(evidence)
         return results
 
     async def _search_separate_pdf_pages(self, edition, workspace, limit, pages, before, after):

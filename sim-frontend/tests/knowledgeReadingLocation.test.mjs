@@ -37,6 +37,19 @@ test('a reproducible route table excerpt can skip irrelevant rows in the same se
   }), { id: 'section-a', page: 46, excerpt: true })
 })
 
+test('selected evidence can omit a sentence while keeping the cited section and order', () => {
+  const first = '设备重新收到上行状态正常的通告。'
+  const outsidePointer = '第 70 页另有恢复阶段的计时图。'
+  const last = '接口状态稳定后才按配置进行抢占。'
+  const revisedParts = [parts[0], { id: 'section-a', content: `#### 恢复阶段\n${first}${outsidePointer}${last}` }, ...parts.slice(2)]
+  assert.deepEqual(findKnowledgeReadingLocation(revisedParts, pages, { originalPage: 46, excerpt: first + last }),
+    { id: 'section-a', page: 46, excerpt: true })
+  assert.deepEqual(findKnowledgeReadingLocation(revisedParts, pages, { originalPage: 46, excerpt: last + first }),
+    { id: 'page-46', page: 46, excerpt: false })
+  assert.deepEqual(findKnowledgeReadingLocation(revisedParts, pages, { originalPage: 47, excerpt: first + last }),
+    { id: 'page-47', page: 47, excerpt: false })
+})
+
 test('missing excerpts and older page-only links mark the physical page rather than a paragraph', () => {
   for (const options of [{ excerpt: '本页未展示的测试语句，但上一页或者下一页可能有类似文字。' }, { requirePage: true }]) {
     assert.deepEqual(findKnowledgeReadingLocation(parts, pages, { ...options, originalPage: 46 }),

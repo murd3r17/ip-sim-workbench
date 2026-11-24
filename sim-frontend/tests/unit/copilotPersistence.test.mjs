@@ -6,12 +6,17 @@ import { setImmediate as yieldLoop } from 'node:timers/promises'
 import ts from 'typescript'
 
 const datetimeExports = {}
+const sourceGuideExports = {}
 const cachePrefix = 'workbench:1:learner:'
 const sessionsKey = cachePrefix + 'copilot:sessions'
 vm.runInNewContext(ts.transpileModule(
   fs.readFileSync(new URL('../../src/utils/datetime.ts', import.meta.url), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
 ).outputText, { exports: datetimeExports })
+vm.runInNewContext(ts.transpileModule(
+  fs.readFileSync(new URL('../../src/utils/copilotSourceGuide.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+).outputText, { exports: sourceGuideExports })
 
 function harness(overrides = {}) {
   const data = new Map(), timers = new Map(), images = [], saves = [], notices = []
@@ -37,6 +42,7 @@ function harness(overrides = {}) {
     document: { createElement: () => ({ getContext: () => ({ drawImage() {} }), toDataURL: () => 'data:image/jpeg,small' }) },
     require: (name) => {
       if (name === '../utils/datetime') return datetimeExports
+      if (name === '../utils/copilotSourceGuide') return sourceGuideExports
       if (name === 'pinia') return { defineStore: (_id, setup) => setup }
       if (name === 'vue') return { ref: (value) => ({ value }), computed: (fn) => ({ get value() { return fn() } }), watch() {} }
       if (name.startsWith('element-plus/')) return { ElMessage: { warning: (message) => notices.push(message) } }

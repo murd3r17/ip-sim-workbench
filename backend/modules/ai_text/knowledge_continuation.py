@@ -23,9 +23,10 @@ _CHANGE_SOURCE = re.compile(
 
 def cited_locators(response: dict) -> list[dict]:
     """Persist locator metadata of actually used citations, never earlier prose."""
-    used = set(cited_indices(response.get('answer') or ''))
+    sources = response.get('sources') or []
+    used = set(cited_indices(response.get('answer') or '', sources))
     locators = []
-    for index, source in enumerate(response.get('sources') or [], 1):
+    for index, source in enumerate(sources, 1):
         if not isinstance(source, dict) or source.get('reference_index', index) not in used:
             continue
         candidate = {key: source.get(key) for key in

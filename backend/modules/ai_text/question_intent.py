@@ -12,12 +12,24 @@ _LEARNING_OBJECT = re.compile(
     r"课堂(?:练习|示意图)|示意图|教材图|协议示例|推演示例)"
 )
 _LEARNING_ACTION = re.compile(
-    r"怎么看|怎么理解|解释|含义|代表|为何|为什么|哪(?:个|一|两)|如何|会不会|是不是|是否|"
+    r"怎么看|怎么读|怎么理解|解释|含义|代表|为何|为什么|哪(?:个|一|两)|如何|会不会|是不是|是否|"
     r"比较|对比|区别|含义|举例|定义|说一下|是什么意思|推演|画着|画的是|写的是"
 )
 _TEACHING_NOT_LIVE = re.compile(r"(?:用|按|依据|根据|结合|就|看|做的?|以).{0,4}(?:教材|课本|课件|"
     r"教学(?:示意)?图|课堂示意图|例题|练习题|题设)|(?:教材|课本|课件|示意图|题图|题设|例题|练习题)"
     r"(?:上|里|中|中的|上的|里的|画着|画的是|给出|给了|显示|出现|提到|提过|用了|的|这[张幅道页]|那[张幅道页])")
+_TEACHING_SOURCE = re.compile(r'教材|课本|课件|讲义|原书|知识库|(?:教材|教学)截图|题设|例题')
+_TEACHING_RECORD = re.compile(r'案例|实验|示例|证据|冲突|命令|步骤|操作顺序|回显|输出|图|说明|核对|查找|字段|写的是|'
+                              r'怎么|如何|哪(?:个|一|条|步|段)|各是什么|是什么|是多少', re.I)
+_TEACHING_ANAPHOR = re.compile(r'本节|这(?:一)?章|这(?:个)?例子|本例|图里的|资料里|书里的|本(?:张|条)截图')
+_SKIP_TEACHING = re.compile(r'(?:不查|不按|不要看|不参考|不用|改看现场).{0,5}(?:教材|课本|知识库|课件)')
+_TEACHING_NAVIGATION = re.compile(
+    r'(?:入口|菜单|按钮|页签).{0,8}(?:怎么用|什么意思|什么含义|在哪|如何使用)|'
+    r'(?:打开|进到|进入|回到|返回|跳转).{0,8}(?:同版书页|同版正文|书页|片段详情|资料目录|原教材页位|教材正文|知识库页面)'
+)
+_CLEAR_NEW_READ = re.compile(r'(?:现在|立刻|马上|此刻|本次|重新).{0,14}(?:采集|读取|新读|执行)|'
+                             r'真实设备|真机|实机|现场设备|(?:当前|目标)设备|模拟设备')
+_PREVIOUS_RECORD_CONTEXT = re.compile(r'话术|怎么说|原句|步骤里|命令的含义|用于课堂|写在(?:表|图|书|讲义)')
 _FRESH_DEVICE_ACTION = re.compile(
     r"(?:现在|请(?:帮我)?|帮我|重新|再|去|实际|现场)\s*(?:实际|重新|现在|现场|再|去)?\s*"
     r"(?:采集|读取|登录|连接|执行|查询|检查|查看)\s*.{0,24}"
@@ -33,7 +45,7 @@ _READING_UI_OBJECT = re.compile(r"原(?:教材)?页|教材正文|教材原图|�
     r"正文读完|阅读定位|版本记录|已保存的报告|已保存巡检|片段回到书页")
 _FOLLOWUP = re.compile(r"^(?:请|再|那|同样|继续|接着|刚才|还有|具体|进一步|这个|这种|其中|它|前面|上面)|"
     r"(?:还是|仍然)(?:那|这|原)|(?:换|切).{0,20}(?:页|窗口|面板).{0,20}(?:那|继续|还是|刚才|同样)")
-_DEICTIC = re.compile(r"它|这种|这个|那条|那项|这一项|它的|两者|刚才|上一个|前面|原来|仍然|同样|其中|继续")
+_DEICTIC = re.compile(r"它|这种|这个|那条|那项|这一项|两者|刚才|上一个|前面|原来|仍然|同样|同一|其中|继续|接着")
 _INTENT_RESET = re.compile(r"换(?:个|一)(?:题|话题|协议)|另一个问题|另问|新问题|不聊.{0,8}(?:了|改问)|改问|"
                            r"不查教材|不用书上|不看教材|改看现场|现在查实机")
 _NEW_ACTOR = re.compile(r"(?:现在|这次|请).{0,8}(?:读|采|查).{0,12}(?:实机|真机|设备|接口|邻居|路由表)")
@@ -62,6 +74,44 @@ _DIAGNOSTIC_READ = re.compile(r'^(?:请|帮我|麻烦).{0,16}(?:排查|诊断|�
                               r'(?:采集|读[取出]?|查[看询]?|核对|检查)(?:两端|各台|两台|的|\s)*(?:接口|邻居|路由表|设备状态)')
 _READ_DENIAL = re.compile(r'(?:不要|不用|不许|禁止|无需|不必|别)(?:先|再|重新|实际|现在|现场|去|\s)*'
                           r'(?:执行|采集|读取|读一下|查一下|查询|查看|检查|核对)')
+_SCENARIO_FRAME = re.compile(
+    r'(?:^|[。；，：\s])(?:先|我们)?(?:假设|假定|设(?=\s|有|定|两|三|[A-Z]+\d))|'
+    r'题设|题图|示意图|(?:这|那|本)(?:一)?[张幅]图例|示例(?:中|图|拓扑)|附例|这(?:个|一)例|本例|例(?:子)?中|按图|图中|图里|图上画|'
+    r'(?:给定|已知|如下|下列).{0,12}(?:拓扑|组网|场景|条件)|'
+    r'(?:拓扑|组网|场景)(?:是这样的|如下|设为)|(?:如果|若).{0,36}(?:会|应该|应当|那么|将)'
+)
+_NETWORK_REASONING = re.compile(
+    r'(?:哪(?:一|几)?[条个项种步两]|什么|怎样|怎么|如何).{0,12}(?:命令|步骤|回显|输出|字段|状态|阶段|顺序|角色)|'
+    r'(?:命令|步骤|回显|输出|字段|表项|状态|阶段|顺序|角色|证据).{0,12}(?:为什么|怎么理解|什么意思|含义|表示|说明|区别|'
+    r'能(?:否|不能)证明|证明了什么|应该|应当|会(?:变|保持|显示|变成)|是什么)|'
+    r'两(?:条|段|份).{0,6}(?:回显|输出|证据).{0,14}(?:为准|优先)|'
+    r'(?:该|应|要)先(?:看|读|查|核对).{0,18}还是.{0,14}(?:看|查|读|核对)', re.I,
+)
+_NETWORK_ARTIFACT = re.compile(r'\b(?:display|show)\s+\S|\btrunk\b|路由表|邻居表|转发表|接口回显', re.I)
+_TABLE_REFERENCE = re.compile(r'(?:这|那|本|另(?:外)?|同一)(?:一)?(?:张|个)表|表(?:格)?(?:里|中|上)')
+_WRITTEN_ACCOUNT = re.compile(r'正文|原文|叙述|图注|注释|说明段|说明文字|解说词|文字说明|文字描述|'
+                              r'(?:这|那|前|后)一?段(?:话|.{0,12}(?:说|写|提到|记载|给出))')
+_PROOF_BOUNDARY = re.compile(
+    r'(?:能(?:否|不能)?|可否|是否|足以|可以).{0,12}(?:证明|支持|推出|推断|印证|佐证|得出|认定|代表|算作)|'
+    r'(?:只|最多|仅|至多)(?:能|可)?.{0,8}(?:证明|支持|证实|说明|判断|推出|推到|得出)|'
+    r'(?:证据|依据|记录|结论).{0,10}(?:边界|限度|够不够|到哪|止于|撑到|支持范围)|'
+    r'(?:合成|合并为|并进|作为|算作|当作|认作|写成).{0,10}(?:同一|一次)',
+)
+_REAL_OBSERVATION = re.compile(
+    r'(?:当前|现在|此刻|最新|目前|这次|本次|现场|生产).{0,12}(?:状态|设备|接口|链路|邻居|路由|采集|回显|告警|任务)|'
+    r'(?:状态|设备|接口|链路|邻居|路由|回显).{0,12}(?:当前|现在|目前|此刻)|真机|实机|真实设备|'
+    r'我(?:刚|已经|们刚|们已经).{0,10}(?:采集|测到|读取|抓到|查到|观察到)|我的(?:设备|网络|现场)|'
+    r'(?:重新|实际).{0,4}(?:采集|读一下|读取|查询)|'
+    r'(?:刚才|刚刚|此前|前一次|上回).{0,6}(?:采集|读取|采样)|'
+    r'最近证据|历史(?:观察记录|回显|设备输出)|已保存.{0,8}(?:观察|记录|回显)|'
+    r'(?:这份|这条|本次|所选)(?:采样|样本)(?:记录|的|里|中|时间|时点)'
+)
+_EXISTING_OBSERVATION = re.compile(r'已有.{0,8}(?:观察|记录|回显)')
+_OBSERVATION_POINTER = re.compile(r'这些数字|这(?:个告警|台设备|条链路)|这个观测|本次读数')
+_OPERATIONAL_FOLLOWUP = re.compile(r'^(?:那|同样|照旧|再|接着)|(?:更正|对象改为).{0,18}(?:同样|照样)(?:读取|查询|读一下)')
+_LEAVE_SCENARIO = re.compile(r'^(?:另外|另请|改为|改问|转到实际|脱离)')
+_ACTUAL_READ_LANGUAGE = re.compile(r'(?:实际|现场|真机|实机|真实).{0,8}(?:采集|读取|查询|查看|执行|设备)')
+_REQUEST_CLAUSE = re.compile(r'(?:^|(?P<separator>[。，；、？！;,!?\n]))(?P<clause>[^。，；、？！;,!?\n]+)')
 _READ_MODES = (
     ('sim', re.compile(r'模拟(?:器|设备|环境)|演练(?:设备|环境)')),
     ('ssh', re.compile(r'真实(?:设备|环境)|真机|实机')),
@@ -248,7 +298,67 @@ def plain_question(text: str) -> str:
     return re.sub(r'\x60\x60\x60[\s\S]*?(?:\x60\x60\x60|\Z)', '', text or '').strip()
 
 
+def textbook_reference_question(text: str, route: str | None = None) -> bool:
+    if _SKIP_TEACHING.search(text) or _TEACHING_NAVIGATION.search(text):
+        return False
+    source = _TEACHING_SOURCE.search(text) or route == '/knowledge' and _TEACHING_ANAPHOR.search(text)
+    if source and _TEACHING_RECORD.search(text):
+        return True
+    # The knowledge view supplies the reading context for a question about what
+    # a technical table supports. A generic reference to a record is not a read order.
+    return bool(route == '/knowledge' and _TABLE_REFERENCE.search(text) and _PROOF_BOUNDARY.search(text)
+                and _network_subject(text) and not _REAL_OBSERVATION.search(text))
+
+
+def _network_subject(text: str) -> bool:
+    return bool(protocol_names(text) or _NETWORK_ARTIFACT.search(text)
+                or re.search(skills.DEVICE_LABEL_PATTERN, text, re.I))
+
+
+def illustrative_network_question(text: str) -> bool:
+    return bool(_SCENARIO_FRAME.search(text) and _network_subject(text)
+                and (_LEARNING_ACTION.search(text) or _NETWORK_REASONING.search(text)
+                     or _READ_FIELD.search(text) and re.search(r'查看|读取|读出|核对|采集|执行', text)
+                     or re.search(r'[？?]|会怎样|会如何', text)))
+
+
+def compares_written_evidence(text: str) -> bool:
+    return bool(_TABLE_REFERENCE.search(text) and _WRITTEN_ACCOUNT.search(text) and _PROOF_BOUNDARY.search(text))
+
+
+def network_reasoning_question(text: str) -> bool:
+    """A protocol procedure or interpretation can name devices without asking to reach them."""
+    if illustrative_network_question(text):
+        return True
+    if (not _network_subject(text) or _REAL_OBSERVATION.search(text)
+            or skills.explicit_status_question(text) or _DIAGNOSTIC_READ.search(text)):
+        return False
+    if compares_written_evidence(text):
+        return True
+    return bool((_NETWORK_REASONING.search(text) or _TABLE_REFERENCE.search(text) and _LEARNING_ACTION.search(text))
+                and not (_SAVED_READ_REFERENCE.search(text) or _EXISTING_OBSERVATION.search(text)))
+
+
+def operational_evidence_question(text: str) -> bool:
+    """Classify current or saved evidence requests independently of read permission."""
+    return bool(_OBSERVATION_POINTER.search(text) or _SAVED_READ_REFERENCE.search(text)
+                or _REAL_OBSERVATION.search(text) or _EXISTING_OBSERVATION.search(text) or explicit_device_read(text)
+                or (_DIRECT_READ.search(text) and _READ_FIELD.search(text)))
+
+
+def operational_followup_question(text: str, history: list | None) -> bool:
+    if not (_OPERATIONAL_FOLLOWUP.search(text) and re.search(skills.DEVICE_LABEL_PATTERN, text, re.I)):
+        return False
+    for item in reversed((history or [])[-12:]):
+        if isinstance(item, dict) and item.get('role') == 'user':
+            previous = plain_question(str(item.get('content') or ''))
+            return not network_reasoning_question(previous) and operational_evidence_question(previous)
+    return False
+
+
 def explicit_device_read(text: str) -> bool:
+    if textbook_reference_question(text) or network_reasoning_question(text):
+        return bool(new_device_read_scope(text))
     return bool(skills.explicit_status_question(text) or (
         not _TEACHING_NOT_LIVE.search(text) and (_FRESH_DEVICE_ACTION.search(text) or _EXPLICIT_FIELD_REFERENCE.search(text))
     ) or _NEW_ACTOR.search(text))
@@ -256,18 +366,32 @@ def explicit_device_read(text: str) -> bool:
 
 def new_device_read_scope(message: str) -> str:
     """Only the action clauses of the current user's request can authorize targets."""
-    text = re.sub(r'[「『“].*?[」』”]|`[^`]*`|[（(][^）)]*[）)]', '', plain_question(message))
-    if not text or explicit_study(text) or skills._device_read_denied(text) or _READ_DENIAL.search(text):
+    question = plain_question(message)
+    text = re.sub(r'[「『“].*?[」』”]|`[^`]*`|[（(][^）)]*[）)]', '', question)
+    # A qualifier can narrow a request even when quoted text itself cannot grant reads.
+    illustrative = illustrative_network_question(question) or compares_written_evidence(question)
+    course = textbook_reference_question(text) or illustrative
+    if (not text or (not course and (explicit_study(text) or network_reasoning_question(text)))
+            or skills._device_read_denied(text) or _READ_DENIAL.search(text)):
         return ''
-    if (skills.explicit_status_question(text)
+    if (not course and skills.explicit_status_question(text)
             and (not re.search(r'^那|呢[？?。\s]*$', text) or re.search(r'现在|当前', text))):
         return text
     authorized = []
     refers_to_saved = bool(_SAVED_READ_REFERENCE.search(text))
-    if (diagnosis := _DIAGNOSTIC_READ.search(text)) and not refers_to_saved:
+    if not course and (diagnosis := _DIAGNOSTIC_READ.search(text)) and not refers_to_saved:
         authorized.append(diagnosis.group())
-    for clause in re.split(r'[。，；、？！;,!?\n]', text):
-        clause = clause.strip()
+    for part in _REQUEST_CLAUSE.finditer(text):
+        clause = part['clause'].strip()
+        if course:
+            separate_request = part['separator'] in {None, '。', '？', '！', '?', '!', '\n'}
+            leaves_scenario = _LEAVE_SCENARIO.search(clause) or separate_request and _ACTUAL_READ_LANGUAGE.search(clause)
+            if _SCENARIO_FRAME.search(clause) or (illustrative and not leaves_scenario):
+                continue
+            clause = re.sub(r'^(?:另外|另|同时|另外请|并且|然后)\s*', '', clause)
+            if (_TEACHING_SOURCE.search(clause) or _TEACHING_ANAPHOR.search(clause)
+                    or _PREVIOUS_RECORD_CONTEXT.search(clause) or not _CLEAR_NEW_READ.search(clause)):
+                continue
         if re.search(r'刚才|此前|先前|上次|之前|刚读|历史|存档|已保存|已存|手抄|工单|附件|截图|样例|快照|观察记录|接口记录|'
                      r'能不能证明|怎么|如何|是否意味着|从哪里|在哪里|按哪个|为什么', clause) or _SAVED_READ_REFERENCE.search(clause):
             continue
@@ -437,23 +561,29 @@ def page_operation(text: str, route: str | None) -> bool:
 
 
 def study_followup(text: str, history: list | None) -> tuple[str, frozenset[str]] | None:
-    if not (_FOLLOWUP.search(text) and _DEICTIC.search(text)):
+    if not (_FOLLOWUP.search(text) and (_DEICTIC.search(text) or text.lstrip().startswith('那'))):
         return None
-    if _INTENT_RESET.search(text) or explicit_device_read(text) or page_operation(text, None) or protocol_names(text):
+    if (_INTENT_RESET.search(text) or _REAL_OBSERVATION.search(text) or new_device_read_scope(text)
+            or page_operation(text, None)):
         return None
+    current_subjects = frozenset(protocol_names(text))
     for item in reversed((history or [])[-12:]):
         if not isinstance(item, dict) or item.get('role') != 'user':
             continue
         old = plain_question(str(item.get('content') or ''))
         subjects = frozenset(protocol_names(old))
-        if _INTENT_RESET.search(old) or explicit_device_read(old) or page_operation(old, None):
+        if (_INTENT_RESET.search(old) or explicit_device_read(old) or page_operation(old, None)
+                or ((_REAL_OBSERVATION.search(old) or _EXISTING_OBSERVATION.search(old))
+                    and not (network_reasoning_question(old) or textbook_reference_question(old)))):
             break
         if subjects:
-            if len(subjects) == 1 and (explicit_study(old) or skills.concept_only_question(old)
-                                      or re.search(r"教材|课本|协议原理", old)):
+            if len(subjects) == 1 and (not current_subjects or current_subjects == subjects) and (
+                explicit_study(old) or skills.concept_only_question(old) or textbook_reference_question(old)
+                or network_reasoning_question(old) or re.search(r'教材|课本|协议原理', old)
+            ):
                 return old, subjects
             break
-        if not (_FOLLOWUP.search(old) and _DEICTIC.search(old)):
+        if not (_FOLLOWUP.search(old) and (_DEICTIC.search(old) or old.lstrip().startswith('那'))):
             break
     return None
 

@@ -142,9 +142,24 @@ class CopilotChatRequest(BaseModel):
     )
 
 
+class SourceGuideLocation(BaseModel):
+    document_id: str
+    document_version: str
+    edition_version: str
+    book_title: str
+    title: str
+    page: int
+
+
+class SourceGuide(BaseModel):
+    status: Literal['no_match', 'partial', 'ambiguous', 'unavailable']
+    candidates: list[SourceGuideLocation] = Field(default_factory=list)
+
+
 class CopilotChatResponse(BaseModel):
     answer: str
     sources: list[dict] = Field(default_factory=list)
+    source_guide: SourceGuide | None = None
     draft_commands: list[str] = Field(default_factory=list)
     draft_explanation: str = ""
     draft_refused_reason: str = ""

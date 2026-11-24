@@ -153,6 +153,14 @@ def _query_tokens(text: str) -> list[str]:
     return [term for term in _tokenize(text) if term not in _QUESTION_TOKENS]
 
 
+def _network_labels(text: str):
+    for match in _NETWORK_LABEL.finditer(text):
+        label = compact_text(match.group())
+        label = label.replace("gigabitethernet", "ge", 1) if label.startswith("gigabitethernet") else label
+        label = label.replace("ethernet", "eth", 1) if label.startswith("ethernet") else label
+        yield label
+
+
 def _edition_tokens(text: str, *, query=False) -> list[str]:
     text = normalize("NFKC", text)
     text = _CHINESE_LAYOUT_SPACE.sub("", text)
@@ -160,11 +168,7 @@ def _edition_tokens(text: str, *, query=False) -> list[str]:
     tokens.extend("letter=" + match.group().lower() for match in _ENTITY_LETTER.finditer(text))
     tokens.extend("concept=" + concept for concept in sorted(passage_concepts(text)))
     tokens.extend("label=" + match.group().lower() for match in _SLASH_FIELD.finditer(text))
-    for match in _NETWORK_LABEL.finditer(text):
-        label = compact_text(match.group())
-        label = label.replace("gigabitethernet", "ge", 1) if label.startswith("gigabitethernet") else label
-        label = label.replace("ethernet", "eth", 1) if label.startswith("ethernet") else label
-        tokens.append("label=" + label)
+    tokens.extend("label=" + label for label in _network_labels(text))
     return tokens
 
 

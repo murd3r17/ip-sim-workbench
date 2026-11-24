@@ -52,6 +52,17 @@ async def test_same_query_uses_cache():
     b = await kb_cache.cached_search(svc, "ospf lsa", 5)
     assert svc.calls == 1 and a == b
 
+
+@pytest.mark.asyncio
+async def test_verified_evidence_has_a_separate_exact_query_cache():
+    kb_cache.invalidate()
+    service = _Svc()
+    await kb_cache.cached_search(service, 'OSPF LSA', 5)
+    await kb_cache.cached_search(service, 'OSPF LSA', 5, variant='verified-facets')
+    await kb_cache.cached_search(service, 'ospf lsa', 5, variant='verified-facets')
+    await kb_cache.cached_search(service, 'OSPF LSA', 5, variant='verified-facets')
+    assert service.calls == 3
+
 @pytest.mark.asyncio
 async def test_different_query_or_topk_misses():
     kb_cache.invalidate(); svc = _Svc()

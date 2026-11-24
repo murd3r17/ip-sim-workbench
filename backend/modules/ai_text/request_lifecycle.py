@@ -55,6 +55,8 @@ def result_events(result, request_id, *, replayed=True):
         yield error
     yield {"type": "references", "request_id": request_id, "sources": result.get("sources", []),
            "generation_status": result.get("generation_status", "not_generated")}
+    if guide := result.get('source_guide'):
+        yield {'type': 'source_guide', 'request_id': request_id, 'source_guide': guide}
     if error and retrieval_only:
         yield error
     yield {"type": "done", "request_id": request_id, "status": result.get("status", "failed"),
@@ -78,6 +80,8 @@ class Accumulator:
         if kind == "references":
             self.result["sources"] = event.get("sources", [])
             self.result["generation_status"] = event.get("generation_status", "not_generated")
+        elif kind == 'source_guide':
+            self.result['source_guide'] = event['source_guide']
         elif kind == "meta":
             for key in ("provider", "knowledge_status", "draft_refused_reason", "draft_target", "tier", "skill"):
                 if key in event:

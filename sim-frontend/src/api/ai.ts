@@ -1,5 +1,6 @@
 import request from './request'
 import { browserSessionRevision, expireBrowserSession, sessionFetch } from '../stores/browserSession'
+import type { CopilotSourceGuide } from '../utils/copilotSourceGuide'
 
 export const getAICapabilities = () =>
   request.get<unknown, { vision_enabled: boolean; image_mime_types: string[] }>('/ai/capabilities', { silent: true })
@@ -92,6 +93,7 @@ export type CopilotStreamEvent =
       historical?: boolean
     }
   | { type: 'references'; request_id?: string; generation_status?: string; sources?: CopilotReference[] }
+  | { type: 'source_guide'; request_id?: string; source_guide?: CopilotSourceGuide }
   | { type: 'policy'; draft_refused_reason?: string; draft_target?: null; replace_answer?: string; retrieval_only?: boolean }
   | { type: 'tool'; name?: string; status?: string }
   | { type: 'progress'; stage: string; message?: string; request_id?: string }
@@ -205,11 +207,13 @@ export interface CopilotRecovery {
     generation_status?: string
     answer?: string
     sources?: CopilotReference[]
+    source_guide?: CopilotSourceGuide
     draft_commands?: string[]
     draft_refused_reason?: string
     draft_target?: { device_id: number; hostname: string; alarm_id?: number } | null
     status?: string
     error_message?: string
+    trace?: { provider_error?: string }
   } | null
 }
 

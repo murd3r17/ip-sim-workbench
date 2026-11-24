@@ -255,13 +255,28 @@
                 <span v-if="s.reviewed_notes?.length" class="source-review">审校补充 {{ s.reviewed_notes.length }} 条</span>
               </button>
             </details>
-            <div v-else-if="msg.role === 'assistant' && !msg.streaming && ['degraded', 'empty'].includes(msg.knowledgeStatus || '')" class="sources">
+            <div v-else-if="!msg.sourceGuide && msg.role === 'assistant' && !msg.streaming && !msg.cancelled && ['degraded', 'empty'].includes(msg.knowledgeStatus || '')" class="sources">
               <div class="sources-title">{{ msg.knowledgeStatus === 'degraded' ? '本次未能连接知识服务' : '本次检索没有找到可引用的片段' }}</div>
+              <button type="button" class="text-btn" @click="openKnowledgeSearch">去知识库检索</button>
             </div>
-            <div v-else-if="msg.role === 'assistant' && !msg.streaming && msg.requestState === 'completed' && msg.knowledgeStatus === 'ok'" class="sources">
+            <div v-else-if="!msg.sourceGuide && msg.role === 'assistant' && !msg.streaming && msg.requestState === 'completed' && msg.knowledgeStatus === 'ok'" class="sources">
               <div class="sources-title">已检索资料，正文没有引用检索片段。</div>
+              <button type="button" class="text-btn" @click="openKnowledgeSearch">去知识库检索</button>
             </div>
-            <div v-if="msg.modelUnavailable && msg.generationStatus !== 'retrieval_only' && !msg.streaming" class="offline-help">
+            <section v-if="msg.role === 'assistant' && msg.sourceGuide && !msg.streaming && !msg.cancelled" class="sources source-guide" aria-label="教材查源">
+              <strong class="sources-title">教材查源</strong>
+              <p>{{ sourceGuideMessage(msg.sourceGuide) }}</p>
+              <p v-if="msg.sourceGuide.candidates.length">可核对以下教材页。这里的页位仅用于定位。</p>
+              <button v-for="location in msg.sourceGuide.candidates" :key="`${location.document_id}:${location.document_version}:${location.edition_version}:${location.page}`"
+                type="button" class="source-item source-link" @click="openGuideLocation(location)">
+                <strong>{{ location.title || location.book_title }}</strong>
+                <span v-if="location.title && location.title !== location.book_title" class="source-book">{{ location.book_title }}</span>
+                <span class="source-page">查看同版 PDF 物理第 {{ location.page }} 页</span>
+              </button>
+              <button type="button" class="text-btn" @click="openKnowledgeSearch">去知识库检索</button>
+            </section>
+            <div v-if="msg.modelUnavailable && !msg.sourceGuide && msg.generationStatus !== 'retrieval_only' && !msg.streaming
+              && !['empty', 'degraded'].includes(msg.knowledgeStatus || '')" class="offline-help">
               可继续查看页面上已保存的内容，或<button type="button" class="text-btn" @click="go('/knowledge')">打开知识库</button>检索和阅读教材。
             </div>
             <div v-if="msg.draftRefused && !msg.streaming" class="draft-refused">
@@ -274,8 +289,9 @@
             </div>
             <div v-if="msg.requestId && !msg.streaming && !msg.cancelled && msg.requestState && msg.requestState !== 'completed'" class="request-recovery" role="status">
               <span v-if="msg.generationStatus === 'retrieval_only'">已保留本次教材检索结果。</span>
+              <span v-else-if="hasLocalEvidenceOutcome(msg)">已保留本次教材检索状态。</span>
               <span v-else>回答{{ msg.requestState === 'failed' ? '失败' : '尚未确认完成' }}，可查询已保存的内容。</span>
-              <button type="button" class="text-btn" :disabled="store.loading || !!recoveringRequest" @click="recoverReply(msg)">{{ msg.generationStatus === 'retrieval_only' ? '查询已保存结果' : '查询原回答' }}</button>
+              <button type="button" class="text-btn" :disabled="store.loading || !!recoveringRequest" @click="recoverReply(msg)">{{ hasLocalEvidenceOutcome(msg) ? '查询已保存结果' : '查询原回答' }}</button>
               <span v-if="recoveryNotice.id === msg.id">{{ recoveryNotice.text }}</span>
               <button v-if="retryMessageId === msg.id" type="button" class="text-btn"
                 :disabled="store.loading || !!recoveringRequest" @click="restoreQuestion(msg)">恢复原问题</button>
@@ -418,13 +434,19 @@
           </footer>
         </section>
       </div>
-      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.legacy?.document?.id || citation?.document_id" :filename="citation?.filename"
-        :version="citation?.legacy?.document?.version || citation?.document_version"
-        :edition-version="citation?.legacy?.edition_version"
+      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="guideLocation?.document_id || citation?.legacy?.document?.id || citation?.document_id" :filename="citation?.filename"
+        :version="guideLocation?.document_version || citation?.legacy?.document?.version || citation?.document_version"
+        :edition-version="guideLocation?.edition_version || citation?.legacy?.edition_version || citation?.edition_version"
+        :book-title="guideLocation?.book_title || citation?.book_title"
         :section-id="citation?.legacy ? (citation.legacy.section_id ?? undefined) : citation?.section_id"
-        :original-page="citation?.legacy ? (citation.legacy.target_page ?? citation.legacy.physical?.[0]) : (citation?.edition_version ? citation.page : undefined)"
-        :require-page="citation?.legacy?.status === 'exact-page-locator'"
-        :excerpt="citation?.legacy ? undefined : citation?.content" />
+        :original-page="guideLocation?.page || (citation?.legacy ? (citation.legacy.target_page ?? citation.legacy.physical?.[0]) : (citation?.edition_version ? citation.page : undefined))"
+        :require-page="!!guideLocation || citation?.legacy?.status === 'exact-page-locator'"
+        :excerpt="citation?.legacy ? undefined : citation?.content">
+        <template #page-action="{ location }">
+          <button class="draft-btn" type="button" :disabled="store.loading || wantDraft || !!pendingAttachments.length"
+            @click="fillTextbookQuestion(location)">按此页提问</button>
+        </template>
+      </KnowledgeDocumentReader>
       <div v-if="zoomVisible" class="zoom-mask" @click="zoomVisible = false">
         <img :src="zoomSrc" class="zoom-img" alt="预览" />
         <button class="zoom-close" type="button" title="关闭" @click="zoomVisible = false">×</button>
@@ -446,12 +468,13 @@ import KnowledgeDocumentReader from './KnowledgeDocumentReader.vue'
 import { resolvePageMeta } from '../utils/copilotContext'
 import { buildPageDataContext } from '../utils/pageDataContext'
 import { resolveWorkbenchDeviceModel } from '../utils/deviceModel'
+import { readSourceGuide, sourceGuideMessage, textbookPageQuestion, type TextbookPageLocation } from '../utils/copilotSourceGuide'
 
 const store = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const route = useRoute()
 const router = useRouter()
-type Composer = { text: string; files: CopilotAttachment[]; wantsDraft: boolean; uploadId?: string; ignoreAttachment?: boolean }
+type Composer = { text: string; files: CopilotAttachment[]; wantsDraft: boolean; uploadId?: string; ignoreAttachment?: boolean; pageQuestionPrefix?: string }
 const drafts = reactive(new Map<string, Composer>())
 function composer(id = store.activeId || '') {
   if (!drafts.has(id)) drafts.set(id, { text: '', files: [], wantsDraft: false })
@@ -576,6 +599,10 @@ async function scrollBottom() {
 
 function go(path: string) {
   router.push(path)
+}
+
+function openKnowledgeSearch() {
+  router.push({ path: '/knowledge', query: { tab: 'search' } })
 }
 
 function clearSelection() {
@@ -842,11 +869,14 @@ async function recoverReply(message: CopilotMessage) {
     }
     const result = saved.response
     const incomplete = saved.state !== 'completed'
-    const retrievalOnly = result?.generation_status === 'retrieval_only'
+    const modelUnavailable = incomplete && (message.modelUnavailable || result?.trace?.provider_error === 'provider_unavailable')
+    const localEvidence = hasLocalEvidenceOutcome({ modelUnavailable, knowledgeStatus: result?.knowledge_status,
+      generationStatus: result?.generation_status })
     const answer = result?.answer || result?.error_message || '原请求未保存回答内容。'
     store.patchMessage(message.id, {
-      content: answer + (incomplete && !retrievalOnly ? '\n\n> 原请求未完成，以上为已保存的内容。' : ''),
+      content: answer + (incomplete && !localEvidence ? '\n\n> 原请求未完成，以上为已保存的内容。' : ''),
       sources: result?.sources || [],
+      sourceGuide: readSourceGuide(result?.source_guide),
       knowledgeStatus: result?.knowledge_status,
       generationStatus: result?.generation_status,
       draftCommands: incomplete ? [] : result?.draft_commands || [],
@@ -854,7 +884,7 @@ async function recoverReply(message: CopilotMessage) {
       draftRefused: result?.draft_refused_reason || undefined,
       streaming: false,
       requestState: saved.state,
-      modelUnavailable: incomplete && message.modelUnavailable,
+      modelUnavailable,
       cancelled: saved.state === 'cancelled',
       recovered: true,
     })
@@ -985,6 +1015,31 @@ function reviewedReferenceUrl(url: string): string | undefined {
   return /^https:\/\/www\.rfc-editor\.org\/rfc\/rfc\d+\.html#section-[\d.]+$/.test(url) ? url : undefined
 }
 const fullDocumentVisible = ref(false)
+const guideLocation = ref<TextbookPageLocation>()
+watch(fullDocumentVisible, (visible) => {
+  if (!visible) guideLocation.value = undefined
+})
+
+function openGuideLocation(location: TextbookPageLocation) {
+  if (citation.value) closeCitation()
+  guideLocation.value = location
+  fullDocumentVisible.value = true
+}
+
+async function fillTextbookQuestion(location: TextbookPageLocation) {
+  if (store.loading || wantDraft.value || pendingAttachments.value.length) return
+  store.ensureActiveConversation()
+  const draft = composer()
+  const question = draft.pageQuestionPrefix && draft.text.startsWith(draft.pageQuestionPrefix)
+    ? draft.text.slice(draft.pageQuestionPrefix.length) : draft.text
+  draft.pageQuestionPrefix = textbookPageQuestion(location, '')
+  draft.text = draft.pageQuestionPrefix + question.trim()
+  draft.ignoreAttachment = true
+  if (store.knowledgeSource) store.selectKnowledgeSource({ mode: 'cleared' })
+  closeCitation()
+  await nextTick()
+  promptInput.value?.focus()
+}
 type OpenCitation = CopilotReference & {
   index: number
   requestsReview: boolean
@@ -1020,14 +1075,19 @@ function referenceIndex(source: CopilotReference, position: number) {
 
 function answerSources(message: CopilotMessage) {
   if (!message.sources?.length || message.streaming) return []
-  const numbers = referencedSourceIndices(message.content)
+  const numbers = referencedSourceIndices(message.content, availableReferences(message))
   return message.sources.flatMap((source, position) => {
     const index = referenceIndex(source, position)
     return numbers.has(index) ? [{ source, index }] : []
   })
 }
 function availableReferences(message: CopilotMessage) {
-  return new Set((message.sources || []).map(referenceIndex))
+  return new Map((message.sources || []).map((source, position) => [referenceIndex(source, position), source.page]))
+}
+
+function hasLocalEvidenceOutcome(message: Pick<CopilotMessage, 'knowledgeStatus' | 'generationStatus' | 'modelUnavailable'>) {
+  return message.generationStatus === 'retrieval_only' || Boolean(message.modelUnavailable
+    && message.generationStatus === 'not_generated' && ['empty', 'degraded'].includes(message.knowledgeStatus || ''))
 }
 const citationPanel = ref<HTMLElement | null>(null)
 const citationBody = ref<HTMLElement | null>(null)
@@ -1070,6 +1130,7 @@ const canClearBookSource = computed(() => {
 async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, index: number, requestsReview = false) {
   const s = msg.sources?.find((source, position) => referenceIndex(source, position) === index)
   if (!s) return
+  guideLocation.value = undefined
   const conversation = store.activeId
   const seq = ++citationSeq
   citation.value = { index, requestsReview, title: s.title, filename: s.filename, version: s.version,
@@ -1126,6 +1187,7 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
 function closeCitation() {
   citationSeq++
   fullDocumentVisible.value = false
+  guideLocation.value = undefined
   citation.value = null
 }
 function zoomImage(src: string) {
@@ -1206,14 +1268,14 @@ async function send(preset?: string, forceDraft = false) {
   store.patchMessage(assistantId, { requestId: request.requestId, requestState: 'pending' })
   let receivedDone = false
   let failureMarked = false
-  let retrievalOnly = false
+  let localEvidenceOutcome = false
   function markFailed(hint: string, modelUnavailable = false) {
     if (!isCurrentRequest(request) || failureMarked) return
     failureMarked = true
     store.patchMessage(assistantId, { requestState: 'interrupted', modelUnavailable })
-    if (retrievalOnly) return
     const msg = store.messages.find((m) => m.id === assistantId)
-    store.appendContent(assistantId, msg?.content ? `\n\n> ${hint}（回答未完成）` : hint)
+    if (localEvidenceOutcome && msg?.content.trim()) return
+    store.appendContent(assistantId, msg?.content ? `\n\n> ${hint}` : hint)
   }
 
   try {
@@ -1254,25 +1316,31 @@ async function send(preset?: string, forceDraft = false) {
         // 迟到事件：带 request_id 且不是本次请求的，一律丢弃（不写进当前会话）
         const eventId = (event as { request_id?: string }).request_id
         if (eventId && eventId !== request.requestId) return
-        if (failureMarked && event.type !== 'done' && event.type !== 'references') return
+        if (failureMarked && event.type !== 'done' && event.type !== 'references' && event.type !== 'source_guide') return
         if (event.type === 'meta') {
-          retrievalOnly ||= event.generation_status === 'retrieval_only'
+          const knowledgeStatus = event.knowledge_status || (['empty', 'degraded'].includes(event.status || '') ? event.status : undefined)
+          localEvidenceOutcome ||= hasLocalEvidenceOutcome({ knowledgeStatus, generationStatus: event.generation_status,
+            modelUnavailable: event.status === 'failed' })
           store.patchMessage(assistantId, {
-            knowledgeStatus: event.knowledge_status || (['empty', 'degraded'].includes(event.status || '') ? event.status : undefined),
-            generationStatus: event.generation_status,
+            ...(knowledgeStatus ? { knowledgeStatus } : {}),
+            ...(event.generation_status ? { generationStatus: event.generation_status } : {}),
             draftRefused: event.draft_refused_reason || undefined,
             draftTarget: serverDraftTarget(event.draft_target),
             recovered: event.replayed === true,
           })
         } else if (event.type === 'references') {
-          retrievalOnly ||= event.generation_status === 'retrieval_only'
-          store.patchMessage(assistantId, { sources: event.sources || [], generationStatus: event.generation_status })
+          localEvidenceOutcome ||= event.generation_status === 'retrieval_only'
+          store.patchMessage(assistantId, { sources: event.sources || [],
+            ...(event.generation_status ? { generationStatus: event.generation_status } : {}) })
+        } else if (event.type === 'source_guide') {
+          store.patchMessage(assistantId, { sourceGuide: readSourceGuide(event.source_guide) })
         } else if (event.type === 'policy') {
-          if (event.retrieval_only) {
-            retrievalOnly = true
-            store.patchMessage(assistantId, { generationStatus: 'retrieval_only' })
-          } else {
-            store.patchMessage(assistantId, { draftRefused: event.draft_refused_reason || '当前环境未核验，不生成可执行草稿' })
+          if (typeof event.retrieval_only === 'boolean') {
+            localEvidenceOutcome = true
+            store.patchMessage(assistantId, { generationStatus: event.retrieval_only ? 'retrieval_only' : 'not_generated' })
+          }
+          if (event.draft_refused_reason?.trim()) {
+            store.patchMessage(assistantId, { draftRefused: event.draft_refused_reason })
           }
           if (typeof event.replace_answer === 'string') {
             store.patchMessage(assistantId, { content: event.replace_answer, draftCommands: [], draftTarget: null })
@@ -1315,7 +1383,7 @@ async function send(preset?: string, forceDraft = false) {
           request.cancelled = true
           receivedDone = true
         } else if (event.type === 'error') {
-          retrievalOnly ||= event.generation_status === 'retrieval_only'
+          localEvidenceOutcome ||= event.generation_status === 'retrieval_only'
           const modelUnavailable = event.code === 'provider_unavailable'
           markFailed(modelUnavailable ? '模型服务暂不可用，回答未完成。' : event.message || '生成失败，请稍后重试。', modelUnavailable)
         }
@@ -1927,6 +1995,7 @@ function onExternalPrefill(e: Event) {
 }
 .sources-title { font-size: 11px; color: var(--v7b-muted); margin-bottom: 4px; }
 .source-item { font-size: 11.5px; color: var(--v7b-muted); line-height: 1.5; }
+.source-guide p { margin: 4px 0; }
 .draft-actions { display: flex; gap: 6px; margin-top: 10px; }
 .draft-target { flex-basis: 100%; font-size: 12px; color: var(--v7b-muted); }
 .draft-refused {

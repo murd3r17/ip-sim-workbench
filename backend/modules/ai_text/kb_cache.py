@@ -50,8 +50,10 @@ def _fingerprint(service) -> str:
     return hashlib.sha256(json.dumps(fields, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _key(service, query: str, top_k: int) -> str:
-    raw = f"{_fingerprint(service)}|{top_k}|{query.strip().lower()}"
+def _key(service, query: str, top_k: int, variant: str = "") -> str:
+    # Structured evidence is tied to the exact wording that was verified.
+    canonical = query if variant else query.strip().lower()
+    raw = f"{_fingerprint(service)}|{top_k}|{variant}|{canonical}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -68,9 +70,11 @@ async def cached_search(
     query: str,
     top_k: int,
     loader: Callable[[], Awaitable[Any]] | None = None,
+    *,
+    variant: str = "",
 ) -> Any:
     now = time.monotonic()
-    key = _key(service, query, top_k)
+    key = _key(service, query, top_k, variant)
     hit = _CACHE.get(key)
     if hit and hit[0] > now:
         _CACHE.move_to_end(key)

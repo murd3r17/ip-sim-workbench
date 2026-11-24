@@ -1,11 +1,17 @@
 /** Minimal Markdown → safe HTML for Copilot bubbles (no external deps). */
 
-const SOURCE_REFERENCE = /\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?(\d{1,6})([ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]/gi
-type AvailableReferences = number | ReadonlySet<number>
+const SOURCE_REFERENCE = /\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?([0-9]{1,6})(?:([ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})|([ \t]*[,，][ \t]*PDF[ \t]*第[ \t]*([0-9]{1,6})[ \t]*页[ \t]*))?\]/gi
+type SourcePages = ReadonlyMap<number, number | undefined>
+type AvailableReferences = number | ReadonlySet<number> | SourcePages
 
-export function referencedSourceIndices(text: string): Set<number> {
+export function referencedSourceIndices(text: string, pages?: SourcePages): Set<number> {
   const prose = text.replace(/```[\s\S]*?(?:```|$)|`[^`\n]+`/g, '')
-  return new Set(Array.from(prose.matchAll(SOURCE_REFERENCE), match => Number(match[1]) - 1))
+  const indices = new Set<number>()
+  for (const [, number, , , physical] of Array.from(prose.matchAll(SOURCE_REFERENCE))) {
+    const index = Number(number) - 1
+    if (!physical || pages?.get(index) === Number(physical)) indices.add(index)
+  }
+  return indices
 }
 
 function escapeHtml(text: string): string {
@@ -27,15 +33,19 @@ function inlineMarkdown(text: string, references?: AvailableReferences): string 
   // Only validated source indices in prose become controls. Never interpret HTML,
   // URLs or a numeric expression inside inline/fenced code as a citation.
   s = s.split(/(<code\b[^>]*>[\s\S]*?<\/code>)/g).map(part => part.startsWith('<code') ? part
-    : part.replace(SOURCE_REFERENCE, (match, number, review) => {
+    : part.replace(SOURCE_REFERENCE, (match, number, review, pageLabel, physical) => {
       const index = Number(number)
-      const label = `${index}${review || ''}`
+      const label = `${index}${review || ''}${pageLabel || ''}`
       if (references === undefined) return match
       const available = index >= 1 && (typeof references === 'number' ? index <= references : references.has(index - 1))
+      const pageMatches = !physical || (typeof references !== 'number' && 'get' in references
+        && references.get(index - 1) === Number(physical))
       const reviewMarker = review ? ' data-source-review="true"' : ''
-      return available
-        ? `<button type="button" class="citation-inline" data-source-index="${index - 1}"${reviewMarker} aria-label="查看来源 ${label}">[${label}]</button>`
-        : `<span class="citation-unmatched" title="该编号不在本次回答的来源列表中">[${label} · 无对应来源]</span>`
+      if (available && pageMatches) {
+        return `<button type="button" class="citation-inline" data-source-index="${index - 1}"${reviewMarker} aria-label="查看来源 ${label}">[${label}]</button>`
+      }
+      if (available) return `<span class="citation-unmatched" title="标注的 PDF 页无法与保存的来源核对">[${label} · PDF 页未核对]</span>`
+      return `<span class="citation-unmatched" title="该编号不在本次回答的来源列表中">[${label} · 无对应来源]</span>`
     })).join('')
   return s
 }

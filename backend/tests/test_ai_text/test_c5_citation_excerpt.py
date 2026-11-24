@@ -5,6 +5,7 @@ import pytest
 
 from modules.ai_text import router
 from modules.ai_text.context_bundle import answer_references
+from modules.ai_text.knowledge_continuation import cited_locators
 from modules.ai_text.llm_service import LLMService
 from tests.test_ai_text.test_citation_verify import _auth, _token
 
@@ -14,6 +15,19 @@ def test_partial_source_indices_exclude_code_and_preserve_review_marker_numbers(
     status, cited = answer_references(sources, '依据 [2 审校补充]，[99]。`字段[1]`\n\n```cli\n接口[3]\n```', 'failed')
     assert status == 'partial'
     assert cited == [{'page': 102, 'reference_index': 2}]
+
+
+def test_pdf_page_markers_require_the_saved_physical_page():
+    edition = {'edition_version': 'edition-1', 'document_id': 'doc-1', 'document_version': 'v1'}
+    first = {**edition, 'page': 12, 'source_id': 'first'}
+    second = {**edition, 'page': 24, 'source_id': 'second'}
+    sources = [first, second]
+    answer = '材料给出 [2，PDF 第 24 页]。页码不匹配 [1, PDF第24页]。编号未提供 [3，PDF第12页]。'
+    status, cited = answer_references(sources, answer, 'failed')
+    assert status == 'partial'
+    assert cited == [{**second, 'reference_index': 2}]
+    assert cited_locators({'answer': answer, 'sources': cited}) == [second]
+    assert cited_locators({'answer': answer, 'sources': sources}) == [second]
 
 
 @pytest.mark.asyncio

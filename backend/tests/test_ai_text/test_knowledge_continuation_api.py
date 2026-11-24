@@ -11,6 +11,8 @@ from modules.ai_text import router
 from modules.ai_text.models import CopilotConversation, CopilotRequest
 from modules.ai_text.request_store import digest
 from modules.ai_text.schemas import CopilotChatRequest
+from modules.knowledge.query_focus import lookup_parts
+from modules.knowledge.service import KnowledgeService
 from tests.test_c3_request_api import api_case, events
 from tests.test_copilot_session_idor import _make_user, auth_header
 
@@ -21,8 +23,10 @@ SENTINEL = 'CLIENT_AND_OLD_ANSWER_NOT_EVIDENCE'
 
 class MiniEdition:
     version = 'test-edition'
-    documents = {'synthetic-chapter': {'id': 'synthetic-chapter', 'sha256': 'chapter-v1', 'ingest': True},
-                 'other-chapter': {'id': 'other-chapter', 'sha256': 'other-v1', 'ingest': True}}
+    documents = {'synthetic-chapter': {'id': 'synthetic-chapter', 'sha256': 'chapter-v1', 'ingest': True,
+                                       'book': 1, 'page_start': 21, 'page_end': 24},
+                 'other-chapter': {'id': 'other-chapter', 'sha256': 'other-v1', 'ingest': True,
+                                   'book': 2, 'page_start': 20, 'page_end': 25}}
 
     def __init__(self):
         self.reads = []
@@ -30,6 +34,11 @@ class MiniEdition:
 
     def has_search_scope(self, question):
         return False
+
+    def search_scope(self, question):
+        title, phrases, pages, remainder = lookup_parts(question)
+        doc_ids = {'synthetic-chapter'} if 'Synthetic manual' in title else None
+        return remainder, [], doc_ids, pages, phrases
 
     def hit(self, doc, page, text=None):
         return {'title': f'{doc}.md', 'document_id': doc, 'document_version': self.documents[doc]['sha256'],
@@ -67,7 +76,9 @@ def complete_with_fixture(provider, monkeypatch, edition, *, references=('[1]',)
         prompts.append(prompt)
         yield {'kind': 'content', 'text': '合成夹具答复。' + (SENTINEL + ' '.join(references) if len(prompts) == 1 else '[1]')}
     monkeypatch.setattr(provider, 'stream_parts', stream)
-    monkeypatch.setattr(router, '_get_knowledge_service', lambda: SimpleNamespace(edition=lambda: edition))
+    service = object.__new__(KnowledgeService)
+    monkeypatch.setattr(service, 'edition', lambda: edition)
+    monkeypatch.setattr(router, '_get_knowledge_service', lambda: service)
     return prompts
 
 
@@ -121,7 +132,7 @@ async def test_public_session_endpoint_accepts_longer_id_and_continues_over_sse_
     saved = await client.put('/api/v1/ai/copilot/sessions/' + session, json={'title':'课本页摘记','messages':[]}, headers=headers)
     assert saved.status_code == 200
     retrieval.return_value = [edition.hit('synthetic-chapter', 21)]
-    await ask(client, headers, '/chat/stream', session, '请只根据教材 PDF 第 21 页解释生成树的端口选择。请标出处。', route='/knowledge')
+    await ask(client, headers, '/chat/stream', session, '请只根据教材《Synthetic manual》PDF 第 21 页解释生成树的端口选择。请标出处。', route='/knowledge')
     _, answer = await ask(client, headers, '/chat/stream', session,
         '继续只用刚才引用的同一页，说明选路有什么边界，没写计时时请说缺依据。请附原页出处。')
     assert answer['trace']['source_continuity'] == 'page' and [item['page'] for item in answer['sources']] == [21]

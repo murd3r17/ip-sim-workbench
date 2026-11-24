@@ -471,6 +471,43 @@ class KnowledgeEdition:
                 results.append({**hit, "text": text})
         return results
 
+    def cover_page_excerpts(self, hits, request):
+        """Keep an observation and its conditions at the verified physical anchor."""
+        from .page_evidence import paired_excerpt
+        from .reviewed_source_notes import notes_for_excerpt, notes_prompt
+
+        results = hits.copy()
+        identities = {(hit.get("document_id"), hit.get("section_id"), compact_text(hit["text"])) for hit in hits}
+        verified = {}
+        for index, hit in enumerate(hits):
+            if (hit.get("edition_version") != self.version or hit.get("partial_readonly_table")
+                    or hit.get("source_range_reduced") or not hit.get("page") or not hit.get("section_id")
+                    or hit.get("retriever") not in {"edition_local", "edition_fused", "focused_original"}):
+                continue
+            document, version = hit["document_id"], hit["document_version"]
+            key = document, version
+            if key not in verified:
+                try:
+                    reading = self.read(document, version, include_original_status=False)
+                    verified[key] = _page_texts(reading)
+                except (DocumentReadError, OSError, ValueError, KeyError):
+                    verified[key] = {}
+            page = verified[key].get(hit["page"])
+            if not page or page[0] != hit["section_id"]:
+                continue
+            notes = notes_for_excerpt(hit["filename"], hit["text"], version)
+            focus = str(hit.get("query_focus") or "")[:100]
+            # Reserve space for the title, physical page, focus, and existing review notes.
+            budget = 1100 - len(notes_prompt(notes)) - (len(focus) + 12 if focus else 0)
+            excerpt = paired_excerpt(page[1], hit["text"], request, max_chars=budget)
+            if not excerpt or notes_for_excerpt(hit["filename"], excerpt, version) != notes:
+                continue
+            identity = document, hit["section_id"], compact_text(excerpt)
+            if identity not in identities:
+                identities.add(identity)
+                results[index] = {**hit, "text": excerpt}
+        return results
+
     def _vector_members(self, hits, provider, workspace):
         pointers = {(hit.get("raw") or {}).get("id"): self.aliases.get(hit.get("title"))
                     for hit in hits if hit.get("title") in self.aliases}
