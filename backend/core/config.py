@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     knowledge_dataset_id: str = ""  # RAGFlow dataset id（仅 ragflow 路径）
     knowledge_corpus_dir: str = ""  # absolute or relative path to corpus; empty = default
     knowledge_edition_dir: str = ""  # local frozen edition with reader, provenance and import manifests
+    knowledge_original_dir: str = ""  # optional local originals registered in the frozen edition
+    knowledge_previous_edition_dir: str = ""  # optional frozen archive for authorized versioned reads
     knowledge_local_storage: str = ""  # local provider uploads, independent of bundled textbooks
     knowledge_top_k: int = 8
     knowledge_similarity_threshold: float = 0.2

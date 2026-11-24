@@ -34,6 +34,7 @@ export interface DashboardSummary {
   generated_at: string
   environment_name: string
   environment_status: string
+  device_mode?: string | null
   devices: { total: number; online: number; ssh_reachable: number; offline: number; maintenance: number; unknown: number }
   topology: null | {
     id: number

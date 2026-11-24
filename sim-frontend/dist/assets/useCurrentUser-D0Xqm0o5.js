@@ -1,0 +1,1 @@
+import{a6 as u}from"./index-BRNPY747.js";import{c as s}from"./vendor-aEC5rSPE.js";function a(){const e=s(()=>{var r;return((r=u.value)==null?void 0:r.user)||null}),o=s(()=>{var r;return((r=e.value)==null?void 0:r.role)==="admin"});return{user:e,isAdmin:o}}export{a as u};

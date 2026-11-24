@@ -37,6 +37,32 @@ async def test_existing_observation_explanation_uses_one_call_without_retrieval(
     retrieval.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+async def test_trusted_snapshot_and_attachment_both_reach_the_comparison_prompt(api_case, monkeypatch, path):
+    client, headers, provider, retrieval = api_case
+    page = TrustedPageData(SNAPSHOT, {'trusted': True, 'record_origin': 'server_observation_record'})
+    monkeypatch.setattr(router, '_resolve_page_data', AsyncMock(return_value=page))
+    planner = AsyncMock(side_effect=AssertionError('a saved observation does not need fresh reads'))
+    monkeypatch.setattr(provider, 'chat_completion', planner)
+    prompts = []
+
+    async def stream(prompt, system=None):
+        prompts.append(prompt)
+        yield {'kind': 'content', 'text': '本轮比较两个可辨认的来源。'}
+
+    monkeypatch.setattr(provider, 'stream_parts', stream)
+    response = await client.post('/api/v1/ai/copilot' + path, headers=headers, json={
+        'request_id': uuid.uuid4().hex, 'context': {'route': '/devices'},
+        'message': '附件记的是 Down，刚采集的模拟结果不同，应该以哪个为准？',
+        'attachments': [{'name': 'practice.txt', 'mime': 'text/plain', 'contentString': 'GE0/0/1 Down'}],
+    })
+    assert response.status_code == 200 and len(prompts) == 1
+    assert '"state": "up"' in prompts[0] and 'GE0/0/1 Down' in prompts[0]
+    retrieval.assert_not_awaited()
+    planner.assert_not_awaited()
+
+
 @pytest.mark.parametrize("message,trusted,short", [
     ("请核对这台设备刚采集的接口证据。", True, True),
     ("请核对这台设备刚采集的接口证据。", False, False),

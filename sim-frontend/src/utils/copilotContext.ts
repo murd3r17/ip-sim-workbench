@@ -140,6 +140,7 @@ const PAGE_META: Record<
     placeholder: '问教材知识点、命令对比、实验步骤…（也可直接用右侧助手）',
     chips: [
       { label: '用右侧助手', prompt: '知识库和右侧 AI 助手怎么配合用？什么时候用右侧助手发文件，什么时候直接提问？' },
+      { label: '查原书原句', prompt: '在知识库里怎么用已经抄下的原书原句定位 PDF 页？扫描页该怎么查看？只说明页面操作。' },
       { label: 'OSPF Hello', prompt: 'OSPF Hello 报文做什么用？简短回答并给关键点。' },
       { label: 'Silent-Interface', prompt: 'OSPF Silent-Interface 怎么配？给关键 CLI', wantDraft: true },
       { label: '源NAT vs NAPT', prompt: '源 NAT 和 NAPT 有什么区别？' },

@@ -76,6 +76,15 @@ def test_context_table_is_atomic_and_does_not_publish_headerless_rows():
     assert '| 可执行' not in source['prompt_text']
 
 
+def test_frozen_source_uses_readable_book_and_chapter_names_for_model():
+    hit = {'filename': 'chapter-61.md', 'title': '路由观察', 'book_title': '园区网络手册', 'edition_version': 'checked',
+           'page': 66, 'text': '记录原来的采样状态。'}
+    [source] = prepare_sources([hit])
+    assert '[园区网络手册 · 路由观察]' in source['prompt_text']
+    assert 'PDF 物理页：66' in source['prompt_text']
+    assert source['filename'] == 'chapter-61.md' and 'chapter-61.md' not in source['prompt_text']
+
+
 def test_ancestor_context_does_not_multiply_bm25_topic_matches():
     text = '# 源 NAT、目的 NAT、双向 NAT\n\n## 源 NAT\n\n### 源地址转换\n\n只改源地址。'
     body = retrieval_body(text)

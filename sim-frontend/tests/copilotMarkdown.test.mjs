@@ -61,6 +61,14 @@ test('citations in tables are reachable and streaming output has no premature co
   assert.ok(!renderMarkdown('尚未完整 [1]').includes('data-source-index'))
 })
 
+test('historical answers with sparse sources keep only real inline controls and open review notes separately', () => {
+  const html = renderMarkdown('原先的编号[1]。这条可核对[4]，另有补充[4 审校补充]。', new Set([3]))
+  assert.match(html, /\[1 · 无对应来源\]/)
+  assert.match(html, /data-source-index="3" aria-label="查看来源 4">\[4\]/)
+  assert.match(html, /data-source-index="3" data-source-review="true"[^>]*>\[4 审校补充\]/)
+  assert.equal((html.match(/data-source-index=/g) || []).length, 2)
+})
+
 test('ordinary code fences never create a deployment action', () => {
   for (const lang of ['text', 'cli', 'vrp', 'huawei', 'shell']) {
     const html = renderMarkdown('```' + lang + '\ndisplay ospf peer\n```\n```' + lang + '\ninterface GigabitEthernet0/0/1\nshutdown\n```')

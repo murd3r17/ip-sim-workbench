@@ -36,12 +36,13 @@ class Provider:
             yield {'kind': 'content', 'text': '高优先级恢复不保证接管；须保留抢占前提（审校补充）[1]。'}
 
 
-async def collect(provider, docs=None, **kwargs):
+async def collect(provider, docs=None, *, textbook_only=False, **kwargs):
     service = LLMService(user_id=1, provider=provider, actor={'user_id': 1, 'role': 'user'})
     service._log_request = AsyncMock()
     return [e async for e in service.copilot_chat_stream('VRRP主备如何切换？',
         context_docs=docs if docs is not None else reviewed_documents(),
-        ui_context={'skill_id': 'knowledge_answer'}, allowed_tools=[], tier='standard', **kwargs)]
+        ui_context={'skill_id': 'knowledge_answer', 'server_textbook_only': textbook_only},
+        allowed_tools=[], tier='standard', **kwargs)]
 
 
 @pytest.mark.asyncio
@@ -55,6 +56,16 @@ async def test_reviewed_source_finalizes_without_showing_or_storing_preliminary_
     assert events[-1]['trace']['model_calls'] == 2
     assert events[-1]['trace']['knowledge_review']['applied'] is True
     assert [c['kind'] for c in events[-1]['trace']['contexts']] == ['knowledge_draft', 'knowledge_finalization']
+
+
+@pytest.mark.asyncio
+async def test_editorial_review_preserves_explicit_textbook_only_boundary():
+    provider = Provider()
+    await collect(provider, textbook_only=True)
+    assert len(provider.prompts) == 2
+    for _, system in provider.prompts:
+        assert '本轮用户明确只接受教材依据' in system
+        assert '不把审校补充当教材原文' in system
 
 
 @pytest.mark.asyncio

@@ -72,8 +72,10 @@ import { getDevices, type DeviceRecord } from '../api/device'
 import { getPortState, savePortExpectations, type PortExpectation, type PortState } from '../api/monitor'
 import { formatApiTime } from '../utils/datetime'
 import { requestErrorMessage } from '../utils/requestError'
+import { useAiCopilotStore } from '../stores/aiCopilot'
 
 const props = defineProps<{ topologyId: number | null }>()
+const copilot = useAiCopilotStore()
 const devices = ref<DeviceRecord[]>([]), selected = ref<number | null>(null)
 const deviceError = ref(''), now = ref(Date.now())
 const clock = window.setInterval(() => { now.value = Date.now() }, 1000)
@@ -97,7 +99,14 @@ const reload = async () => {
   if (!selected.value) return
   const id = selected.value, token = ++epoch
   loading.value = true; error.value = ''; state.value = null
-  try { const data = await getPortState(id); if (token === epoch && visible.value) state.value = data }
+  try {
+    const data = await getPortState(id)
+    if (token === epoch && visible.value && selected.value === id) {
+      state.value = data
+      const jobId = data.latest_attempt?.job_id
+      copilot.setPageRecord({ kind:'monitor_ports', device_id:id, job_id:jobId }, `${data.hostname} · 已保存端口观察`)
+    }
+  }
   catch (e) { if (token === epoch) error.value = requestErrorMessage(e, '端口观察读取失败，请重试') }
   finally { if (token === epoch) loading.value = false }
 }
@@ -126,7 +135,8 @@ const loadDeviceOptions = async () => {
   catch (e) { if (token === deviceEpoch) deviceError.value = requestErrorMessage(e, '端口设备列表加载失败') }
 }
 watch(() => props.topologyId, loadDeviceOptions, { immediate:true })
-onBeforeUnmount(() => { epoch++; deviceEpoch++; window.clearInterval(clock) })
+watch(selected, () => { copilot.clearPageRecord('monitor_ports'); invalidate() }, { flush: 'sync' })
+onBeforeUnmount(() => { epoch++; deviceEpoch++; window.clearInterval(clock); copilot.clearPageRecord('monitor_ports') })
 </script>
 
 <style scoped>

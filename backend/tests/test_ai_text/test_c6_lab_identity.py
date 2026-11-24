@@ -40,4 +40,6 @@ async def test_lab_session_identity_checked_before_model(api_case,test_session_f
             assert 'PRIVATE_SESSION_SNAPSHOT' not in response.text
             assert (frames[-1] if frames else response.json())['status']=='blocked_environment'
         else:
-            assert provider.calls==2  # one existing planning call + one answer; replay adds none
+            trace = frames[-1]['trace'] if frames else response.json()['trace']
+            assert trace['tool_calls'] == 0
+            assert provider.calls == 1  # The step question asks for guidance; replay adds no generation.

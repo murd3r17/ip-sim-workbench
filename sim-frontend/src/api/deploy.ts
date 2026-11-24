@@ -63,8 +63,9 @@ export interface ConfigVersionRecord {
 
 export interface ConfigVersionCompareResult {
   diff?: Record<string, unknown>
-  summary?: Record<string, unknown>
-  [key: string]: unknown
+  same_device: boolean
+  version1: ConfigVersionRecord
+  version2: ConfigVersionRecord
 }
 
 // 配置下发

@@ -36,6 +36,11 @@ def _fingerprint(service) -> str:
     fields["type"] = type(provider).__module__ + "." + type(provider).__qualname__
     fields["index_config"] = str(getattr(s, "knowledge_index_config", ""))
     fields["edition_dir"] = str(getattr(s, "knowledge_edition_dir", ""))
+    # A replacement edition may use the same workspace and directory. Bind
+    # cache entries to the active edition identity, not just its settings.
+    from modules.knowledge.service import KnowledgeService
+    if isinstance(service, KnowledgeService) and (edition := service.edition()) is not None:
+        fields['edition_version'] = edition.version
     if hasattr(service, "resolve_workspace_id"):
         fields["resolved_workspace"] = service.resolve_workspace_id(None)
     if hasattr(provider, "_scan_files") and hasattr(provider, "_compute_signature"):

@@ -43,7 +43,11 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
     syncActiveToList() {},
     async flushConversation() { return true },
     saveDraftToDeploy(...args) { drafts.push(args) },
-    newChat() { this.activeId = 'chat-' + (++sequence); this.messages = [] },
+    selectKnowledgeSource(reference, label) { this.knowledgeSource = { reference, label } },
+    consumeKnowledgeSource(reference) {
+      if (reference && this.knowledgeSource?.reference === reference) this.knowledgeSource = undefined
+    },
+    newChat() { this.activeId = 'new-chat-' + (++sequence); this.messages = []; this.knowledgeSource = undefined },
   }
   const stubs = {
     vue: {
@@ -80,6 +84,42 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
   }, module, module.exports)
   return { ...module.exports, store, labCtx, requests, recoveries, citations, drafts, navigations }
 }
+
+test('citation locator is scoped to the active conversation and a terminal response preserves a newer clear', async () => {
+  const h = harness()
+  const message = { requestId: 'prev-req', sources: [{ source_id: 'source-2', edition_version: 'edition', page: 21, filename: 'chapter.md' }] }
+  const opened = h.openCitation(message, 0)
+  h.citations[0].resolve({ ok: true, json: async () => ({ available_now: true, scope: 'answer_excerpt' }) })
+  await opened
+  const selected = h.store.knowledgeSource.reference
+  assert.deepEqual(selected, { mode: 'selected', request_id: 'prev-req', source_id: 'source-2' })
+  const pending = h.send('继续刚才那条教材引用。')
+  await until(() => h.requests.length === 1)
+  assert.equal(h.requests[0].data.context.knowledge_source, selected)
+  const clear = { mode: 'cleared' }
+  h.store.selectKnowledgeSource(clear)
+  h.requests[0].onEvent({ type: 'done', status: 'ok' })
+  h.requests[0].resolve()
+  await pending
+  assert.equal(h.store.knowledgeSource.reference, clear)
+  const following = h.send('换一个问题。')
+  await until(() => h.requests.length === 2)
+  assert.equal(h.requests[1].data.context.knowledge_source, clear)
+  h.requests[1].onEvent({ type: 'done', status: 'ok' })
+  h.requests[1].resolve()
+  await following
+  assert.equal(h.store.knowledgeSource, undefined)
+})
+
+test('a citation verified after switching conversations cannot select an old source', async () => {
+  const h = harness()
+  const message = { requestId: 'prev-req', sources: [{ source_id: 'source-2', edition_version: 'edition', page: 21, filename: 'chapter.md' }] }
+  const opened = h.openCitation(message, 0)
+  h.store.newChat()
+  h.citations[0].resolve({ ok: true, json: async () => ({ available_now: true, scope: 'answer_excerpt' }) })
+  await opened
+  assert.equal(h.store.knowledgeSource, undefined)
+})
 
 test('a delayed page snapshot cannot combine the old evidence with a newly selected object', async () => {
   const snapshot = deferred()
@@ -315,6 +355,23 @@ test('partial answer followed by server error is visibly marked incomplete', { t
   assert.match(h.store.messages[1].content, /^partial answer[\s\S]*失败/)
 })
 
+test('offline model status preserves partial content and exposes the knowledge entry', async () => {
+  const h = harness()
+  const pending = h.send('这个页面怎么操作？')
+  await until(() => h.requests.length === 1)
+  const request = h.requests[0]
+  request.onEvent({ type: 'token', text: '已收到的部分回答' })
+  request.onEvent({ type: 'error', code: 'provider_unavailable', message: '模型不可用' })
+  request.onEvent({ type: 'done', status: 'failed' })
+  request.resolve()
+  await pending
+  const reply = h.store.messages.at(-1)
+  assert.equal(reply.requestState, 'failed')
+  assert.equal(reply.modelUnavailable, true)
+  assert.match(reply.content, /^已收到的部分回答[\s\S]*模型服务暂不可用/)
+  assert.match(vue, /msg\.modelUnavailable[\s\S]*?go\('\/knowledge'\)/)
+})
+
 test('EOF without done does not present a partial answer as a completed reply', { timeout: 1000 }, async () => {
   const h = harness()
   const pending = h.send('first')
@@ -374,6 +431,37 @@ test('retrieval state follows its own field instead of overall request status', 
   h.requests[0].resolve()
   await pending
   assert.equal(h.store.messages[1].knowledgeStatus, 'not_requested')
+})
+
+test('an unavailable model retains the locally found documents and the failed generation status', async () => {
+  const h = harness()
+  const pending = h.send('查教材并解释 VRRP')
+  await until(() => h.requests.length === 1)
+  const answer = '模型未完成归纳。可打开同版教材 [1]。'
+  const references = [{ source_id: 'book-page', title: 'VRRP 教材', page: 1179 }]
+  h.requests[0].onEvent({ type: 'token', text: '应丢弃的半段回复' })
+  h.requests[0].onEvent({ type: 'policy', retrieval_only: true, replace_answer: answer })
+  h.requests[0].onEvent({ type: 'references', generation_status: 'retrieval_only', sources: references })
+  h.requests[0].onEvent({ type: 'error', code: 'provider_unavailable' })
+  h.requests[0].onEvent({ type: 'done', status: 'failed', reason: 'provider_unavailable' })
+  h.requests[0].resolve()
+  await pending
+  const message = h.store.messages[1]
+  assert.equal(message.content, answer)
+  assert.equal(message.generationStatus, 'retrieval_only')
+  assert.equal(message.requestState, 'failed')
+  assert.equal(message.draftRefused, undefined)
+  assert.deepEqual(message.sources, references)
+
+  const recovery = h.recoverReply(message)
+  h.recoveries[0].resolve({ state: 'failed', response: {
+    answer, generation_status: 'retrieval_only', knowledge_status: 'ok', sources: references,
+  } })
+  await recovery
+  assert.equal(message.content, answer)
+  assert.equal(message.generationStatus, 'retrieval_only')
+  assert.deepEqual(message.sources, references)
+  assert.equal(h.requests.length, 1)
 })
 
 test('a recovery response after switching conversations never changes the new chat', async () => {

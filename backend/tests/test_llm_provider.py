@@ -40,3 +40,39 @@ async def test_nonstream_answer_never_substitutes_private_deliberation(content, 
     assert answer == (content if isinstance(content, str) else "")
     assert "PRIVATE-DELIBERATION" not in answer
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('vision', [False, True])
+async def test_stream_retries_connection_setup_once(vision):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.ConnectError('controlled TLS handshake failure', request=request)
+        return httpx.Response(200, content=(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                                             b'data: [DONE]\n\n'))
+
+    provider = OpenAICompatibleProvider(base_url='https://model.invalid', model='offline', api_key='fixture')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider._client = client
+        output = provider.stream_parts_with_images('describe', images=[{'url': 'data:image/png;base64,AA=='}]) if vision else provider.stream_parts('describe')
+        assert [part async for part in output] == [{'kind': 'content', 'text': 'ok'}]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_retry_a_model_http_error():
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(503, json={'error': 'temporary model failure'})
+
+    provider = OpenAICompatibleProvider(base_url='https://model.invalid', model='offline', api_key='fixture')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider._client = client
+        with pytest.raises(httpx.HTTPStatusError):
+            assert [part async for part in provider.stream_parts('describe')]
+    assert len(requests) == 1

@@ -22,9 +22,14 @@ from modules.ai_text.cancel import registry as cancel_registry
 from modules.knowledge.service import KnowledgeService
 from modules.system.service import SystemService
 from modules.ai_text.draft_guard import enforce as enforce_draft_guard
-from modules.ai_text.trusted_context import TrustedPageData, load_verified_evidence, resolve_task_targets, resolve_draft_target, sanitize as sanitize_page_data
+from modules.ai_text.trusted_context import (
+    TrustedPageData, config_comparison_guidance, config_comparison_question, exclude_previous_config_comparison,
+    load_config_comparison, load_verified_evidence,
+    resolve_task_targets, resolve_draft_target, sanitize as sanitize_page_data,
+)
 from modules.ai_text.draft_environment import resolve_draft_environment, blocked_draft_policy
-from modules.ai_text.skills import request_evidence_scope, select_skill
+from modules.ai_text.skills import knowledge_retrieval_query, request_evidence_scope, select_skill
+from modules.ai_text.question_intent import new_device_read_scope
 from modules.ai_text.kb_cache import cached_search
 from modules.ai_text.retrieval import clean_chunk, expand_query, rerank
 from modules.ai_text.context_bundle import answer_references, prepare_sources, source_documents
@@ -32,7 +37,7 @@ from modules.ai_text import lexical_index
 from modules.ai_text.protect_ports import load_protected_interfaces
 from modules.ai_text.budget_policy import limits_for, select_tier
 from modules.ai_text.schemas import (
-    CLIRequest, CLIResponse, ReviewRequest, ReviewResponse, AskRequest,
+    CLIRequest, CLIResponse, ReviewRequest, ReviewResponse, AskRequest, OriginalQuoteRequest,
     CopilotChatRequest, CopilotChatResponse, CopilotSessionSave,
     GenerateValidateRequest, GenerateValidateResponse, ConfigPlanRequest, ConfigPlanResponse,
     ReportRequest, ReportResponse, CoachRequest, CoachResponse,
@@ -73,6 +78,37 @@ async def _get_service(db: AsyncSession, current_user: dict) -> LLMService:
     """创建带日志的LLMService"""
     provider = await SystemService.build_llm_provider(db)
     return LLMService(db=db, user_id=current_user.get("user_id"), provider=provider, actor=current_user)
+
+
+def _has_copilot_model_configuration(provider) -> bool:
+    """Short-circuit unconfigured hosted defaults without probing providers."""
+    from urllib.parse import urlsplit
+    from core.llm_provider import FailoverProvider, FallbackProvider, OpenAICompatibleProvider
+
+    if isinstance(provider, FallbackProvider):
+        return _has_copilot_model_configuration(provider.primary)
+    if isinstance(provider, FailoverProvider):
+        return any(_has_copilot_model_configuration(item) for item in (provider.primary, provider.secondary))
+    if isinstance(provider, OpenAICompatibleProvider):
+        if provider.base_url in {'http://127.0.0.1:1', 'http://127.0.0.1:1/v1'}:
+            # The offline bootstrap pins this address to represent no model.
+            return False
+        if urlsplit(provider.base_url).hostname in {'api.deepseek.com', 'api.openai.com'}:
+            key = str(provider.api_key or '').strip()
+            return bool(key) and not key.startswith('<')
+    # Local and custom endpoints can serve without a key; their own errors
+    # remain the authority on reachability.
+    return True
+
+
+def _textbook_scope_notice(knowledge_status: str) -> str:
+    if knowledge_status == 'degraded':
+        return '本次知识服务暂不可用，未能核对教材，暂无法按教材给出解释或引用。'
+    if knowledge_status == 'empty':
+        return '本次检索没有找到可引用的教材片段，暂无法按教材给出解释。'
+    if knowledge_status == 'not_requested':
+        return '本次没有可引用的教材片段，暂无法按教材给出解释。'
+    return ''
 
 
 def _get_knowledge_service() -> KnowledgeService:
@@ -188,6 +224,16 @@ async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: d
         "lab_scoped": False, "allow_draft": True, "allow_model": True,
         "reason": "", "note": "", "safe_text": "", "content_warning": "",
     }
+    from .skills import concept_only_question
+
+    if not site_config:
+        history = [] if exclude_previous_config_comparison(data.message) else data.history
+        scope = request_evidence_scope(data.message, history)
+        textbook_independent = scope.textbook_only and not re.search(
+            r'(?:当前|本次|正在做的|我的)(?:实训|实验|会话)', data.message)
+        if concept_only_question(data.message) or scope.provided_only or textbook_independent:
+            # The open lab is incidental to a self-contained explanation.
+            return default
     if not data.lab_id and not data.lab_session_id:
         if data.lab_steps and site_config:
             return {
@@ -257,6 +303,10 @@ async def _lab_draft_policy(db: AsyncSession, data: CopilotChatRequest, actor: d
                   if isinstance(item, dict) and item.get("status") == "done"}
         pending = next((item for item in steps if str(item.get("id")) not in marked), None)
         lab_content["first_unmarked_step_id"] = pending.get("id") if pending else None
+        if not site_config:
+            from .evidence_context import session_evidence
+            if owned := session_evidence(data.message, data, actor, session, lab_content):
+                lab_content['owned_session_evidence'] = owned
     context = {
         **default, "lab_scoped": True,
         "lab_steps": steps, "lab_content": lab_content,
@@ -347,16 +397,46 @@ async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
     """向量召回 + 网络术语扩展 + 同 K 重排；词法/融合为实验通道。"""
     service = _get_knowledge_service()
     edition = service.edition() if isinstance(service, KnowledgeService) else None
-    frozen_local = edition is not None and service.provider.name in {"local", "anythingllm"}
-    expanded = message if frozen_local else expand_query(message)
+    from .retrieval import select_vrrp_mechanism_hits, supports_vrrp_mechanism, vrrp_mechanism_queries
+
+    focuses = vrrp_mechanism_queries(message)
+    candidates = []
+    if edition is not None:
+        # The edition handles literal phrases, titles, chapters and page scope.
+        # Never replace that exact lookup with an unscoped child query or legacy fusion.
+        candidates = await cached_search(service, message, top_k)
+        if edition.has_search_scope(message) or not focuses:
+            return candidates[:top_k]
+    if focuses:
+        from modules.knowledge.query_focus import lookup_parts
+
+        titles, phrases, pages, _ = lookup_parts(message)
+        if titles or phrases or pages:
+            return (await cached_search(service, message, top_k))[:top_k]
+
+        async def search_focus(focus):
+            supported = [hit for hit in candidates if supports_vrrp_mechanism(hit, focus.facet)]
+            if supported:
+                return supported
+            group = await cached_search(service, focus.query, max(top_k, 8))
+            return [hit for hit in group if supports_vrrp_mechanism(hit, focus.facet)]
+
+        groups = await asyncio.gather(*(search_focus(focus) for focus in focuses), return_exceptions=True)
+        errors = [group for group in groups if isinstance(group, Exception)]
+        qualified = [group if isinstance(group, list) else [] for group in groups]
+        hits = select_vrrp_mechanism_hits(focuses, qualified, top_k)
+        if not hits and errors:
+            raise RuntimeError('Knowledge retrieval unavailable') from errors[0]
+        if errors:
+            logger.warning('copilot_focused_retrieval_partial', failed=len(errors))
+        return hits
+    expanded = expand_query(message)
     vector_hits: list[dict] = []
     retrieval_error = None
     try:
         # Candidate expansion occurs once; preserve the previously effective
         # pool size so cache repair does not silently change retrieval quality.
-        # The frozen edition already ranks original-language hypotheses and
-        # verified extracts. A second expansion here can dilute exact fields.
-        vector_hits = await cached_search(service, expanded, top_k if frozen_local else max(top_k * 4, 20))
+        vector_hits = await cached_search(service, expanded, max(top_k * 4, 20))
         vector_hits = [{**h, "content": clean_chunk(str(h.get("content") or ""))} for h in vector_hits]
     except Exception as exc:  # noqa: BLE001
         logger.warning("vector_retrieval_failed", error=type(exc).__name__)
@@ -374,7 +454,7 @@ async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
         # A failed provider without a successful optional fallback is not an
         # empty corpus. Let both transports report the actual degraded state.
         raise RuntimeError("Knowledge retrieval unavailable") from retrieval_error
-    if frozen_local or (vector_hits and all(hit.get("retriever") == "reviewed_excerpt" for hit in vector_hits)):
+    if vector_hits and all(hit.get("retriever") == "reviewed_excerpt" for hit in vector_hits):
         return vector_hits[:top_k]
     # Historical reranking measurements are not current whole-stage acceptance.
     return rerank(vector_hits, expanded, top_k, original_query=message)
@@ -382,9 +462,21 @@ async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
 
 async def _resolve_page_data(db: Any, data: CopilotChatRequest, current_user: dict) -> Any:
     """C-R2：优先按 evidence_id 回读服务端观察；客户端 JSON 仅作线索。"""
-    from .skills import dashboard_summary_question
+    from .question_intent import config_change_log_question, explicit_device_read, plain_question
+    from .skills import concept_only_question, dashboard_summary_question
+
+    if (data.context and data.context.route == '/config-versions'
+            and not data.want_draft and not concept_only_question(data.message)
+            and not config_change_log_question(plain_question(data.message), data.context.route,
+                                               data.context.page_record.kind if data.context.page_record else None)
+            and not explicit_device_read(data.message) and config_comparison_question(data.message)):
+        try:
+            return await load_config_comparison(db, data.context.config_comparison)
+        except Exception as exc:
+            logger.warning('copilot_config_comparison_unavailable', error=type(exc).__name__)
+            return TrustedPageData('已保存的 A/B 快照暂时无法回读。请稍后重试。',
+                                   {'trusted': True, 'kind': 'config_comparison', 'source': 'workbench', 'guidance_only': True})
     if not data.want_draft and dashboard_summary_question(data.message, data.context.route if data.context else None):
-        from .trusted_context import TrustedPageData
         from modules.dashboard.service import DashboardService
         try:
             if db is None:
@@ -447,6 +539,273 @@ async def _resolve_page_data(db: Any, data: CopilotChatRequest, current_user: di
     return page
 
 
+async def _saved_evidence_guidance(db, data, actor, page, scope, attachments) -> str:
+    from .evidence_context import (configuration_change_answer, monitor_sample_answer, practice_outcome_guidance,
+                                   previous_citation_answer, runtime_mode_answer,
+                                   saved_device_observation_answer, saved_neighbor_answer, saved_route_answer,
+                                   selected_record_answer, selected_record_kind, terminal_read_only_access_answer,
+                                   training_notes_answer)
+    from .question_intent import (config_change_log_question, monitor_sample_time_question, new_device_read_scope, plain_question,
+                                   previous_citation_status_question, read_only_workbench_answer, runtime_mode_question,
+                                   training_notes_question, workflow_question)
+    from .skills import concept_only_question
+
+    if data.want_draft or new_device_read_scope(data.message):
+        return ''
+    context = data.context
+    route = context.route if context else None
+    if guidance := practice_outcome_guidance(page, data.message, route):
+        return guidance
+    if scope.provided_only or attachments:
+        return ''
+    selected = context.page_record if context else None
+    text = plain_question(data.message)
+    workflow = workflow_question(text, route)
+    kind = selected_record_kind(route, data.message, selected.kind if selected else None) if route else None
+    if workflow in {'monitor_saved_samples', 'original_reader_return', 'copilot_citation_return'} and not scope.textbook_only:
+        guidance = read_only_workbench_answer(text, route)
+        if guidance:
+            if workflow == 'monitor_saved_samples' and monitor_sample_time_question(text):
+                if sample := await monitor_sample_answer(db, data, actor):
+                    guidance += '\n\n' + sample
+            elif workflow == 'copilot_citation_return' and previous_citation_status_question(text):
+                guidance += '\n\n' + await previous_citation_answer(db, data, actor, read_citation)
+            elif workflow == 'original_reader_return' and kind == 'original_page':
+                guidance += '\n\n' + await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+            return guidance
+    if selected and selected.kind == 'original_page' and kind == 'original_page':
+        return await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+    if scope.knowledge_lookup is True:
+        return ''
+    if guidance := terminal_read_only_access_answer(text, route):
+        return guidance
+    if runtime_mode_question(text, route):
+        return runtime_mode_answer(actor)
+    if config_change_log_question(text, route, selected.kind if selected else None):
+        return await configuration_change_answer(db, data, actor)
+    if training_notes_question(text, route):
+        return await training_notes_answer(db, data, actor)
+    if route == '/devices' and not concept_only_question(text):
+        if guidance := (saved_neighbor_answer(page, text) or saved_route_answer(page, text)
+                        or saved_device_observation_answer(page, text, actor=actor)):
+            return guidance
+    if kind in {'approval_task', 'alarm_record'}:
+        return await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+    if guidance := read_only_workbench_answer(data.message, route):
+        return guidance
+    if kind:
+        return await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+    return saved_route_answer(page, data.message)
+
+
+async def _copilot_knowledge_hits(data, history, actor, skill, attachments, *, db=None, factory=None):
+    from .knowledge_continuation import continue_sources, refers_to_previous_source, wants_same_source
+    from .request_store import prior_source_context
+
+    continuity = ''
+    if skill.id == 'knowledge_answer' and not attachments and wants_same_source(data):
+        try:
+            if factory is not None:
+                async with factory() as source_db:
+                    prior = await prior_source_context(source_db, data, actor)
+            else:
+                prior = await prior_source_context(db, data, actor)
+            # Earlier prose and user-supplied history cannot be this turn's evidence.
+            result = await continue_sources(prior, data, _get_knowledge_service, data.message)
+        except Exception as exc:
+            logger.warning('copilot_book_continuity_unavailable', error=type(exc).__name__)
+            return [], 'degraded'
+        if result.status != 'independent':
+            return result.hits, result.status
+        history = []
+        continuity = result.status
+    elif skill.id == 'knowledge_answer' and (refers_to_previous_source(data.message)
+            or (data.context and data.context.knowledge_source and data.context.knowledge_source.mode == 'cleared')):
+        history = []
+        continuity = 'independent'
+    return await _retrieve(knowledge_retrieval_query(data.message, history), data.top_k), continuity
+
+
+def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointers=False):
+    from .question_intent import plain_question
+    from .source_scope import explicit_physical_scope, prepare_scoped_sources
+
+    hits = hits or []
+    question = plain_question(data.message)
+    if (skill.id != 'knowledge_answer' or data.want_draft or data.attachments or data.attachment_message_id
+            or not (explicit_physical_scope(question) or continuity in {'page', 'chapter'})):
+        return prepare_sources(hits[:data.top_k]), ''
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    return prepare_scoped_sources(question, hits, data.top_k, edition, continuity, keep_page_pointers=keep_page_pointers)
+
+
+def _source_continuity_notice(status):
+    if status in {'unavailable', 'degraded'}:
+        return ('本轮无法核验要继续引用的同版教材出处。'
+                '请在同一对话中重选最近回答的引用，或告诉我教材名和 PDF 物理页。')
+    return ''
+
+
+_ONLY_SOURCE_LOCATION = re.compile(r'(?:只|仅)(?:需要|需|要|列出|提供|给出|给我|告诉我|想知道|找).{0,8}(?:出处|页码|章节|位置|原页|物理页)|'
+                                   r'(?:不要|无需|不用|不需要|不必)(?:做)?(?:解释|总结|归纳|回答原理)')
+_OFFLINE_EDITION_FIELD_TASK = re.compile(r'工单|贴出的回显|(?:下面|以下|上面|此前|之前|已给出).{0,12}(?:样例|回显|拓扑|记录)|'
+                                         r'现场(?:结论|观察|状态)|实测|已保存.{0,8}(?:观察|记录)|'
+                                         r'配置草稿|下发脚本|可执行(?:的)?配置|'
+                                         r'(?:审批|下发|生成|编写|起草|发起|执行|回滚|授予).{0,8}(?:任务|配置|设备|权限|核验)')
+
+
+def _offline_edition_intent(data, history, scope, skill, attachments) -> str:
+    from modules.knowledge.query_focus import protocol_names
+    from .question_intent import explicit_device_read, explicit_study, plain_question, study_followup
+
+    text = plain_question(data.message)
+    locator = bool(_ONLY_SOURCE_LOCATION.search(text) and re.search(r'教材|课本|知识库|原书', text)
+                   and re.search(r'出处|页码|章节|位置|原页|物理页', text))
+    concepts = skill.reason == 'explicit_concepts_only' and bool(protocol_names(text))
+    if (data.want_draft or data.attachments or data.attachment_message_id or attachments or scope.provided_only
+            or scope.saved_record_only or scope.previous_material or scope.knowledge_lookup is False
+            or (scope.knowledge_lookup is not True and not (locator or concepts))
+            or skill.id != 'knowledge_answer' or not skill.needs_knowledge or skill.tools
+            or _OFFLINE_EDITION_FIELD_TASK.search(text) or explicit_device_read(text)):
+        return ''
+    if not (scope.textbook_only or skill.reason == 'explicit_knowledge_lookup' or explicit_study(text)
+            or study_followup(text, history) or locator or concepts):
+        return ''
+    return 'locator' if locator else 'explanation'
+
+
+async def _current_edition_excerpt(edition, source: dict) -> dict | None:
+    """Recheck the exact saved locator against the permitted, readable edition."""
+    from modules.knowledge.reader import DocumentReadError
+
+    if (edition is None or source.get('edition_version') != edition.version or not source.get('document_id') or not source.get('book_title')
+            or not source.get('document_version') or not source.get('section_id') or not source.get('content')
+            or type(source.get('page')) is not int or source['page'] <= 0):
+        return None
+    try:
+        reading = await asyncio.to_thread(edition.read, source['document_id'], source['document_version'],
+                                         include_original_status=False)
+    except (DocumentReadError, OSError, ValueError, KeyError):
+        return None
+    return next((page for page in reading.get('original_pages', []) if page['physical'] == source['page']
+                 and page['section_id'] == source['section_id'] and page.get('evidence_eligible')), None)
+
+
+async def _offline_edition_result(intent, sources, *, question, provider_failed=False, trace=None):
+    from .question_intent import plain_question
+    from .source_scope import missing_physical_page_notice
+
+    if not intent:
+        return None
+    try:
+        service = _get_knowledge_service()
+        edition = service.edition() if isinstance(service, KnowledgeService) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    sources = [{key: value for key, value in source.items() if key != 'prompt_text'}
+               for source in sources if await _current_edition_excerpt(edition, source) is not None]
+    missing = missing_physical_page_notice(plain_question(question), sources, edition)
+    if not sources and not missing:
+        return None
+    answer = '模型服务暂不可用，未完成对教材的归纳。' if provider_failed else ''
+    if sources:
+        locations = '\n'.join(f"- [{index}] {source['book_title']} · PDF 物理第 {source['page']} 页"
+                              for index, source in enumerate(sources, 1))
+        heading = answer or '已定位下列同版教材。'
+        answer = (f'{heading}以下是来源定位。\n\n**检索到的教材**\n\n{locations}\n\n'
+                  '点编号可查看本次保存的教材片段，再点「阅读同版正文」。原图是否可查看，以该页「原教材页位」的状态为准。')
+    if missing:
+        answer = f'{answer}\n\n{missing}'.strip()
+    return {'answer': answer, 'sources': sources, 'generation_status': 'retrieval_only' if sources else 'not_generated',
+            'knowledge_status': 'ok' if sources else 'empty', 'provider': _kb_provider_label(),
+            'status': 'failed' if provider_failed else 'ok' if sources else 'degraded',
+            'trace': {'model_calls': 0, 'tool_dispatch_attempts': 0, 'tool_calls': 0, **(trace or {}),
+                      **({'provider_error': 'provider_unavailable'} if provider_failed else {})}}
+
+
+def _locate_offline_edition_page(edition, query):
+    """A named book and explicit physical pages need no topical search."""
+    from modules.knowledge.edition import _page_texts
+    from modules.knowledge.query_focus import separate_pdf_pages
+    from modules.knowledge.reader import DocumentReadError
+
+    selected = separate_pdf_pages(query)
+    if selected:
+        requested, before, after = selected
+        query = f'{before}PDF 第 {requested[0]} 页{after}'
+    _, _, document_ids, pages, phrases = edition.search_scope(query)
+    if not document_ids or not pages or pages[0] != pages[1] or phrases:
+        return []
+    if not selected:
+        requested = (pages[0],)
+    if len({edition.documents[identifier]['book'] for identifier in document_ids}) != 1:
+        return []
+    hits = []
+    for page in requested:
+        candidates = []
+        for identifier in document_ids:
+            record = edition.documents[identifier]
+            if not record.get('ingest') or not record['page_start'] <= page <= record['page_end']:
+                continue
+            try:
+                reading = edition.read(identifier, record['sha256'], include_original_status=False)
+            except (DocumentReadError, OSError, ValueError, KeyError):
+                continue
+            if entry := _page_texts(reading).get(page):
+                section, excerpt = entry
+                candidates.append(edition._bound_hit({'retriever': 'edition_local'}, record, excerpt, section, page))
+        if len(candidates) == 1:
+            hits.extend(candidates)
+    return hits
+
+
+async def _offline_edition_search(data, actor, skill, attachments, intent, *, db=None, factory=None):
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if edition is None:
+        return []
+    if intent == 'locator':
+        hits = await asyncio.to_thread(_locate_offline_edition_page, edition, data.message)
+        if hits:
+            return prepare_sources(hits[:data.top_k])
+    # The edition's default search is local. Bind any explicit continuation
+    # in the request store and do not add client-supplied chat history.
+    hits, continuity = await _copilot_knowledge_hits(data, [], actor, skill, attachments, db=db, factory=factory)
+    sources, _ = _prepare_copilot_sources(data, hits, skill, continuity, keep_page_pointers=intent == 'locator')
+    return sources
+
+
+async def _try_offline_edition_lookup(data, actor, skill, attachments, intent, *, db=None, factory=None, provider_failed=False):
+    try:
+        sources = await _offline_edition_search(data, actor, skill, attachments, intent, db=db, factory=factory)
+        return await _offline_edition_result(intent, sources, question=data.message, provider_failed=provider_failed)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('copilot_local_textbook_unavailable', error=type(exc).__name__)
+        return None
+
+
+def _saved_evidence_trace(page):
+    from .owned_history import history_page_evidence_id
+    return {'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0,
+            'page_evidence_id': history_page_evidence_id(page)}
+
+
+async def _authorized_copilot_tools(db, message, actor, scope, skill, ui) -> list[str]:
+    """Bind the current user's request to inventory targets before planning."""
+    ui['server_allow_device_reads'] = False
+    if not skill.tools or not scope.allow_device_reads or not (action_scope := new_device_read_scope(message)):
+        return []
+    targets = await resolve_task_targets(db, action_scope, actor)
+    ui['server_targets'] = targets
+    if targets is None or targets.ambiguous or not targets.resolved:
+        ui['server_read_scope_note'] = '未核验出这次读取的明确设备，请用户补充目标名称；不会从页面、附件或上一轮代选。'
+        return []
+    ui['server_allow_device_reads'] = True
+    ui['server_read_device_ids'] = frozenset(row['device_id'] for row in targets.resolved)
+    return skill.tools
+
+
 async def _generate_copilot_chat(
     data: CopilotChatRequest,
     db: AsyncSession = Depends(get_async_session),
@@ -455,30 +814,16 @@ async def _generate_copilot_chat(
 ) -> Any:
     """右侧常驻 Copilot：上下文感知 + RAG + 可选配置草稿（不执行）。"""
     try:
-        scope = request_evidence_scope(data.message)
+        history = [] if exclude_previous_config_comparison(data.message) else data.history
+        scope = request_evidence_scope(data.message, history)
         page = TrustedPageData(None) if scope.provided_only else await _resolve_page_data(db, data, current_user)
-        history = [] if scope.provided_only else data.history
+        if scope.saved_record_only and page.meta.get('record_origin') != 'server_observation_record':
+            page = TrustedPageData(None, {'trusted': False, 'reasons': ['evidence_not_found_or_forbidden']})
+        if scope.provided_only or scope.saved_record_only:
+            history = []
         policy = await _lab_draft_policy(db, data, current_user)
         lab_steps = [] if scope.provided_only else policy.get('lab_steps',[])
         attachments = await _copilot_attachments(db, data, current_user) if policy["allow_model"] else []
-        try:
-            # C-04：检索与生成解耦。ask 会触发 AnythingLLM 内部再生成一次（慢且重复计费），
-            # 改为只做检索，把命中片段交给同一次模型生成，来源仍可逐条追溯。
-            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=history,
-                                  has_attachments=bool(attachments),
-                                  saved_observation=page.meta.get("record_origin") == "server_observation_record"
-                                  and "device_mismatch" not in page.meta.get("reasons", []),
-                                  page_data=page.text, page_data_trusted=page.trusted,
-                                  route=data.context.route if data.context else None)
-            hit_list = await _retrieve(data.message, data.top_k) if intent.needs_knowledge and policy["allow_model"] else []
-            sources = prepare_sources((hit_list or [])[:data.top_k])
-            knowledge = {"sources": sources, "status": ("not_requested" if not intent.needs_knowledge else "ok" if sources else "empty"), "provider": _kb_provider_label()}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("copilot_knowledge_degraded", error=str(exc))
-            knowledge = {"sources": [], "status": "degraded", "provider": _kb_provider_label()}
-        sources = knowledge.get("sources", [])
-        context_docs = _copilot_context_docs(sources)
-
         draft_target = None
         draft_environment = None
         if data.want_draft and policy['allow_model'] and policy['allow_draft']:
@@ -492,35 +837,33 @@ async def _generate_copilot_chat(
             answer = policy["safe_text"]
             return CopilotChatResponse(
                 answer=answer,
-                sources=sources[: data.top_k],
+                sources=[],
                 draft_commands=[],
                 draft_explanation="",
                 draft_refused_reason=policy["reason"],
                 request_id=data.request_id or "",
                 assist_only=True,
                 status="blocked_environment",
-                provider=_kb_provider_label(knowledge),
-                knowledge_status=knowledge.get("status", "unknown"),
+                provider=_kb_provider_label(),
+                knowledge_status="not_requested",
             )
-        try:
-            service = await _get_service(db, current_user)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("copilot_chat_provider_unavailable", error=type(exc).__name__)
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "provider_unavailable",
-                    "message": "模型服务初始化失败，本次未调用模型；请稍后重试或联系管理员检查模型配置。",
-                },
-            ) from exc
-        ui = _apply_policy_note(data.context.model_dump() if data.context and not scope.provided_only else {}, policy)
+        guidance = config_comparison_guidance(page, data.message, has_attachments=bool(attachments),
+                                             requests_knowledge=scope.knowledge_lookup is True)
+        if guidance:
+            return CopilotChatResponse(answer=guidance, request_id=data.request_id or '', status='ok',
+                provider=_kb_provider_label(), knowledge_status='not_requested', tier='direct',
+                trace={'model_calls': 0, 'tool_dispatch_attempts': 0})
+        if evidence_guidance := await _saved_evidence_guidance(db, data, current_user, page, scope, attachments):
+            return CopilotChatResponse(answer=evidence_guidance, request_id=data.request_id or '', status='ok',
+                provider=_kb_provider_label(), knowledge_status='not_requested', tier='direct', trace=_saved_evidence_trace(page))
+        ui = _apply_policy_note(data.context.model_dump(exclude={'config_comparison', 'page_record', 'knowledge_source'}) if data.context and not scope.provided_only else {}, policy)
         ui['provided_material_only'] = scope.provided_only
+        ui['server_previous_material'] = scope.previous_material
         # C-05：把已认证角色带入上下文，避免普通用户被引导到管理员专属页面
         ui["role"] = current_user.get("role") or "user"
         ui["page_data_trusted"] = page.trusted
         ui['server_page_validation'] = page
         ui['server_lab_content'] = None if scope.provided_only else policy.get('lab_content')
-        ui['server_knowledge_status'] = knowledge.get('status')
         if page.meta.get("trusted") is False:
             reasons = ",".join(page.meta.get("reasons") or [])
             ui["notes"] = (
@@ -536,23 +879,77 @@ async def _generate_copilot_chat(
             and "device_mismatch" not in page.meta.get("reasons", []),
             page_data=page.text,
             page_data_trusted=page.trusted,
-            route=(data.context.route if data.context else None),
+            route=(data.context.route if data.context else None), evidence_scope=scope,
+            config_comparison=page.meta.get('kind') == 'config_comparison',
         )
+        if skill.reason == 'saved_configuration_comparison':
+            history = []
+        offline_intent = _offline_edition_intent(data, history, scope, skill, attachments)
+        if offline_intent == 'locator':
+            result = await _try_offline_edition_lookup(data, current_user, skill, attachments, offline_intent, db=db)
+            if result:
+                return CopilotChatResponse(**result, request_id=data.request_id or '', tier='direct')
+        try:
+            service = await _get_service(db, current_user)
+            if not _has_copilot_model_configuration(getattr(service, 'provider', None)):
+                raise RuntimeError('Copilot model credentials are not configured')
+        except Exception as exc:  # noqa: BLE001
+            logger.error("copilot_chat_provider_unavailable", error=type(exc).__name__)
+            if offline_intent == 'explanation':
+                result = await _try_offline_edition_lookup(data, current_user, skill, attachments, offline_intent,
+                                                           db=db, provider_failed=True)
+                if result:
+                    return CopilotChatResponse(**result, request_id=data.request_id or '', tier='direct')
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "provider_unavailable",
+                    "message": "模型服务初始化失败，本次未调用模型；请稍后重试或联系管理员检查模型配置。",
+                },
+            ) from exc
+        knowledge = {'sources': [], 'status': 'not_requested', 'provider': _kb_provider_label()}
+        continuity = ''
+        page_scope_notice = ''
+        if skill.needs_knowledge:
+            try:
+                hits, continuity = await _copilot_knowledge_hits(data, history, current_user, skill, attachments, db=db)
+                if continuity:
+                    history = []
+                    ui['server_source_continuity'] = continuity
+                sources, page_scope_notice = _prepare_copilot_sources(data, hits, skill, continuity)
+                knowledge.update(sources=sources, status='ok' if sources else 'degraded' if continuity == 'degraded' else 'empty')
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('copilot_knowledge_degraded', error=type(exc).__name__)
+                knowledge['status'] = 'degraded'
+        if notice := _source_continuity_notice(continuity):
+            return CopilotChatResponse(answer=notice, request_id=data.request_id or '', status='degraded',
+                provider=_kb_provider_label(knowledge), knowledge_status=knowledge['status'], tier='direct',
+                trace={'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0, 'source_continuity': continuity})
+        sources = knowledge['sources']
+        context_docs = _copilot_context_docs(sources)
+        ui['server_knowledge_status'] = knowledge['status']
+        ui['server_source_scope_notice'] = page_scope_notice
+        ui['server_textbook_only'] = scope.textbook_only and skill.id == 'knowledge_answer' and not attachments and not data.want_draft
+        strict_notice = (page_scope_notice if not sources else '') or (
+            _textbook_scope_notice(knowledge['status']) if ui['server_textbook_only'] else '')
+        if strict_notice:
+            return CopilotChatResponse(answer=strict_notice, request_id=data.request_id or '', status='degraded',
+                provider=_kb_provider_label(knowledge), knowledge_status=knowledge['status'], tier='direct',
+                trace={'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0, 'knowledge_scope': 'textbook_only'})
         ui["skill"] = skill.label
         ui["skill_prompt"] = skill.prompt
         ui["skill_id"] = skill.id
         ui["skill_version"] = skill.version
-        if not scope.provided_only and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
+        if not scope.provided_only and not scope.saved_record_only and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
             from .owned_history import load_owned_history
-            ui['server_history'] = await load_owned_history(db, data.history, current_user)
+            ui['server_history'] = await load_owned_history(db, history, current_user)
         if draft_target:
             ui['server_draft_target'] = draft_target
             ui['server_draft_environment'] = draft_environment
-        if skill.tools and skill.id in {"troubleshooting", "live_evidence"}:
-            ui["server_targets"] = await resolve_task_targets(db, data.message, current_user)
+        allowed_tools = await _authorized_copilot_tools(db, data.message, current_user, scope, skill, ui)
         tier = select_tier(data.message, page_data=page.text,
                            want_draft=data.want_draft and policy["allow_draft"], skill_id=skill.id)
-        if skill.reason in {'verified_observation_explanation','observation_provenance_explanation',
+        if skill.reason in {'verified_observation_explanation','observation_provenance_explanation','verified_attachment_comparison',
                             'operational_history_recap','verified_lab_step_explanation','verified_lab_assessment_explanation'}:
             tier = "direct"
         # C-R2：同步入口复用同一流式执行器，只做事件聚合，不再维护第二套流程。
@@ -569,7 +966,7 @@ async def _generate_copilot_chat(
             page_data=page.text,
             attachments=attachments,
             lab_steps=lab_steps,
-            allowed_tools=skill.tools,
+            allowed_tools=allowed_tools,
             protected_interfaces=protected,
             request_id=data.request_id,
             cancel_event=cancel_event,
@@ -582,6 +979,7 @@ async def _generate_copilot_chat(
         trace: dict = {}
         stream_status = "ok"
         error_message = ""
+        provider_failed = False
         stream_refused = ""
         for _event in events:
             _type = _event.get("type")
@@ -604,6 +1002,12 @@ async def _generate_copilot_chat(
             elif _type == "error":
                 stream_status = "failed"
                 error_message = _event.get("message") or ""
+                provider_failed = _event.get('code') == 'provider_unavailable'
+        if provider_failed and stream_status == 'failed':
+            locations = await _offline_edition_result(offline_intent, sources, question=data.message,
+                                                       provider_failed=True, trace=trace)
+            if locations:
+                return CopilotChatResponse(**locations, request_id=data.request_id or '', tier=tier)
         result = {
             "answer": "".join(answer_parts),
             "draft_commands": draft_commands,
@@ -625,6 +1029,8 @@ async def _generate_copilot_chat(
                                       else "本次未能生成回答正文，请稍后重试。")
             if stream_status == "ok":
                 result["status"] = "failed"
+        if page_scope_notice and result['status'] == 'ok':
+            answer += '\n\n' + page_scope_notice
         generation_status, answer_sources = answer_references(
             sources[:data.top_k], "".join(answer_parts), result["status"],
         )
@@ -710,14 +1116,21 @@ async def _generate_copilot_stream(
         "lab_scoped": False, "allow_draft": True, "allow_model": True,
         "reason": "", "note": "", "safe_text": "", "content_warning": "",
     }
-    knowledge: dict[str, Any] = {"sources": [], "status": "ok", "provider": _kb_provider_label()}
+    knowledge: dict[str, Any] = {"sources": [], "status": "not_requested", "provider": _kb_provider_label()}
+    continuity = ''
     provider = None
     provider_error: str = ""
     draft_target = None
     draft_environment = None
     cancelled_during_setup = False
-    scope = request_evidence_scope(data.message)
-    history = [] if scope.provided_only else data.history
+    evidence_guidance = ''
+    offline_intent = ''
+    offline_result = None
+    page_scope_notice = ''
+    history = [] if exclude_previous_config_comparison(data.message) else data.history
+    scope = request_evidence_scope(data.message, history)
+    if scope.provided_only or scope.saved_record_only:
+        history = []
     page = TrustedPageData(None) if scope.provided_only else sanitize_page_data(data.page_data, selection=data.context.selection if data.context else None)
     try:
         if factory is not None:
@@ -729,6 +1142,9 @@ async def _generate_copilot_stream(
                     if policy["allow_model"]:
                         attachments = await run_cancellable(
                             _copilot_attachments(setup_db, data, current_user), cancel_event, release_registration
+                        )
+                        evidence_guidance = await run_cancellable(
+                            _saved_evidence_guidance(setup_db, data, current_user, page, scope, attachments), cancel_event,
                         )
                     if data.want_draft and policy['allow_model'] and policy['allow_draft']:
                         draft_target = await run_cancellable(resolve_draft_target(setup_db,data.message,data.context.selection if data.context else '',current_user),cancel_event)
@@ -749,32 +1165,36 @@ async def _generate_copilot_stream(
                 if data.want_draft or data.lab_id or data.lab_session_id or data.lab_steps:
                     policy = blocked_draft_policy(policy,'环境核验暂不可用，不能生成具体设备配置。')
                     draft_target = None
-        elif data.want_draft or data.lab_id or data.lab_session_id or data.lab_steps:
-            policy = blocked_draft_policy(policy,'环境核验暂不可用，不能生成具体设备配置。')
+        else:
+            if data.attachment_message_id and not data.attachments:
+                raise HTTPException(status_code=503, detail={
+                    'code': 'attachment_unavailable', 'message': '暂时无法读取对话附件，请稍后重试。',
+                })
+            if data.want_draft or data.lab_id or data.lab_session_id or data.lab_steps:
+                policy = blocked_draft_policy(policy,'环境核验暂不可用，不能生成具体设备配置。')
+        if scope.saved_record_only and page.meta.get('record_origin') != 'server_observation_record':
+            page = TrustedPageData(None, {'trusted': False, 'reasons': ['evidence_not_found_or_forbidden']})
         lab_steps = [] if scope.provided_only else policy.get('lab_steps',[])
-        try:
-            # CF-02：流式与同步统一走 search，来源/状态/provider 归一，避免 ask 的隐藏二次生成。
-            intent = select_skill(data.message, want_draft=data.want_draft, lab_steps=lab_steps, history=history,
-                                  has_attachments=bool(attachments),
-                                  saved_observation=page.meta.get("record_origin") == "server_observation_record"
-                                  and "device_mismatch" not in page.meta.get("reasons", []),
+        comparison_guidance = config_comparison_guidance(page, data.message, has_attachments=bool(attachments),
+                                                        requests_knowledge=scope.knowledge_lookup is True)
+        if policy.get("allow_model") and not cancelled_during_setup and not comparison_guidance and not evidence_guidance:
+            intent = select_skill(data.message, want_draft=data.want_draft and policy['allow_draft'],
+                                  lab_steps=lab_steps, history=history, has_attachments=bool(attachments),
+                                  saved_observation=page.meta.get('record_origin') == 'server_observation_record'
+                                  and 'device_mismatch' not in page.meta.get('reasons', []),
                                   page_data=page.text, page_data_trusted=page.trusted,
-                                  route=data.context.route if data.context else None)
-            hit_list = (await run_cancellable(_retrieve(data.message, data.top_k), cancel_event)
-                        if intent.needs_knowledge and policy["allow_model"] else [])
-            stream_sources = prepare_sources((hit_list or [])[:data.top_k])
-            knowledge = {
-                "sources": stream_sources,
-                "status": "not_requested" if not intent.needs_knowledge else "ok" if stream_sources else "empty",
-                "provider": _kb_provider_label(),
-            }
-        except RequestCancelled:
-            cancelled_during_setup = True
-        except Exception as e:
-            logger.warning("copilot_knowledge_degraded", error=str(e))
-            knowledge = {"sources": [], "status": "degraded", "provider": _kb_provider_label()}
-
-        if policy.get("allow_model") and not cancelled_during_setup:
+                                  route=data.context.route if data.context else None, evidence_scope=scope,
+                                  config_comparison=page.meta.get('kind') == 'config_comparison')
+            offline_intent = _offline_edition_intent(data, history, scope, intent, attachments)
+            if offline_intent == 'locator':
+                try:
+                    offline_result = await run_cancellable(
+                        _try_offline_edition_lookup(data, current_user, intent, attachments, offline_intent, factory=factory),
+                        cancel_event,
+                    )
+                except RequestCancelled:
+                    cancelled_during_setup = True
+        if policy.get("allow_model") and not cancelled_during_setup and not comparison_guidance and not evidence_guidance and not offline_result:
             try:
                 if factory is not None:
                     async with factory() as setup_db:
@@ -786,12 +1206,39 @@ async def _generate_copilot_stream(
                     provider = await run_cancellable(
                             asyncio.to_thread(create_llm_provider), cancel_event, release_registration
                         )
+                if not _has_copilot_model_configuration(provider):
+                    raise RuntimeError('Copilot model credentials are not configured')
             except RequestCancelled:
                 cancelled_during_setup = True
             except Exception as exc:  # noqa: BLE001
                 # AF2-04：初始化失败是依赖不可用，不是环境策略阻断；只暴露稳定类型，不带密钥/URL。
                 provider_error = type(exc).__name__
+                provider = None
                 logger.warning("copilot_provider_init_failed", error=provider_error)
+                if offline_intent == 'explanation':
+                    try:
+                        offline_result = await run_cancellable(
+                            _try_offline_edition_lookup(data, current_user, intent, attachments, offline_intent,
+                                                        factory=factory, provider_failed=True), cancel_event,
+                        )
+                    except RequestCancelled:
+                        cancelled_during_setup = True
+        if provider is not None and not cancelled_during_setup:
+            try:
+                if intent.needs_knowledge:
+                    query_history = [] if intent.reason == 'saved_configuration_comparison' else history
+                    hits, continuity = await run_cancellable(
+                        _copilot_knowledge_hits(data, query_history, current_user, intent, attachments, factory=factory), cancel_event,
+                    )
+                    if continuity:
+                        history = []
+                    stream_sources, page_scope_notice = _prepare_copilot_sources(data, hits, intent, continuity)
+                    knowledge.update(sources=stream_sources, status='ok' if stream_sources else 'degraded' if continuity == 'degraded' else 'empty')
+            except RequestCancelled:
+                cancelled_during_setup = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('copilot_knowledge_degraded', error=type(exc).__name__)
+                knowledge['status'] = 'degraded'
     except BaseException:
         if not disconnect_task.done():
             disconnect_task.cancel()
@@ -817,12 +1264,14 @@ async def _generate_copilot_stream(
 
     sources = knowledge.get("sources", [])[: data.top_k]
     context_docs = _copilot_context_docs(sources)
-    ui = _apply_policy_note(data.context.model_dump() if data.context and not scope.provided_only else {}, policy)
+    ui = _apply_policy_note(data.context.model_dump(exclude={'config_comparison', 'page_record', 'knowledge_source'}) if data.context and not scope.provided_only else {}, policy)
+    ui['server_source_continuity'] = continuity
     ui['provided_material_only'] = scope.provided_only
+    ui['server_previous_material'] = scope.previous_material
     # CF-02：流式入口同样使用后端认证角色，客户端自报角色不参与。
     ui["role"] = current_user.get("role") or "user"
     protected: list[str] = []
-    if factory is not None:
+    if factory is not None and provider is not None and not cancelled_during_setup:
         async with factory() as _policy_db:
             if draft_target:
                 ui['server_draft_target'] = draft_target
@@ -833,6 +1282,7 @@ async def _generate_copilot_stream(
     ui['server_page_validation'] = page
     ui['server_lab_content'] = None if scope.provided_only else policy.get('lab_content')
     ui['server_knowledge_status'] = knowledge.get('status')
+    ui['server_source_scope_notice'] = page_scope_notice
     if page.meta.get("trusted") is False:
         reasons = ",".join(page.meta.get("reasons") or [])
         ui["notes"] = (
@@ -848,26 +1298,34 @@ async def _generate_copilot_stream(
         and "device_mismatch" not in page.meta.get("reasons", []),
         page_data=page.text,
         page_data_trusted=page.trusted,
-        route=(data.context.route if data.context else None),
+        route=(data.context.route if data.context else None), evidence_scope=scope,
+        config_comparison=page.meta.get('kind') == 'config_comparison',
     )
+    if skill.reason == 'saved_configuration_comparison':
+        history = []
     ui["skill"] = skill.label
     ui["skill_prompt"] = skill.prompt
     ui["skill_id"] = skill.id
     ui["skill_version"] = skill.version
-    if factory is not None and not scope.provided_only and not cancelled_during_setup and skill.id in {'live_evidence','troubleshooting','lab_coach'}:
+    ui['server_textbook_only'] = scope.textbook_only and skill.id == 'knowledge_answer' and not attachments and not data.want_draft
+    strict_notice = (page_scope_notice if not sources else '') or (
+        _textbook_scope_notice(knowledge['status']) if ui['server_textbook_only'] else '')
+    if (factory is not None and provider is not None and not scope.provided_only and not scope.saved_record_only
+            and not cancelled_during_setup and skill.id in {'live_evidence','troubleshooting','lab_coach'}):
         from .owned_history import load_owned_history
         try:
             async with factory() as history_db:
                 ui['server_history'] = await run_cancellable(
-                    load_owned_history(history_db, data.history, current_user), cancel_event)
+                    load_owned_history(history_db, history, current_user), cancel_event)
         except RequestCancelled:
             cancelled_during_setup = True
-    if factory is not None and skill.tools and skill.id in {"troubleshooting", "live_evidence"} and not cancelled_during_setup:
+    allowed_tools = []
+    if factory is not None and provider is not None and skill.tools and not cancelled_during_setup:
         async with factory() as target_db:
-            ui["server_targets"] = await resolve_task_targets(target_db, data.message, current_user)
+            allowed_tools = await _authorized_copilot_tools(target_db, data.message, current_user, scope, skill, ui)
     tier = select_tier(data.message, page_data=page.text,
                        want_draft=data.want_draft and policy["allow_draft"], skill_id=skill.id)
-    if skill.reason in {'verified_observation_explanation','observation_provenance_explanation',
+    if skill.reason in {'verified_observation_explanation','observation_provenance_explanation','verified_attachment_comparison',
                         'operational_history_recap','verified_lab_step_explanation','verified_lab_assessment_explanation'}:
         tier = "direct"
     draft_refused = policy["reason"] if data.want_draft and not policy["allow_draft"] else ""
@@ -890,15 +1348,16 @@ async def _generate_copilot_stream(
     async def generate() -> Any:
         stream = None
         answer_parts = []
+        provider_failure_event = None
         try:
             yield sse({
                 "type": "meta", "request_id": request_id, "sources": [],
                 "provider": _kb_provider_label(knowledge),
-                "knowledge_status": knowledge.get("status", "unknown"),
+                "knowledge_status": offline_result['knowledge_status'] if offline_result else knowledge.get("status", "unknown"),
                 "skill": skill.as_meta(),
                 "status": (
                     "blocked_environment" if not policy.get("allow_model")
-                    else ("unavailable" if provider_error else (knowledge.get("status") or "ok"))
+                    else (offline_result['status'] if offline_result else "unavailable" if provider_error else (knowledge.get("status") or "ok"))
                 ),
                 "assist_only": True, "draft_refused_reason": draft_refused,
                 "generation_status": "not_generated",
@@ -913,6 +1372,33 @@ async def _generate_copilot_stream(
                     "note": "请求在准备阶段被取消；未调用模型，也未确认供应商计费状态",
                 })
                 yield sse({"type": "done", "status": "cancelled", "assist_only": True, "cancelled": True})
+                return
+            if comparison_guidance and policy.get('allow_model'):
+                yield sse({'type': 'token', 'text': comparison_guidance, 'request_id': request_id})
+                yield sse({'type': 'references', 'sources': [], 'generation_status': 'not_generated'})
+                yield sse({'type': 'done', 'status': 'ok', 'assist_only': True,
+                           'trace': {'model_calls': 0, 'tool_dispatch_attempts': 0}})
+                return
+            if evidence_guidance and policy.get('allow_model'):
+                yield sse({'type': 'token', 'text': evidence_guidance, 'request_id': request_id})
+                yield sse({'type': 'references', 'sources': [], 'generation_status': 'not_generated'})
+                yield sse({'type': 'done', 'status': 'ok', 'assist_only': True, 'trace': _saved_evidence_trace(page)})
+                return
+            if offline_result:
+                yield sse({'type': 'token', 'text': offline_result['answer']})
+                yield sse({'type': 'references', 'sources': offline_result['sources'],
+                           'generation_status': offline_result['generation_status']})
+                if offline_result['status'] == 'failed':
+                    yield sse({'type': 'error', 'code': 'provider_unavailable', 'retryable': True,
+                               'message': '模型服务暂不可用，未完成对教材的归纳。'})
+                yield sse({'type': 'done', 'status': offline_result['status'], 'assist_only': True,
+                           'trace': offline_result['trace'], **({'reason': 'provider_unavailable'} if provider_error else {})})
+                return
+            if notice := _source_continuity_notice(continuity):
+                yield sse({'type': 'token', 'text': notice, 'request_id': request_id})
+                yield sse({'type': 'references', 'sources': [], 'generation_status': 'not_generated'})
+                yield sse({'type': 'done', 'status': 'degraded', 'assist_only': True,
+                           'trace': {'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0, 'source_continuity': continuity}})
                 return
             if service is None and provider_error:
                 # AF2-04：模型依赖初始化失败；明确 failed/unavailable，不能冒充“环境未核验”。
@@ -937,6 +1423,13 @@ async def _generate_copilot_stream(
                     "assist_only": True, "blocked": True,
                 })
                 return
+            if strict_notice:
+                yield sse({'type': 'token', 'text': strict_notice, 'request_id': request_id})
+                yield sse({'type': 'references', 'sources': [], 'generation_status': 'not_generated'})
+                yield sse({'type': 'done', 'status': 'degraded', 'assist_only': True,
+                           'trace': {'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0,
+                                     'knowledge_scope': 'textbook_only'}})
+                return
             stream = service.copilot_chat_stream(
                 message=data.message,
                 context_docs=context_docs,
@@ -949,7 +1442,7 @@ async def _generate_copilot_stream(
                 lab_steps=lab_steps,
                 request_id=request_id,
                 cancel_event=cancel_event,
-                allowed_tools=skill.tools,
+                allowed_tools=allowed_tools,
                 protected_interfaces=protected,
                 tier=tier,
             )
@@ -960,7 +1453,27 @@ async def _generate_copilot_stream(
                     answer_parts.append(event.get("text", ""))
                 elif kind == "policy" and "replace_answer" in event:
                     answer_parts = [event["replace_answer"]]
+                elif kind == 'error' and event.get('code') == 'provider_unavailable' and offline_intent:
+                    provider_failure_event = event
+                    continue
                 elif kind == "done":
+                    if provider_failure_event:
+                        if event.get('status') == 'failed' and not cancel_event.is_set():
+                            locations = await _offline_edition_result(offline_intent, slim_sources, question=data.message,
+                                                                     provider_failed=True, trace=event.get('trace'))
+                            if locations:
+                                if locations['knowledge_status'] != knowledge['status']:
+                                    yield sse({'type': 'meta', 'knowledge_status': locations['knowledge_status'],
+                                               'status': locations['status'], 'generation_status': locations['generation_status']})
+                                yield sse({'type': 'policy', 'replace_answer': locations['answer'], 'retrieval_only': True})
+                                yield sse({'type': 'references', 'sources': locations['sources'],
+                                           'generation_status': locations['generation_status']})
+                                yield sse(provider_failure_event)
+                                yield sse({**event, 'reason': 'provider_unavailable', 'trace': locations['trace']})
+                                break
+                        yield sse(provider_failure_event)
+                    if page_scope_notice and event.get('status') == 'ok':
+                        yield sse({'type': 'token', 'request_id': request_id, 'text': '\n\n' + page_scope_notice})
                     generation_status, answer_sources = answer_references(
                         slim_sources, "".join(answer_parts), event.get("status", "failed"),
                     )
@@ -1406,6 +1919,20 @@ async def read_original_figure(
     return Response(image, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
+@router.post("/knowledge/original-quote", dependencies=[Depends(_AI_RATE_LIMIT)], response_model=None)
+async def locate_original_quote(data: OriginalQuoteRequest, _: dict = Depends(get_current_user)) -> dict:
+    from modules.knowledge.original_index import search_original_quote
+    from modules.knowledge.reader import DocumentReadError
+
+    try:
+        service = _get_knowledge_service()
+        edition = await asyncio.to_thread(service.edition)
+        results = await asyncio.to_thread(search_original_quote, edition, data.quote, data.book)
+    except DocumentReadError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from exc
+    return {"edition": edition.version, "results": results}
+
+
 @router.get("/knowledge/legacy-locator", response_model=None)
 async def locate_legacy_knowledge(
     document_id: str = Query(..., min_length=1, max_length=256),
@@ -1501,13 +2028,24 @@ async def read_citation(
                          if s.get("source_id") == source_id and s.get("filename") == filename), None)
         if original is None:
             raise HTTPException(404, detail="原请求中没有此来源")
+        if (saved.get('response') or {}).get('generation_status') == 'retrieval_only':
+            service = _get_knowledge_service()
+            edition = service.edition() if isinstance(service, KnowledgeService) else None
+            if await _current_edition_excerpt(edition, original) is None:
+                raise HTTPException(410, detail={'code': 'citation_revoked', 'message': '该次检索的同版教材页位已不可回读。'})
+            return {key: original.get(key) for key in ('filename', 'title', 'document_id', 'source_id', 'content',
+                    'version', 'captured_at', 'truncated', 'reviewed_notes', 'document_version', 'section_id',
+                    'page', 'book_title', 'edition_version')} | {
+                'scope': 'retrieval_excerpt', 'available_now': True,
+                'message': '本次保存的教材片段，仅供定位和回读。',
+            }
         if original.get("document_id") and original.get("document_version"):
             locator = await _get_knowledge_service().legacy_locator(
                 original["document_id"], original["document_version"], original.get("section_id"),
             )
-            if locator.get("status") == "exact-page-locator":
+            if locator.get("status") in {"exact-page-locator", "archive-only"}:
                 return {key: original.get(key) for key in ("filename", "title", "source_id", "content", "version",
-                            "captured_at", "truncated", "reviewed_notes", "page")} | {
+                            "captured_at", "truncated", "reviewed_notes", "page", "book_title", "edition_version")} | {
                     "scope": "answer_excerpt", "available_now": True, "legacy_locator": locator,
                     "message": locator["message"],
                 }
@@ -1525,7 +2063,8 @@ async def read_citation(
             raise HTTPException(410, detail={"code": "citation_revoked"})
         if len(matches) != 1:
             raise HTTPException(409, detail={"code": "citation_ambiguous", "message": "同名来源不唯一，暂时不能核验"})
-        return {key: original.get(key) for key in ("filename", "title", "document_id", "source_id", "content", "version", "captured_at", "truncated", "reviewed_notes", "document_version", "section_id", "page")} | {
+        return {key: original.get(key) for key in ("filename", "title", "document_id", "source_id", "content", "version",
+                   "captured_at", "truncated", "reviewed_notes", "document_version", "section_id", "page", "book_title", "edition_version")} | {
             "scope": "answer_excerpt", "available_now": True,
             "message": "回答生成时使用的片段；当前仅核验资料仍可访问，不代表全文版本未变化。",
         }

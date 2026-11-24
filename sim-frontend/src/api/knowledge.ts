@@ -6,7 +6,16 @@ export interface KnowledgeUploadPolicy {
   max_upload_files?: number
 }
 
-export interface KnowledgeHealth {
+interface KnowledgeSearchStatus {
+  active_edition?: string | null
+  search_provider?: string | null
+  search_available?: boolean
+  search_fallback?: boolean
+  search_fallback_reason?: 'workspace_mismatch' | 'provider_unavailable' | null
+  original_quote_status?: { state: 'ready' | 'unmounted' | 'index_needed'; scan_available: boolean } | null
+}
+
+export interface KnowledgeHealth extends KnowledgeSearchStatus {
   available: boolean
   provider?: string
   workspace_slug?: string
@@ -41,10 +50,11 @@ export interface KnowledgeDocument {
   edition?: string
   bundled?: boolean
   catalog_kind?: 'chapter' | 'subsection'
+  reading_kind?: 'body' | 'guide' | 'excerpt' | null
   metadata?: Record<string, string | null>
 }
 
-export interface KnowledgeCatalog {
+export interface KnowledgeCatalog extends KnowledgeSearchStatus {
   documents: KnowledgeDocument[]
   provider: string
   count: number
@@ -56,13 +66,23 @@ export interface KnowledgeCatalog {
 export interface KnowledgeFullDocument extends KnowledgeDocument {
   content: string
   sections: { id: string; line: number; level: number; title: string }[]
+  edition_version?: string
   scope: 'current_document'
   truncated: boolean
   source_kind: string
+  historical_edition?: boolean
   warnings?: string[]
   reviewed_notes?: KnowledgeReviewNote[]
-  original_pages?: { physical: number; section_id?: string | null; preview: boolean; printed_hint?: string }[]
+  original_pages?: KnowledgeOriginalPage[]
   subsections?: KnowledgeDocument[]
+}
+
+export interface KnowledgeOriginalPage {
+  physical: number
+  section_id?: string | null
+  preview: boolean
+  printed_hint?: string
+  original_status?: string
 }
 
 export interface KnowledgeReviewNote {
@@ -88,10 +108,13 @@ export interface KnowledgeSearchResult {
   content?: string
   title?: string
   filename?: string
+  book_title?: string
+  edition?: string
   document_id?: string
   document_version?: string | null
   section_id?: string | null
   page?: number | null
+  partial_readonly_table?: boolean
   reviewed_notes?: KnowledgeReviewNote[]
   [key: string]: unknown
 }
@@ -107,3 +130,21 @@ export const deleteKnowledgeDocument = (docId: string) =>
 
 export const searchKnowledge = (data: { question: string; top_k?: number }) =>
   request.post<KnowledgeSearchResult[], KnowledgeSearchResult[]>('/ai/knowledge/search', data)
+
+export interface OriginalQuoteResult {
+  title: string
+  document_id: string
+  document_version: string
+  book_title: string
+  edition: string
+  page: number
+  match_type?: 'scan_locator'
+}
+
+interface OriginalQuoteResponse {
+  edition: string
+  results: OriginalQuoteResult[]
+}
+
+export const searchOriginalQuote = (data: { quote: string; book?: number }) =>
+  request.post<OriginalQuoteResponse, OriginalQuoteResponse>('/ai/knowledge/original-quote', data, { silent: true })

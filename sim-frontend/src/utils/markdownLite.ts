@@ -1,6 +1,7 @@
 /** Minimal Markdown → safe HTML for Copilot bubbles (no external deps). */
 
 const SOURCE_REFERENCE = /\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?(\d{1,6})([ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]/gi
+type AvailableReferences = number | ReadonlySet<number>
 
 export function referencedSourceIndices(text: string): Set<number> {
   const prose = text.replace(/```[\s\S]*?(?:```|$)|`[^`\n]+`/g, '')
@@ -15,7 +16,7 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function inlineMarkdown(text: string, sourceCount?: number): string {
+function inlineMarkdown(text: string, references?: AvailableReferences): string {
   let s = escapeHtml(text)
   // inline code
   s = s.replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
@@ -29,9 +30,11 @@ function inlineMarkdown(text: string, sourceCount?: number): string {
     : part.replace(SOURCE_REFERENCE, (match, number, review) => {
       const index = Number(number)
       const label = `${index}${review || ''}`
-      if (sourceCount === undefined) return match
-      return index >= 1 && index <= sourceCount
-        ? `<button type="button" class="citation-inline" data-source-index="${index - 1}" aria-label="查看来源 ${label}">[${label}]</button>`
+      if (references === undefined) return match
+      const available = index >= 1 && (typeof references === 'number' ? index <= references : references.has(index - 1))
+      const reviewMarker = review ? ' data-source-review="true"' : ''
+      return available
+        ? `<button type="button" class="citation-inline" data-source-index="${index - 1}"${reviewMarker} aria-label="查看来源 ${label}">[${label}]</button>`
         : `<span class="citation-unmatched" title="该编号不在本次回答的来源列表中">[${label} · 无对应来源]</span>`
     })).join('')
   return s
@@ -57,20 +60,20 @@ function splitCells(line: string): string[] {
   return t.split('|').map((c) => c.trim())
 }
 
-function renderTable(rows: string[][], sourceCount?: number): string {
+function renderTable(rows: string[][], references?: AvailableReferences): string {
   if (!rows.length) return ''
   const [header, ...body] = rows
   const thead =
-    `<thead><tr>${header.map((c) => `<th>${inlineMarkdown(c, sourceCount)}</th>`).join('')}</tr></thead>`
+    `<thead><tr>${header.map((c) => `<th>${inlineMarkdown(c, references)}</th>`).join('')}</tr></thead>`
   const tbody = body.length
     ? `<tbody>${body
-        .map((r) => `<tr>${r.map((c) => `<td>${inlineMarkdown(c, sourceCount)}</td>`).join('')}</tr>`)
+        .map((r) => `<tr>${r.map((c) => `<td>${inlineMarkdown(c, references)}</td>`).join('')}</tr>`)
         .join('')}</tbody>`
     : ''
   return `<div class="md-table-wrap" tabindex="0" role="region" aria-label="回答表格"><table class="md-table">${thead}${tbody}</table></div>`
 }
 
-function renderParagraphs(block: string, sourceCount?: number): string {
+function renderParagraphs(block: string, references?: AvailableReferences): string {
   const lines = block.split('\n')
   const out: string[] = []
   let listType: 'ul' | 'ol' | null = null
@@ -110,7 +113,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
         if (isTableSeparator(tl)) continue
         cells.push(splitCells(tl))
       }
-      if (cells.length) out.push(renderTable(cells, sourceCount))
+      if (cells.length) out.push(renderTable(cells, references))
       continue
     }
 
@@ -118,7 +121,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
     if (heading) {
       flushList()
       const level = heading[1].length
-      out.push(`<h${level}>${inlineMarkdown(heading[2], sourceCount)}</h${level}>`)
+      out.push(`<h${level}>${inlineMarkdown(heading[2], references)}</h${level}>`)
       i += 1
       continue
     }
@@ -127,7 +130,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
     const cnHeading = /^(?:[一二三四五六七八九十]+[、．.]|\d+[、.])\s*(.+)$/.exec(line.trim())
     if (cnHeading && line.trim().length < 40 && !line.includes('|')) {
       flushList()
-      out.push(`<h3>${inlineMarkdown(line.trim(), sourceCount)}</h3>`)
+      out.push(`<h3>${inlineMarkdown(line.trim(), references)}</h3>`)
       i += 1
       continue
     }
@@ -136,7 +139,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
     if (ul) {
       if (listType && listType !== 'ul') flushList()
       listType = 'ul'
-      listItems.push(`<li>${inlineMarkdown(ul[1], sourceCount)}</li>`)
+      listItems.push(`<li>${inlineMarkdown(ul[1], references)}</li>`)
       i += 1
       continue
     }
@@ -145,7 +148,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
     if (ol) {
       if (listType && listType !== 'ol') flushList()
       listType = 'ol'
-      listItems.push(`<li>${inlineMarkdown(ol[2], sourceCount)}</li>`)
+      listItems.push(`<li>${inlineMarkdown(ol[2], references)}</li>`)
       i += 1
       continue
     }
@@ -157,7 +160,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
     }
 
     flushList()
-    out.push(`<p>${inlineMarkdown(line, sourceCount)}</p>`)
+    out.push(`<p>${inlineMarkdown(line, references)}</p>`)
     i += 1
   }
   flushList()
@@ -167,7 +170,7 @@ function renderParagraphs(block: string, sourceCount?: number): string {
 /**
  * Render markdown-ish content to HTML. Code fences become copyable blocks.
  */
-export function renderMarkdown(src: string, sourceCount?: number): string {
+export function renderMarkdown(src: string, references?: AvailableReferences): string {
   if (!src) return ''
   const parts: string[] = []
   const fenceRe = /```([\w+-]*)\r?\n?([\s\S]*?)```/g
@@ -176,7 +179,7 @@ export function renderMarkdown(src: string, sourceCount?: number): string {
 
   while ((m = fenceRe.exec(src)) !== null) {
     if (m.index > last) {
-      parts.push(renderParagraphs(src.slice(last, m.index), sourceCount))
+      parts.push(renderParagraphs(src.slice(last, m.index), references))
     }
     const lang = (m[1] || 'text').trim() || 'text'
     const code = escapeHtml(m[2].replace(/\n$/, ''))
@@ -190,7 +193,7 @@ export function renderMarkdown(src: string, sourceCount?: number): string {
     const afterOpen = rest.slice(openIdx + 3)
     const closeIdx = afterOpen.indexOf('```')
     if (closeIdx < 0) {
-      if (openIdx > 0) parts.push(renderParagraphs(rest.slice(0, openIdx), sourceCount))
+      if (openIdx > 0) parts.push(renderParagraphs(rest.slice(0, openIdx), references))
       const nl = afterOpen.indexOf('\n')
       let lang = 'text'
       let body = afterOpen
@@ -209,7 +212,7 @@ export function renderMarkdown(src: string, sourceCount?: number): string {
     }
   }
 
-  if (rest) parts.push(renderParagraphs(rest, sourceCount))
+  if (rest) parts.push(renderParagraphs(rest, references))
   return parts.join('')
 }
 

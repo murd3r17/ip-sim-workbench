@@ -40,7 +40,7 @@ async def test_both_named_targets_are_server_resolved_before_planning_without_ra
             yield {'kind':'content','text':'已取得两端模拟接口摘要；业务目的地址仍需核对。'}
     monkeypatch.setattr(router.SystemService, 'build_llm_provider', AsyncMock(return_value=Planner()))
     response = await client.post('/api/v1/ai/copilot'+path, headers=headers, json={
-        'message':'请排查R2到R3不通', 'request_id':uuid.uuid4().hex,
+        'message':'请排查R2到R3不通，先只读核对接口。', 'request_id':uuid.uuid4().hex,
         'context': {'route':'/devices','selection':'device | R2 | id=999'}})
     assert response.status_code == 200, response.text
     assert len(captured) == 1

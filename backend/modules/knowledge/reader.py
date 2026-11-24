@@ -40,17 +40,16 @@ def read_bounded(path: Path, root: Path) -> tuple[bytes, str]:
 
 def sections(content: str) -> list[dict[str, Any]]:
     """One-based source-body lines. Code-fenced '#' is not a chapter heading."""
-    result, fence = [], None
+    from core.markdown_blocks import fence_end, opening_fence
+
+    result, closing = [], None
     for number, line in enumerate(content.splitlines(), 1):
-        marker = re.match(r'^\s{0,3}(`{3,}|~{3,})', line)
-        if marker:
-            token = marker[1]
-            if fence is None:
-                fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
-                fence = None
+        if closing is not None:
+            if closing.match(line):
+                closing = None
             continue
-        if fence is not None:
+        if marker := opening_fence(line):
+            closing = fence_end(marker[1])
             continue
         heading = re.match(r'^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$', line)
         if heading:

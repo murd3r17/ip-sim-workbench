@@ -6,7 +6,7 @@ from difflib import unified_diff
 from core.redaction import redact_sensitive
 
 
-def display_diff_excerpt(before: str, after: str) -> dict:
+def display_diff_excerpt(before: str, after: str, *, max_chars: int = 14000) -> dict:
     a, b = redact_sensitive(before or ''), redact_sensitive(after or '')
     different = a != b
     # Bound the matcher independently of the number of emitted rows.
@@ -16,10 +16,10 @@ def display_diff_excerpt(before: str, after: str) -> dict:
     rows = []
     size = 0
     for line in unified_diff(left, right, fromfile='A', tofile='B', n=2, lineterm=''):
-        if len(rows) >= 120 or size + len(line) > 14000:
+        if len(rows) >= 120 or size + len(line) + 1 > max_chars:
             truncated = True
             break
         rows.append(line)
-        size += len(line)
+        size += len(line) + 1
     return {'text': '\n'.join(rows), 'truncated': truncated, 'different': different,
             'scope': 'redacted_ordered_text_only', 'line_limit_per_side': 600}

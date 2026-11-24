@@ -11,10 +11,19 @@ import json
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from .models import CopilotRequest
+from .models import CopilotConversation, CopilotRequest
+
+_PRIVATE_CONTEXT = '_workbench_conversation'
+
+
+def _public_response(response):
+    if not isinstance(response, dict):
+        return None
+    public = {key: value for key, value in response.items() if key != _PRIVATE_CONTEXT}
+    return public or None
 
 
 def digest(value):
@@ -38,6 +47,9 @@ class Reservation:
     owner: str
     response: dict | None = None
     http_status: int = 200
+    conversation_id: str | None = None
+    subjects: tuple[str, ...] = ()
+    conversation_position: int | None = None
 
     @property
     def replay(self):
@@ -55,14 +67,35 @@ class RequestStore:
         uid, rid = actor["user_id"], data.request_id
         owner = uuid.uuid4().hex
         payload = data.model_dump(mode="json", exclude={"request_id"})
+        if isinstance(payload.get('context'), dict) and payload['context'].get('knowledge_source') is None:
+            # Omitting a newly introduced optional field must retain existing retry hashes.
+            payload['context'].pop('knowledge_source', None)
         identity, auth_scope = digest(payload), scope(actor)
         async with self.factory() as db:
+            conversation_id = None
+            position = None
+            subjects = ()
+            selected = data.conversation_id
+            if selected:
+                conversation = (await db.execute(select(CopilotConversation.id).where(
+                    CopilotConversation.id == selected, CopilotConversation.user_id == uid,
+                ).with_for_update())).scalar_one_or_none()
+                if conversation is not None:
+                    from modules.knowledge.query_focus import protocol_names
+                    field = CopilotRequest.response[_PRIVATE_CONTEXT]
+                    latest = await db.scalar(select(func.max(field['position'].as_integer())).where(
+                        CopilotRequest.user_id == uid, field['id'].as_string() == conversation,
+                    ))
+                    conversation_id = conversation
+                    position = (latest or 0) + 1
+                    subjects = tuple(sorted(protocol_names(data.message)))
             db.add(CopilotRequest(user_id=uid, request_id=rid, input_hash=identity,
                 authorization_scope=auth_scope, owner_token=owner, status="running",
+                response={_PRIVATE_CONTEXT: {'id': conversation_id, 'position': position}} if conversation_id else None,
                 http_status=200, created_at=now(), updated_at=now()))
             try:
                 await db.commit()
-                return Reservation(uid, rid, owner)
+                return Reservation(uid, rid, owner, conversation_id=conversation_id, subjects=subjects, conversation_position=position)
             except IntegrityError:
                 await db.rollback()
                 row = await db.get(CopilotRequest, (uid, rid))
@@ -74,7 +107,7 @@ class RequestStore:
                 if row.status == "running":
                     raise HTTPException(409, detail={"code": "request_in_progress",
                         "message": "此请求已提交，结果尚未确认；不会重复执行，请先查询原请求结果。"})
-                return Reservation(uid, rid, "", row.response, row.http_status)
+                return Reservation(uid, rid, "", _public_response(row.response), row.http_status)
 
     async def finish(self, lease, response, *, status="completed", http_status=200):
         if lease.replay:
@@ -85,6 +118,13 @@ class RequestStore:
             response = {"answer": "回答过长，未能保存完整结果；请缩小问题范围后重新提问。",
                         "status": "failed", "request_id": lease.request_id}
             status = "failed"
+        if lease.conversation_id:
+            sources = []
+            if status == 'completed' and response.get('status') == 'ok' and response.get('generation_status') == 'generated':
+                from .knowledge_continuation import cited_locators
+                sources = cited_locators(response)
+            response = {**response, _PRIVATE_CONTEXT: {'id': lease.conversation_id, 'sources': sources,
+                                                       'subjects': lease.subjects, 'position': lease.conversation_position}}
         async with self.factory() as db:
             result = await db.execute(update(CopilotRequest).where(
                 CopilotRequest.user_id == lease.user_id,
@@ -107,5 +147,34 @@ class RequestStore:
             return {"request_id": request_id, "state": row.status,
                     "created_at": row.created_at.isoformat() + "Z",
                     "updated_at": row.updated_at.isoformat() + "Z",
-                    "response": sanitize_historical_references(row.response), "http_status": row.http_status,
+                    "response": sanitize_historical_references(_public_response(row.response)), "http_status": row.http_status,
                     "replayed": True, "historical": True}
+
+
+async def prior_source_context(db, data, actor) -> tuple[str, dict] | None:
+    """Select only the immediately prior durable request for the same owned conversation."""
+    if db is None or not data.conversation_id or not data.request_id:
+        return None
+    owner = actor['user_id']
+    conversation = await db.get(CopilotConversation, data.conversation_id)
+    if conversation is None or conversation.user_id != owner:
+        return None
+    field = CopilotRequest.response[_PRIVATE_CONTEXT]
+    private_context = field.label('private_context')
+    position = field['position'].as_integer().label('position')
+    result = await db.execute(select(CopilotRequest.request_id, CopilotRequest.status, position,
+        CopilotRequest.authorization_scope, private_context)
+        .where(CopilotRequest.user_id == owner, field['id'].as_string() == conversation.id, position.is_not(None))
+        .order_by(position.desc(), CopilotRequest.request_id.desc()).limit(3))
+    rows = result.all()
+    if len(rows) < 2:
+        return None
+    current, previous = rows[:2]
+    # Databases without row locks may assign a position concurrently. Equal
+    # positions cannot prove which request is later, so never inherit from them.
+    if (current.request_id != data.request_id or current.status != 'running' or current.position <= previous.position
+            or (len(rows) > 2 and previous.position == rows[2].position)
+            or previous.status != 'completed' or previous.authorization_scope != scope(actor)
+            or current.authorization_scope != scope(actor) or not isinstance(previous.private_context, dict)):
+        return None
+    return previous.request_id, previous.private_context

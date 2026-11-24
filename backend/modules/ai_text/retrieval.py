@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import re
 from core.markdown_blocks import blocks, retrieval_body
+from modules.knowledge.query_focus import QueryFocus, focused_queries, protocol_names
 
 
 _PROTOCOL = re.compile(
-    r"(?<![a-z0-9])(?:ospf(?:v[23])?|bgp|is-?is|rip(?:ng)?|bfd|vrrp|[mr]?stp|dhcp(?:v6)?|dns|ipsec|qinq|ssh)(?![a-z0-9])",
+    r"(?<![a-z0-9])(?:ospf(?:v[23])?|bgp|is-?is|rip(?:ng)?|bfd|vrrp|hrp|[mr]?stp|dhcp(?:v6)?|dns|ipsec|qinq|ssh)(?![a-z0-9])",
     re.I,
 )
 
@@ -38,6 +39,70 @@ def protocol_context(hits: list[dict] | None, original_query: str) -> list[dict]
         if not wanted or not _protocols(headings) or _protocols(body) & wanted:
             result.append(hit)
     return result
+
+
+_VRRP = re.compile(r"(?<![a-z0-9])vrrp(?![a-z0-9])", re.I)
+_OTHER_REDUNDANCY = re.compile(r"(?<![a-z0-9])(?:HRP|VGMP)(?![a-z0-9])", re.I)
+_OTHER_PROTOCOL_LIMITATION = re.compile(r"(?:不支持|不使用|无法使用|不适用|不兼容).{0,12}(?<![a-z0-9])(?:VRRP|HRP|VGMP)(?![a-z0-9])", re.I)
+_TRACKING = re.compile(r"上行(?:接口|端口|链路)?(?:跟踪|监视)|(?:跟踪|监视)上行|track\s+interface", re.I)
+_DECREASE = re.compile(r"(?:降低|减小|减少).{0,8}优先级|优先级.{0,8}(?:降低|减小|减少)|track\s+interface[^\n]+\breduced\b", re.I)
+_DELAY = re.compile(r"(?:抢占|回切)(?:延时|延迟)|延时抢占", re.I)
+_VRRP_FACETS = {
+    "降低优先级": (_DECREASE, re.compile(r"上行|上联|track\s+interface", re.I)),
+    "监视上行端口": (_TRACKING, re.compile(r"故障|[Dd]own|优先级|黑洞|track\s+interface")),
+    "抢占延时": (_DELAY, re.compile(r"回切|恢复|切换|稳定|震荡|振荡|抖动|定时器|等待")),
+}
+
+
+def vrrp_mechanism_queries(question):
+    """Return narrower evidence queries for an explicitly named VRRP mechanism."""
+    if protocol_names(question) != {'vrrp'}:
+        return []
+    focuses = [focus for focus in focused_queries(question)
+               if focus.subject == 'VRRP' and focus.facet in _VRRP_FACETS]
+    if any(focus.facet == '监视上行端口' for focus in focuses):
+        # A tracking description can explain the problem without stating how
+        # a changed runtime priority affects election. Look for that too.
+        focuses = [focus for focus in focuses if focus.facet != '降低优先级']
+        focuses.append(QueryFocus('VRRP 上行接口故障 降低优先级', 'VRRP', '降低优先级'))
+    return focuses
+
+
+def supports_vrrp_mechanism(hit, facet):
+    """Check the original passage, even if the provider assigned a focus label."""
+    body = str(hit.get('text') or hit.get('content') or '')
+    title = str(hit.get('title') or hit.get('filename') or '')
+    mechanism, explanation = _VRRP_FACETS[facet]
+    has_vrrp_context = _VRRP.search(title) or _VRRP.search(body)
+    if not has_vrrp_context:
+        return False
+    # Some firewall redundancy chapters mention VRRP alongside HRP or VGMP.
+    # Only independently attributable VRRP passages can support this facet.
+    if _OTHER_REDUNDANCY.search(title + '\n' + body) or _OTHER_PROTOCOL_LIMITATION.search(body):
+        body = '\n'.join(paragraph for paragraph in re.split(r'\n\s*\n|[。；!?！？]', body)
+                         if _VRRP.search(paragraph) and not _OTHER_REDUNDANCY.search(paragraph)
+                         and not _OTHER_PROTOCOL_LIMITATION.search(paragraph))
+    return bool(mechanism.search(body) and explanation.search(body))
+
+
+def select_vrrp_mechanism_hits(focuses, groups, limit):
+    """Keep the strongest original hit for each mechanism before extra pages."""
+    chosen = []
+    identities = set()
+    for index in range(max(map(len, groups), default=0)):
+        for focus, candidates in zip(focuses, groups, strict=True):
+            if index >= len(candidates):
+                continue
+            hit = candidates[index]
+            identity = (hit.get('document_id') or hit.get('filename') or hit.get('title'),
+                        hit.get('section_id') or hit.get('text') or hit.get('content'))
+            if identity in identities:
+                continue
+            identities.add(identity)
+            chosen.append({**hit, 'query_focus': focus.query})
+            if len(chosen) == limit:
+                return chosen
+    return chosen
 
 
 def _toks(text: str) -> set[str]:

@@ -35,6 +35,7 @@ def encode(event):
 
 
 def result_events(result, request_id, *, replayed=True):
+    provider_failure = (result.get('trace') or {}).get('provider_error') == 'provider_unavailable'
     yield {"type": "meta", "request_id": request_id, "sources": [],
            "provider": result.get("provider", ""), "status": result.get("status", "failed"),
            "knowledge_status": result.get("knowledge_status", "unknown"),
@@ -47,13 +48,19 @@ def result_events(result, request_id, *, replayed=True):
         yield {"type": "draft", "request_id": request_id,
                "draft_commands": result["draft_commands"],
                "draft_explanation": result.get("draft_explanation", "")}
-    if result.get("error_message"):
-        yield {"type": "error", "request_id": request_id, "message": result["error_message"]}
+    error = ({"type": "error", "request_id": request_id, "message": result["error_message"],
+              **({'code': 'provider_unavailable'} if provider_failure else {})} if result.get('error_message') else None)
+    retrieval_only = result.get('generation_status') == 'retrieval_only'
+    if error and not retrieval_only:
+        yield error
     yield {"type": "references", "request_id": request_id, "sources": result.get("sources", []),
            "generation_status": result.get("generation_status", "not_generated")}
+    if error and retrieval_only:
+        yield error
     yield {"type": "done", "request_id": request_id, "status": result.get("status", "failed"),
            "cancelled": result.get("status") == "cancelled", "assist_only": True,
-           "trace": result.get("trace", {}), "replayed": replayed}
+           "trace": result.get("trace", {}), "replayed": replayed,
+           **({'reason': 'provider_unavailable'} if provider_failure else {})}
 
 
 class Accumulator:

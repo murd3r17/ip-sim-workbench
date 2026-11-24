@@ -674,7 +674,11 @@ watch([selectedTopology, linkedInspection], ([id], [previousId]) => {
   updateMemoryChart([])
   updateInterfaceChart([])
   updateOspfChart([])
-  if (!id) return
+  copilot.clearPageRecord('monitor_ports')
+  if (!id) {
+    copilot.setSelection(null)
+    return
+  }
   const topo = topologies.value.find((t) => t.id === id)
   labCtx.setTopology(id)
   copilot.setSelection({

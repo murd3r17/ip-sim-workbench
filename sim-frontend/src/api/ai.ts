@@ -19,32 +19,63 @@ export const reviewConfig = (data: { config_text: string; device_model?: string 
 export const askKnowledge = (data: { question: string; kb_id?: string; top_k?: number }) =>
   request.post('/ai/ask', data)
 
+export type CopilotConfigComparison =
+  | { kind: 'saved'; version_id_a: number; version_id_b: number }
+  | { kind: 'local' }
+
+export type CopilotPageRecord =
+  | { kind: 'monitor_ports'; device_id: number; job_id?: number }
+  | { kind: 'approval_task'; task_id: number }
+  | { kind: 'alarm_record'; alarm_id: number }
+  | { kind: 'original_page'; document_id: string; version: string; page: number }
+
+export type CopilotKnowledgeSource =
+  | { mode: 'selected'; request_id: string; source_id: string }
+  | { mode: 'cleared' }
+
+interface CopilotPageContext {
+  route?: string
+  page_name?: string
+  selection?: string
+  notes?: string
+  config_comparison?: CopilotConfigComparison
+  page_record?: CopilotPageRecord
+  knowledge_source?: CopilotKnowledgeSource
+}
+
 export const copilotChat = (data: {
   message: string
   request_id?: string
   history?: Array<{ role: string; content: string; request_id?: string }>
-  context?: {
-    route?: string
-    page_name?: string
-    selection?: string
-    notes?: string
-  }
+  context?: CopilotPageContext
   want_draft?: boolean
   device_model?: string
   top_k?: number
   page_data?: string
 }) => request.post('/ai/copilot/chat', data)
 
+export interface CopilotReviewedNote {
+  id: string
+  title: string
+  content: string
+  reference: string
+  url: string
+  reviewed_at: string
+}
+
 export interface CopilotReference {
   source_id?: string
   reference_index?: number
   filename?: string
   title?: string
+  book_title?: string
+  edition_version?: string
   score?: number
   content?: string
   version?: string
   captured_at?: string
   page?: number
+  reviewed_notes?: CopilotReviewedNote[]
 }
 
 export type CopilotStreamEvent =
@@ -54,13 +85,14 @@ export type CopilotStreamEvent =
       provider?: string
       status?: string
       knowledge_status?: string
+      generation_status?: string
       draft_refused_reason?: string
       draft_target?: { device_id: number; hostname: string; alarm_id?: number } | null
       replayed?: boolean
       historical?: boolean
     }
   | { type: 'references'; request_id?: string; generation_status?: string; sources?: CopilotReference[] }
-  | { type: 'policy'; draft_refused_reason?: string; draft_target?: null; replace_answer?: string }
+  | { type: 'policy'; draft_refused_reason?: string; draft_target?: null; replace_answer?: string; retrieval_only?: boolean }
   | { type: 'tool'; name?: string; status?: string }
   | { type: 'progress'; stage: string; message?: string; request_id?: string }
   | { type: 'reasoning'; text: string; request_id?: string }
@@ -68,18 +100,13 @@ export type CopilotStreamEvent =
   | { type: 'draft'; draft_commands?: string[]; draft_explanation?: string }
   | { type: 'cancelled'; request_id?: string; upstream?: string; note?: string }
   | { type: 'done'; status?: string; assist_only?: boolean; has_reasoning?: boolean; cancelled?: boolean; reason?: string }
-  | { type: 'error'; message?: string; code?: string; retryable?: boolean }
+  | { type: 'error'; message?: string; code?: string; retryable?: boolean; generation_status?: string }
 
 export async function copilotChatStream(
   data: {
     message: string
     history?: Array<{ role: string; content: string }>
-    context?: {
-      route?: string
-      page_name?: string
-      selection?: string
-      notes?: string
-    }
+    context?: CopilotPageContext
     want_draft?: boolean
     device_model?: string
     top_k?: number
@@ -175,8 +202,9 @@ export interface CopilotRecovery {
   historical: boolean
   response: {
     knowledge_status?: string
+    generation_status?: string
     answer?: string
-    sources?: Array<{ source_id?: string; filename?: string; title?: string; score?: number; content?: string; version?: string; captured_at?: string; page?: number }>
+    sources?: CopilotReference[]
     draft_commands?: string[]
     draft_refused_reason?: string
     draft_target?: { device_id: number; hostname: string; alarm_id?: number } | null

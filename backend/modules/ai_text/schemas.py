@@ -1,6 +1,6 @@
 """AI模块Schema"""
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -41,12 +41,58 @@ class AskRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=50, description="返回结果数量")
 
 
+class SavedConfigComparison(BaseModel):
+    kind: Literal["saved"]
+    version_id_a: int = Field(gt=0, le=2_147_483_647, strict=True)
+    version_id_b: int = Field(gt=0, le=2_147_483_647, strict=True)
+
+
+class LocalConfigComparison(BaseModel):
+    kind: Literal["local"]
+
+
+class MonitorPageRecord(BaseModel):
+    kind: Literal['monitor_ports']
+    device_id: int = Field(gt=0, le=2_147_483_647, strict=True)
+    job_id: int | None = Field(default=None, gt=0, le=2_147_483_647, strict=True)
+
+
+class ApprovalPageRecord(BaseModel):
+    kind: Literal['approval_task']
+    task_id: int = Field(gt=0, le=2_147_483_647, strict=True)
+
+
+class AlarmPageRecord(BaseModel):
+    kind: Literal['alarm_record']
+    alarm_id: int = Field(gt=0, le=2_147_483_647, strict=True)
+
+
+class OriginalPageRecord(BaseModel):
+    kind: Literal['original_page']
+    document_id: str = Field(min_length=1, max_length=800)
+    version: str = Field(min_length=1, max_length=128)
+    page: int = Field(gt=0, le=100_000, strict=True)
+
+
+class SelectedKnowledgeSource(BaseModel):
+    mode: Literal['selected']
+    request_id: str = Field(min_length=1, max_length=64, pattern=r'^[A-Za-z0-9_-]+$')
+    source_id: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9_-]+$')
+
+
+class ClearedKnowledgeSource(BaseModel):
+    mode: Literal['cleared']
+
+
 class CopilotContext(BaseModel):
     """前端工作台当前上下文（只读感知，不用于代操作）"""
     route: str = Field("", max_length=256)
     page_name: str = Field("", max_length=128)
     selection: str = Field("", max_length=2000, description="当前选中设备/拓扑节点/告警等摘要")
     notes: str = Field("", max_length=4000, description="页面补充说明")
+    config_comparison: Annotated[SavedConfigComparison | LocalConfigComparison, Field(discriminator="kind")] | None = None
+    page_record: Annotated[MonitorPageRecord | ApprovalPageRecord | AlarmPageRecord | OriginalPageRecord, Field(discriminator='kind')] | None = None
+    knowledge_source: Annotated[SelectedKnowledgeSource | ClearedKnowledgeSource, Field(discriminator='mode')] | None = None
 
 
 class CopilotAttachment(BaseModel):
@@ -113,6 +159,11 @@ class CopilotChatResponse(BaseModel):
     generation_status: str = "not_generated"
     tier: str = "standard"
     trace: dict = Field(default_factory=dict)
+
+
+class OriginalQuoteRequest(BaseModel):
+    quote: str = Field(min_length=1, max_length=600)
+    book: int | None = Field(default=None, ge=1, le=100)
 
 
 class GenerateValidateRequest(BaseModel):

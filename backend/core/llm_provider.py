@@ -2,6 +2,7 @@
 import json
 import time
 from abc import ABC, abstractmethod
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
@@ -257,6 +258,24 @@ class OpenAICompatibleProvider(LLMProvider):
     def _build_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
+    @asynccontextmanager
+    async def _chat_stream_connection(self, payload: dict):
+        async with AsyncExitStack() as stack:
+            async def connect():
+                dispatch = before_dispatch(self, payload)
+                response = await stack.enter_async_context(self._client.stream(
+                    "POST", f"{self.api_base_url}/chat/completions", json=payload, headers=self._build_headers(),
+                ))
+                return response, dispatch
+
+            try:
+                connection = await connect()
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Retry only setup failures before sending the request. A response
+                # status, read error or partial stream must never trigger a replay.
+                connection = await connect()
+            yield connection
+
     def _build_messages(
         self, prompt: str, system: Optional[str]
     ) -> list[dict]:
@@ -422,13 +441,7 @@ class OpenAICompatibleProvider(LLMProvider):
         """带图片的流式生成（视觉模型），产出 reasoning/content 分片。"""
         payload = self._build_vision_payload(system, prompt, images, max_tokens, temperature, stream=True, model=model)
         completed = False
-        dispatch = before_dispatch(self, payload)
-        async with self._client.stream(
-            "POST",
-            f"{self.api_base_url}/chat/completions",
-            json=payload,
-            headers=self._build_headers(),
-        ) as resp:
+        async with self._chat_stream_connection(payload) as (resp, dispatch):
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
@@ -464,13 +477,7 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> AsyncIterator[dict[str, str]]:
         payload = self._build_payload(prompt, system, max_tokens, temperature, stream=True)
         completed = False
-        dispatch = before_dispatch(self, payload)
-        async with self._client.stream(
-            "POST",
-            f"{self.api_base_url}/chat/completions",
-            json=payload,
-            headers=self._build_headers(),
-        ) as resp:
+        async with self._chat_stream_connection(payload) as (resp, dispatch):
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):

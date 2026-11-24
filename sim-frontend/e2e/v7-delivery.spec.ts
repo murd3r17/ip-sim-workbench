@@ -72,6 +72,7 @@ test('普通学员保留 11 个入口，管理路由和接口均拒绝访问', a
     await learner.getByRole('button', { name: '登录', exact: true }).click()
     await expect(learner).toHaveURL(/\/dashboard$/)
     await ensureCopilotClosed(learner)
+    await expect(learner.getByRole('status', { name: '设备接入模式' })).toContainText('模拟演练')
     for (const [path, label] of publicPages) {
       await learner.getByRole('menuitem', { name: label, exact: true }).click()
       await expect(learner).toHaveURL(new RegExp(path + '$'))
@@ -132,12 +133,19 @@ test('首页展示只读拓扑全局，同一拓扑的详情页可检查链路�
   await expect(page.getByRole('button', { name: '开终端', exact: true })).toBeVisible()
 })
 
-test('知识库目录可打开 135 篇语料中的持久原文', async ({ page }) => {
+test('知识库目录可打开当前教材资料', async ({ page }) => {
   await login(page)
+  const response = await page.request.get('/api/v1/ai/knowledge/catalog')
+  expect(response.ok()).toBeTruthy()
+  const catalog = await response.json()
+  const loadedCount = catalog.active_edition
+    ? `${catalog.documents.filter((document: { catalog_kind?: string }) => document.catalog_kind === 'chapter').length} 个教材章节`
+    : `${catalog.count} 篇资料`
   await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
-  await expect(page.locator('.knowledge-health')).toContainText('135 篇资料')
-  await page.getByRole('button', { name: '阅读全文', exact: true }).first().click()
-  const reader = page.getByRole('dialog', { name: '资料全文' })
+  await expect(page.locator('.knowledge-health')).toContainText(loadedCount)
+  const readingAction = catalog.active_edition ? '阅读正文' : '阅读资料'
+  await page.getByRole('button', { name: readingAction, exact: true }).first().click()
+  const reader = page.getByRole('dialog', { name: catalog.active_edition ? '教材正文' : '阅读资料' })
   await expect(reader.locator('.reader-body')).toBeVisible()
   await reader.getByRole('button', { name: '返回原页面', exact: true }).click()
   await expect(reader).not.toBeVisible()
@@ -160,10 +168,11 @@ test('最小模式健康和教材检索能指导下一步', async ({ page }) => 
   await page.getByRole('button', { name: '检索', exact: true }).click()
   const firstResult = page.locator('.search-result').first()
   await expect(firstResult.locator('header')).toContainText('OSPF')
-  await expect(firstResult.locator('.search-excerpt')).toContainText('链路状态')
+  await expect(firstResult.locator('.search-excerpt')).toContainText(/链路状态|SPF.{0,12}链路成本/)
   await firstResult.getByRole('button', { name: '片段详情' }).click()
-  await page.getByRole('button', { name: '查看随包整理稿' }).click()
-  await expect(page.getByRole('dialog', { name: '资料全文' }).getByRole('heading', { name: /OSPF/ }).first()).toBeVisible()
+  const details = page.getByRole('dialog', { name: '检索片段' })
+  await details.getByRole('button', { name: /阅读同版正文|查看随包整理稿/ }).click()
+  await expect(page.getByRole('dialog', { name: /教材正文|阅读资料/ }).getByRole('heading', { name: /OSPF/ }).first()).toBeVisible()
 })
 
 test('浏览器凭据随服务器会话退出，刷新可以重新核对登录', async ({ page }) => {
@@ -316,9 +325,9 @@ test('未配置模型时可返回教材，失败回答没有引用入口', async
   const composer = page.locator('.copilot')
   await composer.locator('textarea').fill('请查本地教材，解释 OSPF 邻居的 Full 状态。')
   await composer.getByRole('button', { name: '发送', exact: true }).click()
-  await expect(composer.getByText(/模型服务(?:当前)?不可用|未配置模型|模型尚未配置/, { exact: false }).first()).toBeVisible()
-  await expect(composer.getByText('回答引用', { exact: true })).toHaveCount(0)
+  await expect(composer.getByText(/模型服务(?:暂|当前)?不可用|未配置模型|模型尚未配置/, { exact: false }).first()).toBeVisible()
+  await expect(composer.locator('.source-link')).toHaveCount(0)
   await expect(composer.getByText('已检索资料，正文没有引用检索片段。', { exact: true })).toHaveCount(0)
-  await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
+  await composer.getByRole('button', { name: '打开知识库', exact: true }).click()
   await expect(page.getByRole('textbox', { name: '筛选资料' })).toBeVisible()
 })

@@ -338,6 +338,7 @@ class DashboardService:
             "generated_at": datetime.now(timezone.utc),
             "environment_name": settings.app_name,
             "environment_status": "degraded" if offline_count or active_alarms else "operational",
+            "device_mode": (settings.device_mode or "").strip().lower() or None,
             "devices": {
                 "total": len(devices),
                 "online": device_statuses.count(DeviceStatus.ONLINE.value),

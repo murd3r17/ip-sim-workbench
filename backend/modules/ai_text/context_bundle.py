@@ -8,13 +8,14 @@ import re
 from datetime import datetime, timezone
 
 from .retrieval import clean_chunk
-from core.markdown_blocks import complete_prefix, unclosed_fence_start
+from core.markdown_blocks import blocks, complete_prefix, unclosed_fence_start
 from modules.knowledge.reviewed_source_notes import notes_for_excerpt, notes_prompt
 
 MAX_DOCUMENTS = 8
 MAX_DOCUMENT_CHARS = 3000
 MAX_DOCUMENTS_CHARS = 12000
 INCOMPLETE_NOTE = "[来源不完整：仅保留完整段落，未提供全文，不得将缺失内容视为不存在。]\n"
+_REFERENCE = re.compile(r"\[(?:n[=:]?[ \t]*|来源[ \t]*[:：]?[ \t]*)?(\d{1,6})(?:[ \t]{0,2}审校(?:说明|补充)?[ \t]{0,2})?\]", re.I)
 
 
 class SourceDocuments(list):
@@ -64,7 +65,16 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
         if not usable:
             continue
         title = str(hit.get("filename") or hit.get("title") or "参考文档")
-        prefix = f"[{title[:160]}]\n"
+        label = title
+        if hit.get('edition_version') and hit.get('book_title'):
+            book = str(hit['book_title'])
+            chapter = str(hit.get('title') or '')
+            label = f'{book} · {chapter}' if chapter and chapter != book else book
+        prefix = f"[{' '.join(label.split())[:160]}]\n"
+        page = hit.get('page')
+        has_page = type(page) is int and page > 0
+        if has_page and hit.get('edition_version'):
+            prefix += f"该版原教材 PDF 物理页：{page}。\n"
         topic = hit.get("query_focus")
         if topic:
             prefix += f"本片段用于核对 {str(topic)[:100]}。\n"
@@ -99,10 +109,11 @@ def prepare_sources(hits, *, max_total_chars=MAX_DOCUMENTS_CHARS,
             **({"score_kind": "relative_within_query"} if hit.get("score_kind") == "relative_within_query" else {}),
             "content": content, "version": version, "captured_at": now,
             "prompt_text": prompt_text, "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
-            "truncated": truncated,
+            "truncated": truncated or hit.get('source_range_reduced') is True,
             **({"reviewed_notes": notes} if notes else {}),
-            **({"page": hit["page"]} if isinstance(hit.get("page"), int) and hit["page"] > 0 else {}),
-            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path", "document_version", "section_id", "query_focus") if hit.get(key)},
+            **({"page": page} if has_page else {}),
+            **{key: str(hit[key])[:256] for key in ("document_id", "doc_id", "source_path", "document_version", "section_id",
+                 "query_focus", "book_title", "edition_version") if hit.get(key)},
         })
         remaining -= len(prompt_text)
         if len(sources) == document_count or not remaining:
@@ -114,6 +125,12 @@ def source_documents(sources):
     return SourceDocuments(sources)
 
 
+def cited_indices(answer: str) -> tuple[int, ...]:
+    prose = '\n'.join(answer[start:end] for kind, start, end in blocks(answer) if kind != 'fence')
+    prose = re.sub(r'`[^`\n]*`', '', prose)
+    return tuple(dict.fromkeys(int(value) for value in _REFERENCE.findall(prose)))
+
+
 def answer_references(sources: list[dict], answer: str, status: str) -> tuple[str, list[dict]]:
     if not answer.strip() or status in {"blocked_environment", "unavailable"}:
         return "not_generated", []
@@ -121,7 +138,7 @@ def answer_references(sources: list[dict], answer: str, status: str) -> tuple[st
         return "generated", sources
     # A failed or cancelled stream may contain usable prose. Keep only
     # markers that actually occurred, retaining their original number.
-    indices = {int(value) for value in re.findall(r"\[(\d{1,2})\]", answer)}
+    indices = set(cited_indices(answer))
     return "partial", [
         {**source, "reference_index": index}
         for index, source in enumerate(sources, 1) if index in indices

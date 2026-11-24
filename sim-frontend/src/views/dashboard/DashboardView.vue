@@ -20,6 +20,11 @@
         </div>
       </div>
       <div class="service-strip" v-if="summary">
+        <div v-if="summary.device_mode === 'sim' || summary.device_mode === 'ssh'" class="service-item" role="status" aria-label="设备接入模式">
+          <span class="service-label">设备接入</span>
+          <strong>{{ summary.device_mode === 'sim' ? '模拟演练' : 'SSH 接入' }}</strong>
+          <small v-if="summary.device_mode === 'sim'" class="service-label">模拟连通结果用于实训</small>
+        </div>
         <div class="service-item">
           <span class="service-label">上次记录可达</span>
           <strong :class="summary.devices.online === summary.devices.total ? 'ok-text' : 'warn-text'">

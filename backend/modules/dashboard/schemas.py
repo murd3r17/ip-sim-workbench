@@ -168,6 +168,7 @@ class DashboardSummary(BaseModel):
     generated_at: UtcDatetime
     environment_name: str
     environment_status: str
+    device_mode: str | None = None
     devices: DeviceSummary
     topology: TopologySummary | None
     tasks: TaskSummary

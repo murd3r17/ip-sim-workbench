@@ -203,6 +203,7 @@ import { getDevices, type DeviceRecord } from '../../api/device'
 import { deployNextAction, deployTaskStatusLabel as statusLabel, executionModeLabel, savedVerificationState } from '../../utils/display'
 import RecordOriginFilter from '../../components/RecordOriginFilter.vue'
 import {filterByRecordOrigin} from '../../utils/recordOrigin'
+import { useAiCopilotStore } from '../../stores/aiCopilot'
 
 interface DeployTaskRow {
   record_origin?: string
@@ -226,6 +227,7 @@ interface DeployTaskRow {
 
 const router = useRouter()
 const route = useRoute()
+const copilot = useAiCopilotStore()
 const tasks = ref<DeployTaskRow[]>([])
 const originFilter=ref('all')
 const visibleTasks=computed(()=>filterByRecordOrigin(tasks.value,originFilter.value))
@@ -293,10 +295,12 @@ const loadTasks = async () => {
 let detailRequest = 0
 const openDetail = async (row: { id: number }) => {
   const request = ++detailRequest
+  copilot.clearPageRecord('approval_task')
   try {
     const item = await getDeployTask(row.id) as DeployTaskRow
     if (request !== detailRequest) return
     detail.value = item
+    copilot.setPageRecord({ kind:'approval_task', task_id:item.id }, `任务 #${item.id} · ${deviceName(item.device_id)}`)
     detailVisible.value = true
   } catch (error) {
     if (request === detailRequest) notifyRequestError(error, '加载任务详情失败')
@@ -410,12 +414,16 @@ watch(() => route.query.status, () => {
   statusFilter.value = statusFilterFromRoute()
   void loadTasks()
 })
-watch(() => route.query.task_id, openLinkedTask)
+watch(() => route.query.task_id, () => {
+  detailRequest++
+  copilot.clearPageRecord('approval_task')
+  openLinkedTask()
+})
 onMounted(() => {
   void loadTasks()
   openLinkedTask()
 })
-onUnmounted(() => { detailRequest++ })
+onUnmounted(() => { detailRequest++; copilot.clearPageRecord('approval_task') })
 </script>
 
 <style scoped>

@@ -89,7 +89,11 @@
             >×</button>
           </span>
           <button v-else-if="labCtx.isActive" class="page-pill" type="button" @click="linkCurrentLab">关联当前实训</button>
-          <span v-if="store.selection" class="ctx-chip">
+          <span v-if="store.pageRecord" class="ctx-chip">
+            <span class="page-pill" :title="store.pageRecord.label">{{ store.pageRecord.label }}</span>
+            <button class="sel-x" type="button" aria-label="移除已选记录" @click.stop="store.clearPageRecord()">×</button>
+          </span>
+          <span v-else-if="store.selection" class="ctx-chip">
             <button
               class="sel-pill"
               type="button"
@@ -107,6 +111,12 @@
               @click.stop="clearSelection"
             >×</button>
           </span>
+          <span v-if="store.knowledgeSource?.label" class="ctx-chip">
+            <span class="page-pill" :title="store.knowledgeSource.label">{{ store.knowledgeSource.label }}</span>
+            <button class="sel-x" type="button" aria-label="清除教材来源" @click.stop="store.selectKnowledgeSource({ mode: 'cleared' })">×</button>
+          </span>
+          <span v-else-if="store.knowledgeSource?.reference.mode === 'cleared'" class="page-pill" role="status">教材来源已清除</span>
+          <button v-else-if="canClearBookSource" class="page-pill" type="button" @click.stop="store.selectKnowledgeSource({ mode: 'cleared' })">清除上轮教材来源</button>
           <button
             v-for="link in pageMeta.links"
             :key="link.path"
@@ -153,7 +163,11 @@
           >×</button>
         </span>
         <button v-else-if="labCtx.isActive" class="page-pill sm" type="button" @click="linkCurrentLab">关联当前实训</button>
-        <span v-if="store.selection" class="ctx-chip">
+        <span v-if="store.pageRecord" class="ctx-chip">
+          <span class="page-pill sm" :title="store.pageRecord.label">{{ store.pageRecord.label }}</span>
+          <button class="sel-x" type="button" aria-label="移除已选记录" @click.stop="store.clearPageRecord()">×</button>
+        </span>
+        <span v-else-if="store.selection" class="ctx-chip">
           <button
             class="sel-pill sm"
             type="button"
@@ -171,6 +185,12 @@
             @click.stop="clearSelection"
           >×</button>
         </span>
+        <span v-if="store.knowledgeSource?.label" class="ctx-chip">
+          <span class="page-pill sm" :title="store.knowledgeSource.label">{{ store.knowledgeSource.label }}</span>
+          <button class="sel-x" type="button" aria-label="清除教材来源" @click.stop="store.selectKnowledgeSource({ mode: 'cleared' })">×</button>
+        </span>
+        <span v-else-if="store.knowledgeSource?.reference.mode === 'cleared'" class="page-pill sm" role="status">教材来源已清除</span>
+        <button v-else-if="canClearBookSource" class="page-pill sm" type="button" @click.stop="store.selectKnowledgeSource({ mode: 'cleared' })">清除上轮教材来源</button>
         <div class="live-spacer" />
         <button
           v-for="link in pageMeta.links.slice(0, 2)"
@@ -202,8 +222,9 @@
             <div
               v-if="msg.role === 'assistant' && msg.content"
               class="md-body"
-              v-html="renderMarkdown(msg.content || (!msg.streaming && !msg.requestId ? '这条历史回复未保存完整内容，也没有可恢复的请求标识；无法确认原回答。' : ''), msg.streaming ? undefined : referenceCount(msg))"
+              v-html="renderMarkdown(msg.content, msg.streaming ? undefined : availableReferences(msg))"
             />
+            <p v-else-if="msg.role === 'assistant' && !msg.streaming && !msg.requestId" class="md-body">这条历史回复未保存完整内容，无法查询原回答。</p>
             <template v-else-if="msg.role === 'user'">
               <div v-if="msg.attachments?.length" class="msg-attachments">
                 <template v-for="(att, i) in msg.attachments" :key="i">
@@ -219,24 +240,29 @@
               <pre class="text">{{ msg.content }}</pre>
             </template>
             <span v-if="msg.streaming && msg.content" class="caret" />
-            <div v-if="answerSources(msg).length && !msg.streaming" class="sources">
-              <div class="sources-title">回答引用</div>
+            <details v-if="answerSources(msg).length" class="sources">
+              <summary class="sources-title">{{ msg.generationStatus === 'retrieval_only' ? '检索到的教材' : '引用资料' }}（{{ answerSources(msg).length }}）</summary>
               <button
                 v-for="{ source: s, index: i } in answerSources(msg)"
                 :key="i"
                 class="source-item source-link"
                 type="button"
-                :title="`打开引用：${s.title || s.filename || '文档'}${s.version ? `（片段 ${s.version}）` : ''}`"
                 @click="openCitation(msg, i)"
               >
-                [{{ i + 1 }}] {{ s.title || s.filename || '文档' }}<template v-if="s.page"> · PDF 第 {{ s.page }} 页</template>
+                <strong>[{{ i + 1 }}] {{ s.title || s.filename || '引用资料' }}</strong>
+                <span v-if="s.book_title && s.book_title !== s.title" class="source-book">{{ s.book_title }}</span>
+                <span v-if="s.page" class="source-page">{{ citationPageLabel(s) }}</span>
+                <span v-if="s.reviewed_notes?.length" class="source-review">审校补充 {{ s.reviewed_notes.length }} 条</span>
               </button>
-            </div>
+            </details>
             <div v-else-if="msg.role === 'assistant' && !msg.streaming && ['degraded', 'empty'].includes(msg.knowledgeStatus || '')" class="sources">
               <div class="sources-title">{{ msg.knowledgeStatus === 'degraded' ? '本次未能连接知识服务' : '本次检索没有找到可引用的片段' }}</div>
             </div>
             <div v-else-if="msg.role === 'assistant' && !msg.streaming && msg.requestState === 'completed' && msg.knowledgeStatus === 'ok'" class="sources">
               <div class="sources-title">已检索资料，正文没有引用检索片段。</div>
+            </div>
+            <div v-if="msg.modelUnavailable && msg.generationStatus !== 'retrieval_only' && !msg.streaming" class="offline-help">
+              可继续查看页面上已保存的内容，或<button type="button" class="text-btn" @click="go('/knowledge')">打开知识库</button>检索和阅读教材。
             </div>
             <div v-if="msg.draftRefused && !msg.streaming" class="draft-refused">
               未生成配置草稿：{{ msg.draftRefused }}
@@ -247,8 +273,9 @@
               <button class="draft-btn primary" type="button" @click="applyDraft(msg)">填入下发</button>
             </div>
             <div v-if="msg.requestId && !msg.streaming && !msg.cancelled && msg.requestState && msg.requestState !== 'completed'" class="request-recovery" role="status">
-              <span>回答{{ msg.requestState === 'failed' ? '失败' : '尚未确认完成' }}，可查询已保存的内容。</span>
-              <button type="button" class="text-btn" :disabled="store.loading || !!recoveringRequest" @click="recoverReply(msg)">查询原回答</button>
+              <span v-if="msg.generationStatus === 'retrieval_only'">已保留本次教材检索结果。</span>
+              <span v-else>回答{{ msg.requestState === 'failed' ? '失败' : '尚未确认完成' }}，可查询已保存的内容。</span>
+              <button type="button" class="text-btn" :disabled="store.loading || !!recoveringRequest" @click="recoverReply(msg)">{{ msg.generationStatus === 'retrieval_only' ? '查询已保存结果' : '查询原回答' }}</button>
               <span v-if="recoveryNotice.id === msg.id">{{ recoveryNotice.text }}</span>
               <button v-if="retryMessageId === msg.id" type="button" class="text-btn"
                 :disabled="store.loading || !!recoveringRequest" @click="restoreQuestion(msg)">恢复原问题</button>
@@ -267,6 +294,12 @@
 
       <footer class="composer">
         <div v-if="carryContextHint" class="carry-hint">{{ carryContextHint }}</div>
+        <div v-if="store.configComparison?.kind === 'saved'" class="carry-hint">
+          差异问题会使用已保存的 A #{{ store.configComparison.version_id_a }} 和 B #{{ store.configComparison.version_id_b }}。
+        </div>
+        <div v-else-if="store.configComparison?.kind === 'local'" class="carry-hint">
+          本地 A/B 文件仅在浏览器中比对。需要助手解读时，可以附上要核对的片段。
+        </div>
         <div v-if="attachmentContext && !pendingAttachments.length" class="carry-hint">
           本次将读取 {{ attachmentContext.attachments?.map(a => a.name || '附件').join('、') }}
           <button type="button" class="text-btn" @click="composer().ignoreAttachment = true">仅回答问题</button>
@@ -345,38 +378,53 @@
       <div v-if="citation" class="citation-mask" @click.self="closeCitation">
         <section ref="citationPanel" class="citation-panel" role="dialog" aria-modal="true" aria-label="引用原文" tabindex="-1" @keydown="onCitationKeydown">
           <header class="citation-head">
-            <strong>{{ citation.title || citation.filename || '引用原文' }}</strong>
+            <div class="citation-heading">
+              <strong>[{{ citation.index + 1 }}] {{ citation.title || citation.filename || '引用片段' }}</strong>
+              <span v-if="citation.book_title && citation.book_title !== citation.title" class="source-book">{{ citation.book_title }}</span>
+              <span v-if="citation.legacy?.physical?.length" class="source-page">PDF 物理页 {{ legacyPageRange(citation.legacy.physical) }}</span>
+              <span v-else-if="citation.page" class="source-page">{{ citationPageLabel(citation) }}</span>
+            </div>
             <button class="icon-btn" type="button" title="关闭引用" aria-label="关闭引用" @click="closeCitation">×</button>
           </header>
-          <p class="citation-meta">
-            {{ citation.scope === 'answer_excerpt' ? '本次检索保存的片段' : '来源正文' }}
-            <span v-if="citation.version"> · 版本 {{ citation.version.slice(0, 12) }}</span>
-            <span v-if="citation.page"> · PDF 第 {{ citation.page }} 页</span>
+          <p v-if="citation.status === 'ok'" class="citation-meta">
+            {{ citation.scope === 'retrieval_excerpt' ? '本次检索保存的片段' : citation.scope === 'answer_excerpt' ? '原回答保存的片段' : '当前资料正文' }}
+            <span v-if="citation.version"> · {{ citation.scope === 'answer_excerpt' || citation.scope === 'retrieval_excerpt' ? '片段指纹' : '资料版本' }} {{ citation.version.slice(0, 12) }}</span>
             <span v-if="citation.captured_at"> · {{ new Date(citation.captured_at).toLocaleString('zh-CN') }}</span>
           </p>
           <p v-if="citation.status === 'ok' && citation.message" class="citation-meta">{{ citation.message }}</p>
-          <p v-if="citation.status === 'ok' && citation.truncated" class="citation-meta">本来源不完整：以下是回答实际采用的完整段落节选，未提供全文。</p>
-          <div v-if="citation.status === 'ok'" class="citation-body">
-            <section v-for="note in citation.reviewed_notes || []" :key="note.id" class="citation-review">
-              <strong>审校补充 · 非教材原文</strong>
-              <p>{{ note.title }}：{{ note.content }}</p>
-              <p><a :href="reviewedReferenceUrl(note.url)" target="_blank" rel="noopener noreferrer">{{ note.reference }}</a>
-                · 核对 {{ note.reviewed_at }}</p>
+          <p v-if="citation.status === 'ok' && citation.truncated" class="citation-meta">{{ citation.scope === 'retrieval_excerpt' ? '以下为本次检索保留的节选，可继续阅读同版正文。' : '以下为回答实际采用的段落节选，可继续阅读资料正文。' }}</p>
+          <div v-if="citation.status === 'ok'" ref="citationBody" class="citation-body">
+            <section>
+              <strong>{{ citation.scope === 'retrieval_excerpt' ? '本机教材整理稿' : citation.scope === 'answer_excerpt' ? (citation.edition_version ? '回答引用的教材整理稿' : '回答引用的片段') : '当前资料' }}</strong>
+              <pre>{{ citation.content || '该来源未附正文片段。' }}</pre>
             </section>
-            <strong v-if="citation.reviewed_notes?.length">教材原文片段</strong>
-            <pre>{{ citation.content || '该来源未附正文片段。' }}</pre>
+            <section v-if="citation.reviewed_notes?.length" ref="citationReviews" class="citation-reviews" tabindex="-1">
+              <strong>审校补充 · 非教材原文</strong>
+              <article v-for="note in citation.reviewed_notes" :key="note.id" class="citation-review">
+                <strong>{{ note.title }}</strong>
+                <p>{{ note.content }}</p>
+                <p><a :href="reviewedReferenceUrl(note.url)" target="_blank" rel="noopener noreferrer">{{ note.reference }}</a>
+                  · 核对 {{ note.reviewed_at }}</p>
+              </article>
+            </section>
+            <p v-else-if="citation.requestsReview" class="citation-meta">这条来源未保存对应的审校补充。</p>
           </div>
           <p v-else-if="citation.status === 'loading'" class="citation-meta">正在校验引用…</p>
           <p v-else class="citation-error">{{ citation.message }}</p>
           <footer class="citation-foot">
-            <button v-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">{{ citation.legacy ? '查阅核对过的原页位置' : citation.document_version ? '阅读同版正文' : '阅读当前全文' }}</button>
+            <button v-if="citation.legacy?.status === 'archive-only'" class="draft-btn" type="button" @click="closeCitation(); go('/knowledge')">打开资料目录</button>
+            <button v-else-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">{{ citation.legacy ? '查阅核对过的原页位置' : citation.document_version ? '阅读同版正文' : '阅读当前全文' }}</button>
             <button class="draft-btn" type="button" @click="closeCitation">返回对话</button>
           </footer>
         </section>
       </div>
-      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.legacy?.document.id || citation?.document_id" :filename="citation?.filename"
-        :version="citation?.legacy?.document.version || citation?.document_version" :section-id="citation?.section_id"
-        :original-page="citation?.legacy?.physical[0]" :excerpt="citation?.legacy ? undefined : citation?.content" />
+      <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.legacy?.document?.id || citation?.document_id" :filename="citation?.filename"
+        :version="citation?.legacy?.document?.version || citation?.document_version"
+        :edition-version="citation?.legacy?.edition_version"
+        :section-id="citation?.legacy ? (citation.legacy.section_id ?? undefined) : citation?.section_id"
+        :original-page="citation?.legacy ? (citation.legacy.target_page ?? citation.legacy.physical?.[0]) : (citation?.edition_version ? citation.page : undefined)"
+        :require-page="citation?.legacy?.status === 'exact-page-locator'"
+        :excerpt="citation?.legacy ? undefined : citation?.content" />
       <div v-if="zoomVisible" class="zoom-mask" @click="zoomVisible = false">
         <img :src="zoomSrc" class="zoom-img" alt="预览" />
         <button class="zoom-close" type="button" title="关闭" @click="zoomVisible = false">×</button>
@@ -389,7 +437,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
-import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest, getCopilotSession } from '../api/ai'
+import { cancelCopilotRequest, copilotChatStream, getAICapabilities, getCopilotRequest, getCopilotSession, type CopilotReference } from '../api/ai'
 import { useAiCopilotStore, type CopilotAttachment, type CopilotMessage } from '../stores/aiCopilot'
 import { useLabContextStore } from '../stores/labContext'
 import { sessionFetch } from '../stores/browserSession'
@@ -794,16 +842,19 @@ async function recoverReply(message: CopilotMessage) {
     }
     const result = saved.response
     const incomplete = saved.state !== 'completed'
+    const retrievalOnly = result?.generation_status === 'retrieval_only'
     const answer = result?.answer || result?.error_message || '原请求未保存回答内容。'
     store.patchMessage(message.id, {
-      content: answer + (incomplete ? '\n\n> 原请求未完成，以上为已保存的内容。' : ''),
+      content: answer + (incomplete && !retrievalOnly ? '\n\n> 原请求未完成，以上为已保存的内容。' : ''),
       sources: result?.sources || [],
       knowledgeStatus: result?.knowledge_status,
+      generationStatus: result?.generation_status,
       draftCommands: incomplete ? [] : result?.draft_commands || [],
       draftTarget: incomplete ? null : serverDraftTarget(result?.draft_target),
       draftRefused: result?.draft_refused_reason || undefined,
       streaming: false,
       requestState: saved.state,
+      modelUnavailable: incomplete && message.modelUnavailable,
       cancelled: saved.state === 'cancelled',
       recovered: true,
     })
@@ -930,25 +981,57 @@ watch(() => store.conversations.map((conversation) => conversation.id), (ids) =>
 // 图片放大：面板内弹层，避免 window.open 被拦截/新窗口体验差
 const zoomSrc = ref('')
 const zoomVisible = ref(false)
-type ReviewedSourceNote = { id: string; title: string; content: string; reference: string; url: string; reviewed_at: string }
 function reviewedReferenceUrl(url: string): string | undefined {
   return /^https:\/\/www\.rfc-editor\.org\/rfc\/rfc\d+\.html#section-[\d.]+$/.test(url) ? url : undefined
 }
 const fullDocumentVisible = ref(false)
-const citation = ref<null | { title?: string; filename?: string; document_id?: string; document_version?: string; section_id?: string; page?: number; legacy?: { document: { id: string; version: string }; physical: number[] }; score?: number | null; content?: string; version?: string; captured_at?: string; scope?: string; truncated?: boolean; reviewed_notes?: ReviewedSourceNote[]; status?: 'loading' | 'ok' | 'revoked' | 'unverifiable'; message?: string }>(null)
+type OpenCitation = CopilotReference & {
+  index: number
+  requestsReview: boolean
+  document_id?: string
+  document_version?: string
+  section_id?: string
+  legacy?: {
+    status: 'exact-page-locator' | 'archive-only'
+    document?: { id: string; version: string; book_title?: string }
+    physical?: number[]
+    target_page?: number
+    edition_version?: string
+    section_id?: string | null
+  }
+  scope?: string
+  truncated?: boolean
+  status: 'loading' | 'ok' | 'revoked' | 'unverifiable'
+  message?: string
+}
+const citation = ref<OpenCitation | null>(null)
+
+function citationPageLabel(source: CopilotReference) {
+  return source.edition_version ? `PDF 物理页 ${source.page}` : `来源页 ${source.page}`
+}
+
+function legacyPageRange(pages: number[]) {
+  return [...new Set(pages)].join('–')
+}
+
+function referenceIndex(source: CopilotReference, position: number) {
+  return (source.reference_index ?? position + 1) - 1
+}
 
 function answerSources(message: CopilotMessage) {
   if (!message.sources?.length || message.streaming) return []
   const numbers = referencedSourceIndices(message.content)
   return message.sources.flatMap((source, position) => {
-    const index = (source.reference_index ?? position + 1) - 1
+    const index = referenceIndex(source, position)
     return numbers.has(index) ? [{ source, index }] : []
   })
 }
-function referenceCount(message: CopilotMessage) {
-  return Math.max(0, ...(message.sources || []).map((source, index) => source.reference_index ?? index + 1))
+function availableReferences(message: CopilotMessage) {
+  return new Set((message.sources || []).map(referenceIndex))
 }
 const citationPanel = ref<HTMLElement | null>(null)
+const citationBody = ref<HTMLElement | null>(null)
+const citationReviews = ref<HTMLElement | null>(null)
 let citationReturnFocus: HTMLElement | null = null
 watch(() => !!citation.value, async (opened) => {
   if (opened) {
@@ -979,11 +1062,18 @@ function onCitationKeydown(event: KeyboardEvent) {
   }
 }
 let citationSeq = 0
-async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, index: number) {
-  const s = msg.sources?.find((source, position) => (source.reference_index ?? position + 1) - 1 === index)
+const canClearBookSource = computed(() => {
+  if (store.loading || store.knowledgeSource) return false
+  const last = [...store.messages].reverse().find(message => message.role === 'assistant')
+  return Boolean(last?.sources?.some(source => source.edition_version && source.page))
+})
+async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, index: number, requestsReview = false) {
+  const s = msg.sources?.find((source, position) => referenceIndex(source, position) === index)
   if (!s) return
+  const conversation = store.activeId
   const seq = ++citationSeq
-  citation.value = { title: s.title, filename: s.filename, score: s.score, content: '', version: s.version, status: 'loading' }
+  citation.value = { index, requestsReview, title: s.title, filename: s.filename, version: s.version,
+    page: s.page, book_title: s.book_title, edition_version: s.edition_version, status: 'loading' }
   const filename = s.filename || s.title || ''
   if (!filename) {
     if (seq === citationSeq) citation.value = { ...citation.value, status: 'unverifiable', message: '该来源缺少文件名，无法校验。' }
@@ -999,6 +1089,8 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
     if (seq !== citationSeq) return  // 晚到的 A 不能污染 B
     if (resp.status === 410) {
       citation.value = { ...citation.value, status: 'revoked', content: '', message: '该引用已失效或已撤权，不再展示旧片段。' }
+    } else if (resp.status === 404) {
+      citation.value = { ...citation.value, status: 'unverifiable', message: '无法读取原回答保存的这条引用。原有的引用编号已保留。' }
     } else if (!resp.ok) {
       citation.value = { ...citation.value, status: 'unverifiable', content: '', message: '暂时无法校验引用，未展示原文。' }
     } else {
@@ -1009,9 +1101,22 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
         document_version: doc.document_version,
         section_id: doc.section_id,
         page: doc.page,
+        book_title: doc.legacy_locator?.document?.book_title || doc.book_title || citation.value.book_title,
+        edition_version: doc.edition_version || citation.value.edition_version,
         legacy: doc.legacy_locator,
         title: doc.title || citation.value.title, scope: doc.scope, captured_at: doc.captured_at, truncated: doc.truncated,
         reviewed_notes: doc.reviewed_notes, message: doc.message }
+      if (store.activeId === conversation && msg.requestId && s.source_id && s.edition_version && s.page
+          && doc.scope === 'answer_excerpt' && doc.available_now === true && doc.legacy_locator?.status !== 'archive-only') {
+        store.selectKnowledgeSource({ mode: 'selected', request_id: msg.requestId, source_id: s.source_id }, `教材 PDF 第 ${s.page} 页`)
+      }
+      if (requestsReview) {
+        await nextTick()
+        if (seq === citationSeq && citationBody.value && citationReviews.value) {
+          citationBody.value.scrollTop = citationReviews.value.offsetTop
+          citationReviews.value.focus({ preventScroll: true })
+        }
+      }
     }
   } catch {
     if (seq !== citationSeq) return
@@ -1038,10 +1143,17 @@ async function send(preset?: string, forceDraft = false) {
     page_name: store.pageName || pageMeta.value.title,
     selection: store.selectionText,
     notes: store.notes,
+    config_comparison: route.path === '/config-versions' ? store.configComparison ?? undefined : undefined,
+    page_record: store.pageRecord?.reference,
+    knowledge_source: store.knowledgeSource?.reference,
   }
   const snapshotContext = JSON.parse(JSON.stringify(pageCtx()))
   const evidenceId = store.evidenceId
-  const sentContext = [context.page_name, store.selection?.label, snapshotContext.labTitle].filter(Boolean).join(' · ')
+  const comparison = context.config_comparison
+  const comparisonLabel = comparison?.kind === 'saved'
+    ? `A #${comparison.version_id_a} → B #${comparison.version_id_b}`
+    : comparison?.kind === 'local' ? '本地文件比对' : ''
+  const sentContext = [context.page_name, store.pageRecord?.label || store.selection?.label, snapshotContext.labTitle, comparisonLabel].filter(Boolean).join(' · ')
   const requestedDraft = forceDraft || (!preset && wantDraft.value)
   const deviceModel = resolveWorkbenchDeviceModel(store.selection?.model || snapshotContext.device?.model)
   const labId = snapshotContext.labId
@@ -1094,10 +1206,12 @@ async function send(preset?: string, forceDraft = false) {
   store.patchMessage(assistantId, { requestId: request.requestId, requestState: 'pending' })
   let receivedDone = false
   let failureMarked = false
-  function markFailed(hint: string) {
+  let retrievalOnly = false
+  function markFailed(hint: string, modelUnavailable = false) {
     if (!isCurrentRequest(request) || failureMarked) return
     failureMarked = true
-    store.patchMessage(assistantId, { requestState: 'interrupted' })
+    store.patchMessage(assistantId, { requestState: 'interrupted', modelUnavailable })
+    if (retrievalOnly) return
     const msg = store.messages.find((m) => m.id === assistantId)
     store.appendContent(assistantId, msg?.content ? `\n\n> ${hint}（回答未完成）` : hint)
   }
@@ -1142,16 +1256,24 @@ async function send(preset?: string, forceDraft = false) {
         if (eventId && eventId !== request.requestId) return
         if (failureMarked && event.type !== 'done' && event.type !== 'references') return
         if (event.type === 'meta') {
+          retrievalOnly ||= event.generation_status === 'retrieval_only'
           store.patchMessage(assistantId, {
             knowledgeStatus: event.knowledge_status || (['empty', 'degraded'].includes(event.status || '') ? event.status : undefined),
+            generationStatus: event.generation_status,
             draftRefused: event.draft_refused_reason || undefined,
             draftTarget: serverDraftTarget(event.draft_target),
             recovered: event.replayed === true,
           })
         } else if (event.type === 'references') {
-          store.patchMessage(assistantId, { sources: event.sources || [] })
+          retrievalOnly ||= event.generation_status === 'retrieval_only'
+          store.patchMessage(assistantId, { sources: event.sources || [], generationStatus: event.generation_status })
         } else if (event.type === 'policy') {
-          store.patchMessage(assistantId, { draftRefused: event.draft_refused_reason || '当前环境未核验，不生成可执行草稿' })
+          if (event.retrieval_only) {
+            retrievalOnly = true
+            store.patchMessage(assistantId, { generationStatus: 'retrieval_only' })
+          } else {
+            store.patchMessage(assistantId, { draftRefused: event.draft_refused_reason || '当前环境未核验，不生成可执行草稿' })
+          }
           if (typeof event.replace_answer === 'string') {
             store.patchMessage(assistantId, { content: event.replace_answer, draftCommands: [], draftTarget: null })
           }
@@ -1177,15 +1299,13 @@ async function send(preset?: string, forceDraft = false) {
           })
         } else if (event.type === 'done') {
           receivedDone = true
+          store.consumeKnowledgeSource(context.knowledge_source)
           if (event.cancelled) {
             request.cancelled = true
           } else if (event.status === 'failed' || event.status === 'unavailable' || event.status === 'interrupted') {
             // AF2-04：模型依赖失败要说清“未调用模型”，不能冒充环境策略拒绝。
-            markFailed(
-              event.reason === 'provider_unavailable'
-                ? '模型服务不可用，本次未调用模型；请稍后重试或联系管理员检查模型配置。'
-                : '生成失败，请稍后重试。'
-            )
+            const modelUnavailable = event.reason === 'provider_unavailable'
+            markFailed(modelUnavailable ? '模型服务暂不可用，回答未完成。' : '生成失败，请稍后重试。', modelUnavailable)
           }
           store.patchMessage(assistantId, { requestState: request.cancelled ? 'cancelled'
             : event.status === 'interrupted' ? 'interrupted'
@@ -1195,7 +1315,9 @@ async function send(preset?: string, forceDraft = false) {
           request.cancelled = true
           receivedDone = true
         } else if (event.type === 'error') {
-          markFailed(event.message || '生成失败，请稍后重试。')
+          retrievalOnly ||= event.generation_status === 'retrieval_only'
+          const modelUnavailable = event.code === 'provider_unavailable'
+          markFailed(modelUnavailable ? '模型服务暂不可用，回答未完成。' : event.message || '生成失败，请稍后重试。', modelUnavailable)
         }
       },
       request.controller.signal
@@ -1214,11 +1336,13 @@ async function send(preset?: string, forceDraft = false) {
   } catch (err: any) {
     if (!isCurrentRequest(request) || request.controller.signal.aborted || request.cancelled) return
     const raw = String(err?.message || '')
-    const hint = err?.code === 'attachment_unavailable' ? raw
+    const modelUnavailable = err?.code === 'provider_unavailable'
+    const hint = modelUnavailable ? '模型服务暂不可用，回答未完成。'
+      : err?.code === 'attachment_unavailable' ? raw
       : raw.includes('知识库') || raw.includes('AnythingLLM') || raw.includes('3001')
       ? '知识检索暂不可用，请到知识库页查看当前服务状态后重试。'
       : request.requestId ? '连接中断或请求失败，请先查询原回答。' : '请求失败，请稍后重试。'
-    markFailed(hint)
+    markFailed(hint, modelUnavailable)
   } finally {
     // 即使会话在流中被切换，也要清掉 loading，否则面板会卡在“不可输入、无可停止”状态。
     if (activeRequest === request) {
@@ -1247,7 +1371,7 @@ async function onBubbleClick(e: MouseEvent, message: CopilotMessage) {
   const source = target?.closest('[data-source-index]') as HTMLElement | null
   if (source) {
     e.preventDefault()
-    await openCitation(message, Number(source.dataset.sourceIndex))
+    await openCitation(message, Number(source.dataset.sourceIndex), source.dataset.sourceReview === 'true')
     return
   }
   const btn = target?.closest('.code-copy') as HTMLElement | null
@@ -2082,15 +2206,23 @@ function onExternalPrefill(e: Event) {
 .citation-panel { min-width: 0; margin: 16px; flex: 1; background: #fff; color: #1f2933; border-radius: 10px; display: flex; flex-direction: column; min-height: 0; box-shadow: 0 12px 32px rgba(0,0,0,.35); }
 .citation-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #e2e8ef; font-size: 13px; }
 .citation-meta { margin: 8px 12px 0; color: var(--v7b-muted); font-size: 11.5px; }
-.citation-body { flex: 1; overflow: auto; margin: 8px 12px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8ef; border-radius: 6px; font-family: inherit; font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.citation-heading { min-width: 0; display: grid; gap: 3px; }
+.citation-body { position: relative; flex: 1; overflow: auto; margin: 8px 12px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8ef; border-radius: 6px; font-family: inherit; font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 .citation-body pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
-.citation-review { margin-bottom: 12px; padding: 10px; border: 1px solid #c6d8ef; border-radius: 6px; background: #edf4fd; color: #233b58; white-space: normal; }
+.citation-reviews { margin-top: 14px; }
+.citation-review { margin-top: 6px; padding: 10px; border: 1px solid #c6d8ef; border-radius: 6px; background: #edf4fd; color: #233b58; white-space: normal; }
 .citation-review p { margin: 6px 0 0; }
 .citation-review a { color: #245f9e; text-decoration: underline; }
-.citation-foot { padding: 8px 12px 12px; display: flex; justify-content: flex-end; }
+.citation-foot { padding: 8px 12px 12px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .citation-error { margin: 12px; padding: 10px; background: #fff4f4; border: 1px solid #f0c2c2; color: #8a2c2c; border-radius: 6px; font-size: 12px; }
-.source-link { display: block; overflow-wrap: anywhere; margin-top: 4px; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; text-decoration: underline; text-decoration-color: rgba(197,212,224,.5); }
-.source-link:hover { color: var(--v7b-accent); }
+summary.sources-title { width: fit-content; cursor: pointer; }
+.source-link { display: grid; gap: 2px; width: 100%; overflow-wrap: anywhere; margin-top: 5px; background: var(--v7b-surface); border: 1px solid var(--v7b-line); border-radius: 6px; padding: 6px 8px; text-align: left; cursor: pointer; }
+.source-link strong { color: var(--v7b-accent); }
+.source-link:hover { border-color: var(--v7b-accent); }
+.source-book { color: var(--v7b-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.source-page { color: var(--v7b-accent); font-size: 12px; font-weight: 650; }
+.source-review { color: var(--v7b-muted); }
+.offline-help { margin-top: 6px; color: var(--v7b-muted); font-size: 12px; }
 
 .copilot :focus-visible { outline: 2px solid var(--v7b-accent); outline-offset: 2px; }
 .md-body :deep(.citation-inline) { color: var(--v7b-accent); background: var(--v7b-accent-soft); border: 0; border-radius: 4px; padding: 1px 4px; cursor: pointer; font: inherit; }

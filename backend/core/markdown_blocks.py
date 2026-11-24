@@ -8,7 +8,17 @@ from collections.abc import Iterator
 
 HEADING = re.compile(r"^(#{1,6})\s+\S")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_CAPTION_FENCE = re.compile(r"^ {0,3}\*\*[^*\r\n]+\*\*[ \t]*(`{3,})(?:cli|text)[ \t]*$")
 TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*\|[\s|:\-]*$")
+
+
+def opening_fence(line: str):
+    """Recognize a normal fence or an imported CLI block attached to its bold caption."""
+    return FENCE.match(line) or _CAPTION_FENCE.match(line.rstrip('\r\n'))
+
+
+def fence_end(marker: str):
+    return re.compile(r'^ {0,3}' + re.escape(marker[0]) + '{' + str(len(marker)) + r',}\s*$')
 
 
 def blocks(text: str) -> Iterator[tuple[str, int, int]]:
@@ -28,17 +38,22 @@ def blocks(text: str) -> Iterator[tuple[str, int, int]]:
         if not line.strip():
             i += 1
             continue
-        fence = FENCE.match(line)
+        fence = opening_fence(line)
         if fence:
-            marker = fence[1]
-            closing = re.compile(r'^ {0,3}' + re.escape(marker[0]) + '{' + str(len(marker)) + r',}\s*$')
+            start_offset = offsets[start] + fence.start(1)
+            if not FENCE.match(line):
+                yield 'paragraph', offsets[start], start_offset
+            else:
+                start_offset = offsets[start]
+            closing = fence_end(fence[1])
             i += 1
             while i < len(lines):
                 end = bool(closing.match(lines[i]))
                 i += 1
                 if end:
                     break
-            kind = 'fence'
+            yield 'fence', start_offset, offsets[i]
+            continue
         elif HEADING.match(line):
             i += 1
             kind = 'heading'
@@ -49,7 +64,7 @@ def blocks(text: str) -> Iterator[tuple[str, int, int]]:
             kind = 'table'
         else:
             i += 1
-            while i < len(lines) and lines[i].strip() and not HEADING.match(lines[i]) and not FENCE.match(lines[i]) and not is_table(i):
+            while i < len(lines) and lines[i].strip() and not HEADING.match(lines[i]) and not opening_fence(lines[i]) and not is_table(i):
                 i += 1
             kind = 'paragraph'
         yield kind, offsets[start], offsets[i]
@@ -62,8 +77,7 @@ def unclosed_fence_start(text: str) -> int | None:
             continue
         lines = text[start:end].splitlines()
         marker = FENCE.match(lines[0])[1]
-        closing = r" {0,3}" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}\s*"
-        if len(lines) == 1 or not re.fullmatch(closing, lines[-1]):
+        if len(lines) == 1 or not fence_end(marker).fullmatch(lines[-1]):
             return start
     return None
 

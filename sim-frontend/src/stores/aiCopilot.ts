@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { accountStorageKey } from './browserSession'
-import type { CopilotReference } from '../api/ai'
+import type { CopilotConfigComparison, CopilotKnowledgeSource, CopilotPageRecord, CopilotReference } from '../api/ai'
 
 export type CopilotRole = 'user' | 'assistant' | 'system'
 
@@ -22,6 +22,8 @@ export interface CopilotMessage {
   reasoningOpen?: boolean
   sources?: CopilotReference[]
   knowledgeStatus?: string
+  generationStatus?: string
+  modelUnavailable?: boolean
   draftCommands?: string[]
   draftTarget?: { deviceId: number; label: string; alarmId?: number | string; verifiedByServer?: boolean } | null
   draftRefused?: string
@@ -58,6 +60,7 @@ export interface CopilotConversation {
   selectionPinned?: boolean
   selection?: CopilotSelection | null
   evidenceId?: number | null
+  knowledgeSource?: { reference: CopilotKnowledgeSource; label?: string }
 }
 
 const MAX_SESSIONS = 40
@@ -228,8 +231,11 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   const routePath = ref('')
   const pageName = ref('')
   const activeConversation = computed(() => conversations.value.find((c) => c.id === activeId.value))
+  const knowledgeSource = computed(() => activeConversation.value?.knowledgeSource)
   const pageSelection = ref<CopilotSelection | null>(null)
   const pageEvidenceId = ref<number | null>(null)
+  const configComparison = ref<CopilotConfigComparison | null>(null)
+  const pageRecord = ref<{ reference: CopilotPageRecord; label: string } | null>(null)
   const selectionPinned = computed(() => Boolean(activeConversation.value?.selectionPinned && activeConversation.value.selection))
   const selection = computed(() => selectionPinned.value ? activeConversation.value?.selection ?? null : pageSelection.value)
   const evidenceId = computed(() => selectionPinned.value ? activeConversation.value?.evidenceId ?? null : pageEvidenceId.value)
@@ -239,6 +245,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
 
   const contextLabel = computed(() => {
     const page = pageName.value || routePath.value || '工作台'
+    if (pageRecord.value) return `${page} · ${pageRecord.value.label}`
     if (selection.value?.label) return `${page} · ${selection.value.label}`
     return page
   })
@@ -517,6 +524,8 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     activeId.value = null
     messages.value = []
     setSelection(null)
+    setConfigComparison(null)
+    clearPageRecord()
     notes.value = ''
     historyOpen.value = false
     localStorage.removeItem(STORAGE_KEY)
@@ -552,6 +561,8 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     if (routePath.value !== path) {
       notes.value = ''
       setSelection(null)
+      setConfigComparison(null)
+      pageRecord.value = null
     }
     routePath.value = path
     pageName.value = name
@@ -559,6 +570,35 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
 
   function setEvidenceId(v: number | null) {
     pageEvidenceId.value = v
+  }
+
+  function setConfigComparison(comparison: CopilotConfigComparison | null) {
+    configComparison.value = comparison
+  }
+
+  function setPageRecord(reference: CopilotPageRecord, label: string) {
+    const recordRoute = { monitor_ports: '/monitor', approval_task: '/approvals', alarm_record: '/alarms', original_page: '/knowledge' }
+    const changeLogTask = routePath.value === '/config-versions' && reference.kind === 'approval_task'
+    if (routePath.value !== recordRoute[reference.kind] && !changeLogTask) return
+    pageRecord.value = { reference, label }
+  }
+
+  function clearPageRecord(kind?: CopilotPageRecord['kind']) {
+    if (!kind || pageRecord.value?.reference.kind === kind) pageRecord.value = null
+  }
+
+  function selectKnowledgeSource(reference: CopilotKnowledgeSource, label?: string) {
+    const conversation = activeConversation.value
+    if (!conversation) return
+    conversation.knowledgeSource = { reference, label }
+    persist()
+  }
+
+  function consumeKnowledgeSource(reference: CopilotKnowledgeSource | undefined) {
+    const conversation = activeConversation.value
+    if (!reference || !conversation || conversation.knowledgeSource?.reference !== reference) return
+    delete conversation.knowledgeSource
+    persist()
   }
 
   function setSelection(sel: CopilotSelection | null) {
@@ -584,6 +624,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
   function clearSelection() {
     setSelectionPinned(false)
     setSelection(null)
+    clearPageRecord()
   }
 
   function linkLab(sessionId: number | null) {
@@ -683,6 +724,7 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
       reasoningOpen: msg.reasoningOpen ?? true,
       sources: msg.sources,
       knowledgeStatus: msg.knowledgeStatus,
+      generationStatus: msg.generationStatus,
       draftCommands: msg.draftCommands,
       draftTarget: msg.draftTarget,
       attachments: msg.attachments,
@@ -766,6 +808,14 @@ export const useAiCopilotStore = defineStore('aiCopilot', () => {
     setWidth,
     setPageContext,
     setSelection,
+    configComparison,
+    setConfigComparison,
+    pageRecord,
+    setPageRecord,
+    clearPageRecord,
+    knowledgeSource,
+    selectKnowledgeSource,
+    consumeKnowledgeSource,
     setNotes,
     linkLab,
     ensureActiveConversation,

@@ -56,7 +56,7 @@
               <label>快照 B<el-select v-model="compareVersion2" aria-label="快照 B" placeholder="选择快照 B" clearable><el-option v-for="v in versions" :key="v.id" :label="snapshotLabel(v)" :value="v.id" /></el-select></label>
             </div>
             <el-button type="primary" :loading="comparing" :disabled="!compareVersion1 || !compareVersion2 || compareVersion1 === compareVersion2" @click="compareSnapshots">比对快照</el-button>
-            <el-button :disabled="!diffResult" @click="exportDiff">导出差异</el-button>
+            <el-button :disabled="activeComparison !== 'saved' || !diffResult" @click="exportDiff">导出差异</el-button>
             <el-button
               type="warning"
               :disabled="!compareVersion1 || !compareVersion2 || compareVersion1 === compareVersion2"
@@ -67,7 +67,7 @@
           <el-alert v-if="compareError" :title="compareError" type="warning" :closable="false" show-icon />
           <el-alert v-if="explanationError" :title="explanationError" type="warning" :closable="false" show-icon />
           <el-card v-if="diffExplanation" shadow="never" class="ai-diff-card">
-            <template #header>AI 差异说明（已脱敏，仅供参考）</template>
+            <template #header>已保存快照的 AI 差异说明（已脱敏）</template>
             <p class="summary-line">{{ diffExplanation.summary }}</p>
             <p v-if="diffExplanation.explanation" class="summary-line">{{ diffExplanation.explanation }}</p>
             <p v-if="diffExplanation.text_excerpt_truncated" class="summary-line">AI 仅解释了截断片段；完整文本请在下方 A/B 视图核对。</p>
@@ -92,8 +92,8 @@
           </el-card>
           </details>
           <p v-if="comparisonOrder" class="selection-tip">{{ comparisonOrder }}</p>
-          <ConfigTextDiff v-if="diffResult?.version1 && diffResult?.version2" :left="diffResult.version1.config_snapshot || ''" :right="diffResult.version2.config_snapshot || ''" :left-label="comparisonLabel(diffResult.version1)" :right-label="comparisonLabel(diffResult.version2)" :different-devices="diffResult.same_device === false" :legacy="diffResult.diff" />
-          <ConfigTextDiff v-if="localDiff" :left="localDiff.left" :right="localDiff.right" :left-label="localDiff.leftName" :right-label="localDiff.rightName" />
+          <ConfigTextDiff v-if="activeComparison === 'saved' && diffResult" :left="diffResult.version1.config_snapshot || ''" :right="diffResult.version2.config_snapshot || ''" :left-label="comparisonLabel(diffResult.version1)" :right-label="comparisonLabel(diffResult.version2)" :different-devices="diffResult.same_device === false" :legacy="diffResult.diff" />
+          <ConfigTextDiff v-else-if="activeComparison === 'local' && localDiff" :left="localDiff.left" :right="localDiff.right" :left-label="localDiff.leftName" :right-label="localDiff.rightName" />
         </el-tab-pane>
 
         <el-tab-pane label="配置变更日志" name="logs">
@@ -119,7 +119,7 @@
       <pre class="snapshot-content">{{ currentVersion?.config_snapshot }}</pre>
     </el-dialog>
 
-    <el-dialog v-model="changeDialogVisible" class="v7b-record-dialog" top="4vh" title="配置变更详情" width="min(960px, 94vw)" draggable @close="changeEpoch++">
+    <el-dialog v-model="changeDialogVisible" class="v7b-record-dialog" top="4vh" title="配置变更详情" width="min(960px, 94vw)" draggable @close="cancelChangeLoad">
       <el-skeleton :loading="changeLoading" animated>
         <template #default>
           <el-descriptions :column="2" border>
@@ -155,12 +155,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { getDevices, type DeviceRecord } from '../../api/device'
-import { captureConfigVersions, compareVersions, createRollbackTask, getConfigVersions, getDeployChangeLogs, getDeployTask, type ConfigVersionRecord } from '../../api/deploy'
+import { captureConfigVersions, compareVersions, createRollbackTask, getConfigVersions, getDeployChangeLogs, getDeployTask, type ConfigVersionCompareResult, type ConfigVersionRecord } from '../../api/deploy'
 import { diffExplanation as diffExplanationApi } from '../../api/ai'
 import { notifyRequestError } from '../../utils/requestError'
 import ConfigTextDiff from '../../components/ConfigTextDiff.vue'
@@ -170,9 +170,11 @@ import { formatApiTime, parseApiTime } from '../../utils/datetime'
 import { deployTaskStatusLabel, configSourceLabel, auditActionLabel, auditResultLabel, executionModeLabel } from '../../utils/display'
 import { buildConfigDiff } from '../../utils/configTextDiff'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
+import { useAiCopilotStore } from '../../stores/aiCopilot'
 
 const route = useRoute()
 const router = useRouter()
+const copilot = useAiCopilotStore()
 const fromDraft = computed(() => route.query.from === 'draft')
 const fromApproval = computed(() => route.query.from === 'approval' && Number(route.query.task_id) > 0)
 function returnToChange() {
@@ -210,12 +212,14 @@ const viewDialogVisible = ref(false)
 const currentVersion = ref<ConfigVersionRecord | null>(null)
 const compareVersion1 = ref<number | null>(null)
 const compareVersion2 = ref<number | null>(null)
-const diffResult = ref<any>(null)
+const diffResult = ref<ConfigVersionCompareResult | null>(null)
+const activeComparison = ref<'saved' | 'local' | null>(null)
 const diffExplanation = ref<any>(null)
 const compareError=ref(''),explanationError=ref('')
 const explaining = ref(false)
 const comparing = ref(false)
 let compareEpoch = 0, explanationEpoch = 0, changeEpoch = 0
+const cancelChangeLoad = () => { changeEpoch++; changeLoading.value = false }
 const localLeft = ref('')
 const localRight = ref('')
 const localLeftName = ref(''), localRightName = ref('')
@@ -244,6 +248,7 @@ function clearTargetDevice() {
 const comparisonLabel = (v: ConfigVersionRecord) =>
   `${deviceName(v.device_id)} · V${v.version_number} · ${configSourceLabel(v.source)} · ${formatApiTime(v.created_at)}`
 const comparisonOrder = computed(() => {
+  if (activeComparison.value !== 'saved') return ''
   const result = diffResult.value
   if (!result?.version1 || !result.version2) return ''
   if (result.same_device === false) return 'A、B 来自不同设备，当前显示两份文本差异。'
@@ -258,10 +263,18 @@ const loadVersions = async () => { await versionRequest.run(() => getConfigVersi
 const loadLogs = async () => { await logRequest.run(() => getDeployChangeLogs(logTaskId.value ? { task_id: Number(logTaskId.value) } : undefined), value => { logs.value = value as any[] }) }
 const openChangeDetail = async (log: any) => {
   const epoch = ++changeEpoch
+  copilot.clearPageRecord('approval_task')
   changeDialogVisible.value = true; changeLoading.value = true; changeLog.value = log; changeTask.value = null
   try {
-    const task = await getDeployTask(Number(log.task_id)); if(epoch !== changeEpoch)return; changeTask.value = task
-  } catch (error) { if(epoch===changeEpoch)notifyRequestError(error, '加载配置变更详情失败') } finally { if(epoch===changeEpoch)changeLoading.value = false }
+    const task = await getDeployTask(Number(log.task_id))
+    if (epoch !== changeEpoch || !changeDialogVisible.value) return
+    changeTask.value = task
+    copilot.setPageRecord({kind:'approval_task', task_id:task.id}, `任务 #${task.id} · ${deviceName(task.device_id)}`)
+  } catch (error) {
+    if (epoch === changeEpoch) notifyRequestError(error, '加载配置变更详情失败')
+  } finally {
+    if (epoch === changeEpoch) changeLoading.value = false
+  }
 }
 const openDeviceSelector = async () => { pendingDeviceIds.value = [...selectedDeviceIds.value]; deviceDialogVisible.value = true; await nextTick(); devices.value.forEach(device => deviceTableRef.value?.toggleRowSelection(device, pendingDeviceIds.value.includes(device.id))) }
 const updatePendingDevices = (selected: any[]) => { pendingDeviceIds.value = selected.map(device => device.id) }
@@ -300,8 +313,15 @@ const openCompare = (version: ConfigVersionRecord) => { activeTab.value = 'compa
 const compareSnapshots = async () => {
   if (!compareVersion1.value || !compareVersion2.value) return ElMessage.warning('请选择两个快照')
   const a=compareVersion1.value,b=compareVersion2.value,epoch=++compareEpoch
+  activeComparison.value = null
   comparing.value=true;diffResult.value=null;diffExplanation.value=null;compareError.value='';explanationError.value=''
-  try { const result=await compareVersions(a,b); if(epoch===compareEpoch)diffResult.value=result }
+  try {
+    const result = await compareVersions(a, b)
+    if (epoch === compareEpoch) {
+      diffResult.value = result
+      activeComparison.value = 'saved'
+    }
+  }
   catch(error){if(epoch===compareEpoch){compareError.value='配置快照比对失败，请保留当前选择并重试。';notifyRequestError(error,'配置快照比对失败')}}
   finally{if(epoch===compareEpoch)comparing.value=false}
 }
@@ -326,13 +346,47 @@ const readLocalFile = async (event: Event, side: 'left' | 'right') => {
   const file=(event.target as HTMLInputElement).files?.[0];if(!file)return
   const token=side==='left'?++leftFileEpoch:++rightFileEpoch
   localDiff.value=null
+  if (activeComparison.value === 'local') activeComparison.value = null
   if(side==='left'){localLeft.value='';localLeftName.value=''}else{localRight.value='';localRightName.value=''}
   if(file.size>2*1024*1024)return ElMessage.warning('本地文件超过2MB，请先选取需要核对的配置片段')
   try{const text=await file.text();if(token!==(side==='left'?leftFileEpoch:rightFileEpoch))return;if(side==='left'){localLeft.value=text;localLeftName.value=file.name}else{localRight.value=text;localRightName.value=file.name}}
   catch(error){notifyRequestError(error,'本地文件读取失败')}
 }
-const compareLocalFiles = () => { localDiff.value={left:localLeft.value,right:localRight.value,leftName:localLeftName.value,rightName:localRightName.value} }
-watch([compareVersion1,compareVersion2],()=>{compareEpoch++;explanationEpoch++;diffResult.value=null;diffExplanation.value=null;compareError.value='';explanationError.value='';comparing.value=false;explaining.value=false},{flush:'sync'})
+const compareLocalFiles = () => {
+  compareEpoch++
+  explanationEpoch++
+  comparing.value = false
+  explaining.value = false
+  diffExplanation.value = null
+  explanationError.value = ''
+  localDiff.value = {left:localLeft.value,right:localRight.value,leftName:localLeftName.value,rightName:localRightName.value}
+  activeComparison.value = 'local'
+}
+watch([compareVersion1, compareVersion2], () => {
+  compareEpoch++
+  explanationEpoch++
+  diffResult.value = null
+  diffExplanation.value = null
+  compareError.value = ''
+  explanationError.value = ''
+  comparing.value = false
+  explaining.value = false
+  if (activeComparison.value === 'saved') activeComparison.value = null
+}, { flush: 'sync' })
+watch([activeTab, activeComparison, diffResult], ([tab, kind, result]) => {
+  if (tab !== 'compare') copilot.setConfigComparison(null)
+  else if (kind === 'saved' && result) copilot.setConfigComparison({ kind, version_id_a: result.version1.id, version_id_b: result.version2.id })
+  else copilot.setConfigComparison(kind === 'local' ? { kind } : null)
+}, { flush: 'sync' })
+watch([activeTab, logTaskId], () => {
+  cancelChangeLoad()
+  copilot.clearPageRecord('approval_task')
+}, { flush: 'sync' })
+onUnmounted(() => {
+  changeEpoch++
+  copilot.setConfigComparison(null)
+  if (copilot.routePath === '/config-versions') copilot.clearPageRecord('approval_task')
+})
 const handleTabChange = (tab: string | number) => { if (tab === 'logs') loadLogs() }
 watch(() => route.query.tab, (tab) => {
   if (tab) activeTab.value = String(tab)

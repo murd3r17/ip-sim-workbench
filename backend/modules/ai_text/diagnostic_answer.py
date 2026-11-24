@@ -7,7 +7,8 @@ in the request trace and planning messages.
 import json
 
 from .context_limits import bounded_text
-from .trusted_context import ResolvedTaskTargets
+from .evidence_context import stored_observation_summary
+from .trusted_context import ResolvedTaskTargets, TrustedPageData, validation_note
 
 
 ANSWER_SYSTEM = """你是帮助网络维护初学者理解本次排查结果的工作台助手。工具执行已结束；现在只回答用户问题。
@@ -40,7 +41,7 @@ _STOPS = {'planner_failed': '工具规划失败，未完成的检查没有结果
 
 def build_answer_context(question: str, outcomes: list[dict], *, targets=None,
                          stop_reason='', unexecuted=0, page_data='', history=None, page_validation=None,
-                         server_history=None) -> str:
+                         server_history=None, read_scope_note=None) -> str:
     names = {}
     identity = ''
     if isinstance(targets, ResolvedTaskTargets):
@@ -71,19 +72,21 @@ def build_answer_context(question: str, outcomes: list[dict], *, targets=None,
     prompt = ('用户问题：' + bounded_text(question, 8000) + identity
               + '\n\n本次已经取得的观察（只说明实际取得的范围）：\n'
               + json.dumps(records, ensure_ascii=False))
+    if read_scope_note:
+        prompt += '\n\n' + read_scope_note
     if stop_reason in _STOPS or unexecuted:
         prompt += '\n执行边界（不是设备事实）：' + _STOPS.get(stop_reason, '')
         if unexecuted:
             prompt += f'另有 {unexecuted} 个工具请求没有执行。'
     if page_data:
-        from .trusted_context import TrustedPageData
         stored = isinstance(page_validation, TrustedPageData) and page_validation.meta.get('record_origin') == 'server_observation_record'
         label = ('当前身份可见的服务端原观察记录（保留原设备、原时点和原环境版本；当前核验未通过，仅供历史解释，不是本次新采集或当前目标事实）'
                  if stored else '客户端页面线索（未核验，不能升级为观察）')
         prompt += '\n\n' + label + '：\n' + bounded_text(page_data, 2000)
-    from .trusted_context import validation_note
-    note = validation_note(page_validation)
-    if note:
+    observation = stored_observation_summary(page_validation)
+    if observation:
+        prompt += observation
+    elif note := validation_note(page_validation):
         prompt += '\n\n' + note
     from .owned_history import history_context
     owned = history_context(server_history)

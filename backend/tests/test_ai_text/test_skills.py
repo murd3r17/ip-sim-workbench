@@ -34,6 +34,78 @@ def test_separate_theory_lookup_does_not_enable_device_reads():
     assert not choice.tools and choice.needs_knowledge
 
 
+def test_textbook_only_does_not_override_mixed_provided_sources_or_permission_to_supplement():
+    from modules.ai_text.skills import request_evidence_scope
+
+    assert request_evidence_scope('仅依据当地教材解释路由。只使用教材。').textbook_only
+    assert request_evidence_scope('只接受本地教材，找不到就说明。').textbook_only
+    mixed = '现场只根据工单样例。机制只使用教材解释。'
+    assert not request_evidence_scope(mixed).textbook_only
+    assert select_skill(mixed).needs_knowledge and not select_skill(mixed).tools
+    assert not request_evidence_scope('请分别说明工单和教材，协议机制只用教材解释。').textbook_only
+    assert not request_evidence_scope('只用教材，但资料不足时可补充常识。').textbook_only
+    assert not request_evidence_scope('不要只使用教材，也查参考资料。').textbook_only
+
+
+def test_explicit_theory_lookup_is_not_mistaken_for_device_query():
+    choice = select_skill('请查询本地教材解释 VRRP 抢占延时，设备不需要读取。')
+    assert choice.id == 'knowledge_answer' and choice.needs_knowledge and not choice.tools
+    no_textbook = select_skill('不要查询本地教材，VRRP 机制是什么？')
+    assert no_textbook.id == 'knowledge_answer' and not no_textbook.needs_knowledge and not no_textbook.tools
+    mixed = select_skill('请读取 R2 的接口状态，并查教材解释 VRRP 抢占延时。')
+    assert mixed.id == 'live_evidence' and mixed.needs_knowledge and 'run_display_command' in mixed.tools
+
+
+def test_sample_scope_only_follows_user_references_to_that_sample():
+    from modules.ai_text.skills import request_evidence_scope
+
+    sample = '只使用下面给定的工单样例：S2 PriorityRun 120→90。'
+    history = [{'role': 'user', 'content': sample},
+               {'role': 'assistant', 'content': 'R1 当前物理状态已经核验通过。'}]
+    followup = request_evidence_scope('刚才的工单能证明 R1 业务恢复吗？', history)
+    assert followup.provided_only and not followup.allow_device_reads and followup.previous_material == sample
+    independent = request_evidence_scope('请检查设备 R1 的当前接口状态。', history)
+    assert independent.allow_device_reads and not independent.previous_material
+    fresh = request_evidence_scope('只分析下面的工单：R5 的接口抖动。', history)
+    assert fresh.provided_only and not fresh.previous_material
+    assert not request_evidence_scope('刚才的工单能证明什么？', history[1:]).previous_material
+
+
+def test_saved_read_only_scope_survives_an_object_followup_but_yields_to_new_read_intent():
+    from modules.ai_text.skills import request_evidence_scope
+
+    history = [{'role': 'user', 'content': '用已有观察解释 S1 的接入状态，不要再读取。'},
+               {'role': 'assistant', 'content': '没有新观察。'}]
+    followup = select_skill('同样看 S2 呢？', history=history, route='/devices')
+    assert followup.id == 'live_evidence' and not followup.tools
+    assert request_evidence_scope('同样换 S2，请现在读取它的接口。', history).allow_device_reads
+    history.append({'role': 'user', 'content': '同样看 S2 呢？'})
+    assert not request_evidence_scope('同样看看 S3 呢？', history).allow_device_reads
+
+
+def test_trusted_comparison_keeps_attachment_and_owned_observation_without_tool_calls():
+    choice = select_skill('附件的 OSPF 值和刚查到的模拟回显不一致，该引用哪份？刚采的那份只解释。',
+                          has_attachments=True, page_data_trusted=True, saved_observation=True)
+    assert choice.reason == 'verified_attachment_comparison'
+    assert {'user_attachment', 'verified_snapshot_or_tool_results'} <= set(choice.context_requirements)
+    assert not choice.tools and not choice.needs_knowledge
+    attachment_only = select_skill('只分析附件，模拟设备也显示其他值，该引用哪份？',
+                                   has_attachments=True, page_data_trusted=True, saved_observation=True)
+    assert attachment_only.reason == 'attachment_explanation'
+
+
+def test_retry_search_inherits_only_the_users_same_question_subject():
+    from modules.ai_text.skills import knowledge_retrieval_query
+
+    original = '请帮我找教材中 STP 的路径开销定义。'
+    history = [{'role': 'user', 'content': original}, {'role': 'assistant', 'content': '另一个协议的页码。'}]
+    assert knowledge_retrieval_query('还是上次那个问题，请重新检索。', history) == original
+    new = '还是上次那个问题，但这次请重新找同版 PDF 第28页。'
+    assert knowledge_retrieval_query(new, history) == new
+    unrelated = '换个问题，查下仓库目录。'
+    assert knowledge_retrieval_query(unrelated, history) == unrelated
+
+
 def test_reopen_training_from_header_is_page_help():
     choice = select_skill("顶部实训会话怎么打开？")
     assert choice.id == "page_help" and not choice.needs_knowledge and not choice.tools

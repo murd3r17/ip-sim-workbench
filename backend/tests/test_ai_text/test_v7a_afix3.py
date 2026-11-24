@@ -75,7 +75,8 @@ async def test_asgi_disconnect_during_retrieval_cleans_registration_and_task(cli
             closed.set()
 
     monkeypatch.setattr(router, "_get_knowledge_service", lambda: SimpleNamespace(ask=blocked, search=blocked))
-    provider = AsyncMock(side_effect=RuntimeError("must not be called"))
+    generation = AsyncMock(side_effect=RuntimeError("must not dispatch during retrieval"))
+    provider = AsyncMock(return_value=SimpleNamespace(stream_parts=generation))
     monkeypatch.setattr(router.SystemService, "build_llm_provider", provider)
     harness = _ASGIHarness(app, _scope({}, token), {"message": "Explain a route", "request_id": request_id})
     harness.start()
@@ -88,7 +89,8 @@ async def test_asgi_disconnect_during_retrieval_cleans_registration_and_task(cli
         assert harness.task.done()
         assert harness.disconnect_consumed >= 1
         assert not [key for key in registry._events if key[1] == request_id]
-        assert provider.await_count == 0
+        provider.assert_awaited_once()
+        generation.assert_not_awaited()
     finally:
         await harness.close()
         for key, event in list(registry._events.items()):

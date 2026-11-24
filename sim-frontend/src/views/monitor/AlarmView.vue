@@ -107,7 +107,7 @@
 
 <script setup lang="ts">
 import { formatApiTime } from '../../utils/datetime'
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useSnapshotRequest } from '../../composables/useSnapshotRequest'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus/es/components/message/index'
@@ -123,8 +123,10 @@ import {
   alarmTypeLabel, alarmMeaning, alarmTriggerLabel,
 } from '../../utils/display'
 import { useLabContextStore } from '../../stores/labContext'
+import { useAiCopilotStore } from '../../stores/aiCopilot'
 
 const labCtx = useLabContextStore()
+const copilot = useAiCopilotStore()
 const route = useRoute()
 const router = useRouter()
 const alarmRequest = useSnapshotRequest('告警列表')
@@ -168,6 +170,7 @@ const bindAlarmSelection = (alarm: any) => {
     labCtx.setDevice({ id: device.id, hostname: device.hostname, mgmt_ip: device.mgmt_ip, model: device.model })
   }
   labCtx.setAlarm({ id: alarm.id, label, detail, device_id: alarm.device_id })
+  copilot.setPageRecord({ kind:'alarm_record', alarm_id:alarm.id }, `告警 #${alarm.id} · ${deviceName}`)
 }
 
 const onAlarmRowClick = (row: any) => {
@@ -259,7 +262,10 @@ async function loadLinkedAlarm() {
   }
 }
 
-watch(() => route.query.alarm_id, loadLinkedAlarm)
+watch(() => route.query.alarm_id, () => {
+  copilot.clearPageRecord('alarm_record')
+  void loadLinkedAlarm()
+})
 
 onMounted(() => {
   const qid = Number(route.query.device_id || 0)
@@ -276,8 +282,14 @@ onMounted(() => {
 
 // 筛选条件变化才回到第 1 页（轮询不动页码）
 watch([filterStatus, filterDevice], () => {
+  linkedAlarmEpoch++
+  copilot.clearPageRecord('alarm_record')
   alarmPage.value = 1
   loadAlarms()
+}, { flush: 'sync' })
+onBeforeUnmount(() => {
+  linkedAlarmEpoch++
+  copilot.clearPageRecord('alarm_record')
 })
 </script>
 
