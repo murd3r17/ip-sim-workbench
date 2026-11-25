@@ -23,11 +23,13 @@ async def test_actual_retrieval_failure_is_distinct_from_no_hits_in_generation(a
 @pytest.mark.asyncio
 @pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
 @pytest.mark.parametrize('endpoint', ['https://api.deepseek.com', 'http://127.0.0.1:1'])
-async def test_unconfigured_model_does_not_retrieve_or_block_environment(api_case, monkeypatch, path, endpoint):
+async def test_unconfigured_model_without_local_hits_skips_remote_retrieval(api_case, monkeypatch, path, endpoint):
     from core.llm_provider import FallbackProvider, OpenAICompatibleProvider
-    from tests.test_c3_request_api import events
+    from modules.knowledge.service import KnowledgeService
 
     client, headers, _, retrieval = api_case
+    local_search = AsyncMock(return_value=[])
+    monkeypatch.setattr(KnowledgeService, 'search_bundled_excerpt', local_search)
     provider = OpenAICompatibleProvider(base_url=endpoint, model='fixture-no-credential')
     provider.api_key = ''
     outbound = AsyncMock(side_effect=AssertionError('no request to an unconfigured model'))
@@ -43,6 +45,7 @@ async def test_unconfigured_model_does_not_retrieve_or_block_environment(api_cas
     else:
         assert response.status_code == 503
         assert response.json()['detail']['code'] == 'provider_unavailable'
+    local_search.assert_awaited_once()
     retrieval.assert_not_awaited()
     outbound.assert_not_awaited()
 
