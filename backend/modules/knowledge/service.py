@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import asdict, dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from core.config import get_settings
@@ -12,6 +13,18 @@ from modules.knowledge.provider import KnowledgeProvider
 
 logger = get_logger("knowledge")
 _EDITION_VECTOR_TIMEOUT = 4.0
+
+
+def _public_inventory(value):
+    """Leave local paths available to the provider, never to inventory clients."""
+    if isinstance(value, dict):
+        return {key: _public_inventory(item) for key, item in value.items()
+                if key not in {"path", "stored_at", "storage_dir", "corpus_dir"}
+                and not (isinstance(item, str) and
+                         (PurePosixPath(item).is_absolute() or PureWindowsPath(item).drive or item.startswith("\\")))}
+    if isinstance(value, list):
+        return [_public_inventory(item) for item in value]
+    return value
 
 
 def _blend_same_edition(local, vector, limit):
@@ -254,29 +267,30 @@ class KnowledgeService:
             if edition:
                 documents = edition.catalog()
 
-        return {
+        return _public_inventory({
             "available": search["search_available"],
             "provider": self.provider.name,
             "provider_available": provider_available,
             **search,
-            "base_url": provider_health.get("base_url") or getattr(settings, "knowledge_base_url", ""),
+            "base_url": "" if self.provider.name == "local" else provider_health.get("base_url") or getattr(settings, "knowledge_base_url", ""),
             "workspace_slug": settings.knowledge_workspace_slug,
             "workspace_id": settings.knowledge_workspace_id,
             "document_count": len(documents),
             "documents": documents[:5],
-            "workspace": workspace_data,
+            "workspace": ({**workspace_data, "error": "知识库工作区暂不可用。"}
+                          if workspace_data.get("error") else workspace_data),
             "upload_policy": self.policy_dict(),
             "top_k": settings.knowledge_top_k,
             "similarity_threshold": settings.knowledge_similarity_threshold,
-            "warnings": provider_health.get("warnings", []),
-            "error": provider_health.get("error"),
-        }
+            "warnings": ["知识库服务未能完整读取当前工作区。"] if provider_health.get("warnings") else [],
+            "error": "知识库服务暂不可用。" if provider_health.get("error") else None,
+        })
 
     async def _search_status(self, edition, provider_available: bool, *, local_health=None) -> dict[str, Any]:
         from .original_index import original_quote_status
 
         fallback_reason = None
-        quote_status = None
+        quote_status = {"state": "unmounted", "scan_available": False}
         if edition:
             if local_health is None:
                 local_health = await edition.keyword_index.health_check()
@@ -313,7 +327,7 @@ class KnowledgeService:
         edition = self.edition()
         if not edition:
             current = await catalog(self.provider, await self.provider.list_documents(workspace), workspace)
-            return {**current, **await self._search_status(None, True)}
+            return _public_inventory({**current, **await self._search_status(None, True)})
         from datetime import datetime, timezone
         managed_ids = self._managed_document_ids(edition)
         shared = self._shared_local_index(edition)
@@ -333,11 +347,96 @@ class KnowledgeService:
             provider_available = False
         other = await catalog(self.provider, [item for item in items if item["id"] not in managed_ids], workspace)
         rows = edition.catalog() + other["documents"]
-        return {**await self._search_status(edition, provider_available, local_health=local_health),
+        return _public_inventory({**await self._search_status(edition, provider_available, local_health=local_health),
                 "provider": self.provider.name, "documents": rows, "count": len(rows),
                 "readable_count": sum(row["readable"] for row in rows),
                 "catalog_version": f'{edition.version}:{other["catalog_version"]}',
-                "checked_at": datetime.now(timezone.utc).isoformat()}
+                "checked_at": datetime.now(timezone.utc).isoformat()})
+
+    def _bundled_provider(self):
+        from .local_provider import DEFAULT_CORPUS_DIR, LocalKnowledgeProvider, get_bundled_corpus_provider
+
+        if self.edition() is not None:
+            return None
+        root = DEFAULT_CORPUS_DIR.resolve()
+        # A replaced or redirected bundled directory is not first-party corpus.
+        if root != DEFAULT_CORPUS_DIR or not root.is_dir():
+            return None
+        if isinstance(self.provider, LocalKnowledgeProvider):
+            if not self.provider.uses_bundled_corpus or self.provider.storage_dir.is_relative_to(root):
+                return None
+        elif configured := getattr(get_settings(), "knowledge_corpus_dir", ""):
+            from pathlib import Path
+            if Path(configured).expanduser().resolve() != root:
+                return None
+        return get_bundled_corpus_provider(root)
+
+    async def search_bundled_excerpt(self, query: str, top_k: int = 6) -> list[dict]:
+        from .edition import _source_excerpt
+        from .query_focus import compact_text, lookup_parts, protocol_names
+        from .reader import DocumentReadError
+
+        provider = self._bundled_provider()
+        if not provider:
+            return []
+        titles, phrases, pages, terms = lookup_parts(query)
+        if pages or phrases:
+            return []
+        subjects = set(protocol_names(terms))
+        if not titles and not subjects:
+            return []
+        raw_hits = await provider.search(terms, top_k=min(18, top_k * 3))
+        documents = {row["id"]: row for row in await provider.list_documents()}
+        readings = {}
+        sources = []
+        for hit in raw_hits:
+            item = documents.get(hit["document_id"])
+            if not item:
+                continue
+            if titles:
+                metadata = item["metadata"]
+                names = (item["title"], metadata.get("book_title", ""), item["filename"])
+                normalized = {compact_text(name) for name in names}
+                if not all(compact_text(title) in normalized for title in titles):
+                    continue
+            if subjects and not subjects.intersection(protocol_names(hit["text"])):
+                continue
+            identifier = item["id"]
+            if identifier not in readings:
+                try:
+                    readings[identifier] = await provider.read_document(None, item)
+                except DocumentReadError:
+                    readings[identifier] = None
+            read = readings[identifier]
+            if not read or not read.get("bundled") or not (excerpt := _source_excerpt(hit["text"], read["content"])):
+                continue
+            sources.append({**hit, "text": excerpt, "document_version": read["version"], "bundled": True})
+            if len(sources) == top_k:
+                break
+        return sources
+
+    async def _read_bundled_document(self, document_id, filename, version):
+        from .reader import read_current
+
+        provider = self._bundled_provider()
+        if not provider or not document_id or not document_id.startswith("corpus-") or not version:
+            return None
+        return await read_current(provider, await provider.list_documents(), None, document_id, filename, version)
+
+    async def verify_bundled_excerpt(self, source: dict) -> bool:
+        from .edition import _source_excerpt
+        from .reader import DocumentReadError
+
+        if (not source.get("bundled") or source.get("edition_version") or source.get("page")
+                or source.get("section_id") or not source.get("content")):
+            return False
+        try:
+            reading = await self._read_bundled_document(source.get("document_id"), source.get("filename"),
+                                                        source.get("document_version"))
+        except DocumentReadError:
+            return False
+        return bool(reading and reading["bundled"] and reading["filename"] == source.get("filename")
+                    and _source_excerpt(source["content"], reading["content"]))
 
     async def read_document(self, document_id: str | None, filename: str | None, version: str | None) -> dict:
         from .reader import read_current
@@ -348,6 +447,9 @@ class KnowledgeService:
             if selected is not edition:
                 reading.update(historical_edition=True, message="当前打开的是该引用保存的冻结教材版本。")
             return reading
+        if not edition and self.provider.name != "local":
+            if bundled := await self._read_bundled_document(document_id, filename, version):
+                return bundled
         workspace = self.resolve_workspace_id()
         return await read_current(self.provider, await self.provider.list_documents(workspace),
                                   workspace, document_id, filename, version)

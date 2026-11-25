@@ -8,14 +8,16 @@
         <header class="reader-summary">
           <h2>{{ document.title || document.filename }}</h2>
           <p>{{ document.book_title || document.book || '其他资料' }}<template v-if="document.edition"> · {{ document.edition }}</template></p>
-          <p v-if="document.reading_kind === 'body'">这是按原书页码整理的正文。核对原文和图表时，请打开可查看的原页。</p>
-          <p v-else-if="document.reading_kind === 'guide'">从本章小节进入整理内容，或在「原教材页位」查看开放的原页。</p>
-          <p v-else-if="document.reading_kind === 'excerpt'">此处提供教材摘录。可按标注的页号查阅原书。</p>
+          <p v-if="suppliedDraft">可阅读随包整理资料。这份资料没有已核对的原书 PDF 页位。</p>
+          <p v-else-if="document.reading_kind === 'body'">这是按原书页位整理的正文。</p>
+          <p v-else-if="document.reading_kind === 'guide'">从本章小节进入整理内容。</p>
+          <p v-else-if="document.reading_kind === 'excerpt'">此处提供教材摘录。</p>
+          <p v-if="originalPageNotice">{{ originalPageNotice }}</p>
           <p v-if="document.historical_edition">当前打开的是这条引用发布时的教材整理版。</p>
           <details class="reader-details">
             <summary>资料信息</summary>
-            <p>版本 {{ document.version?.slice(0, 12) }} · {{ formatSize(document.size) }}<template v-if="document.page_start"> · PDF 第 {{ document.page_start }}–{{ document.page_end }} 页</template></p>
-            <p v-if="document.source_pdf">原教材 {{ document.source_pdf }}</p>
+            <p>版本 {{ document.version?.slice(0, 12) }} · {{ formatSize(document.size) }}<template v-if="document.edition_version && document.page_start"> · PDF 第 {{ document.page_start }}–{{ document.page_end }} 页</template></p>
+            <p v-if="document.source_pdf">原教材文件名 {{ document.source_pdf }}</p>
             <p>{{ document.source_path || document.id }}</p>
           </details>
           <el-radio-group v-model="mode" size="small" aria-label="阅读方式">
@@ -105,7 +107,18 @@ const props = defineProps<{
   excerpt?: string; sectionId?: string; originalPage?: number; requirePage?: boolean; openOriginal?: boolean
 }>()
 const document = ref<KnowledgeFullDocument | null>(null)
+const suppliedDraft = computed(() => Boolean(document.value?.bundled && !document.value.edition_version))
+const originalPageNotice = computed(() => {
+  if (!document.value?.edition_version) return ''
+  const pages = document.value.original_pages || []
+  const canPreview = pages.some(page => page.preview)
+  if (pages.some(page => page.original_status === 'original_not_mounted')) {
+    return canPreview ? '原书 PDF 未挂载。带查看按钮的页仍可打开随附原图。' : '原书 PDF 未挂载。当前可按已核对页位阅读整理稿。'
+  }
+  return canPreview ? '可以在「原教材页位」打开有原图的页面。' : '当前没有可查看的原书页图。'
+})
 const readerTitle = computed(() => {
+  if (suppliedDraft.value) return '随包整理稿'
   switch (document.value?.reading_kind) {
     case 'body': return '教材正文'
     case 'guide': return '章节导读'
@@ -279,7 +292,7 @@ async function load() {
   finally { if (current === epoch) loading.value = false }
 }
 watch(() => [visible.value, props.documentId, props.filename, props.version, props.editionVersion,
-  props.sectionId, props.excerpt, props.originalPage, props.requirePage], () => {
+  props.sectionId, props.excerpt, props.originalPage, props.requirePage, props.openOriginal], () => {
   if (visible.value) { mode.value = 'formatted'; void load() } else invalidate()
 }, { immediate: true })
 onUnmounted(invalidate)

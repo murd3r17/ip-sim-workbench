@@ -1,6 +1,7 @@
 """全局配置 - 通过环境变量或.env文件加载"""
 from functools import lru_cache
 from ipaddress import ip_network
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -190,4 +191,4 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=None) if os.getenv("IP_SIM_DEMO") == "1" else Settings()

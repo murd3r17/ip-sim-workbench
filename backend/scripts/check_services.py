@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import socket
 import sys
@@ -47,7 +48,31 @@ def http_get(url: str, timeout: float = 15.0, limit: int = 4096) -> tuple[int | 
         return None, type(exc).__name__
 
 
+def check_minimal(port: int) -> int:
+    base = f"http://127.0.0.1:{port}"
+    health_status, health_body = http_get(base + "/api/v1/health")
+    page_status, page_body = http_get(base + "/")
+    try:
+        database = json.loads(health_body).get("components", {}).get("database", {})
+        database_ready = health_status == 200 and database.get("status") == "healthy"
+    except (ValueError, AttributeError):
+        database_ready = False
+    page_ready = page_status == 200 and '<div id="app"' in page_body
+    print(f"  [{'OK' if database_ready else 'FAIL'}] 数据库（HTTP {health_status}）")
+    print(f"  [{'OK' if page_ready else 'FAIL'}] 工作台首页（HTTP {page_status}）")
+    return 0 if database_ready and page_ready else 1
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="核对本机工作台组件是否可用。")
+    parser.add_argument("--mode", choices=("full", "minimal"), default="full")
+    parser.add_argument("--port", type=int, default=8000, help="最小模式的工作台端口")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535 or (args.mode == "full" and args.port != 8000):
+        parser.error("--port 用于 minimal 模式，范围为 1 到 65535。")
+    if args.mode == "minimal":
+        return check_minimal(args.port)
+
     failures: list[str] = []
 
     print("== 端口 ==")

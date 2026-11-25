@@ -70,6 +70,7 @@ export interface CopilotReference {
   title?: string
   book_title?: string
   edition_version?: string
+  bundled?: boolean
   score?: number
   content?: string
   version?: string

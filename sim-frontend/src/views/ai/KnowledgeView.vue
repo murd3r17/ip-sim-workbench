@@ -35,7 +35,7 @@
             <AdminAction v-if="!row.bundled && !String(row.id).startsWith('corpus-')" v-slot="{ disabled }"><el-dropdown trigger="click"><el-button link :disabled="disabled" aria-label="资料更多操作">更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item :disabled="disabled" @click="handleDelete(row)">删除文档</el-dropdown-item></el-dropdown-menu></template></el-dropdown></AdminAction>
           </template></el-table-column>
         </el-table>
-        <p class="knowledge-tip">目录筛选用于找章节。原书页号和资料版本可在阅读器中查看。</p>
+        <p class="knowledge-tip">{{ originalLookupUnavailable || '目录筛选用于找章节。已核对的原书页位可在阅读器中查看。' }}</p>
       </el-tab-pane>
       <el-tab-pane label="检索资料" name="search">
         <el-radio-group v-if="searchStatus.edition" v-model="searchMode" aria-label="检索范围" :disabled="searchLoading" @change="resetSearchResults">
@@ -66,7 +66,7 @@
           <header>
             <strong>{{ result.title || result.filename || '检索片段' }}</strong>
             <span>
-              <el-button v-if="result.document_id && result.document_version" link type="primary" @click="openResult(result)">打开定位</el-button>
+              <el-button v-if="hasEditionLocation(result)" link type="primary" @click="openResult(result)">打开定位</el-button>
               <el-button link type="primary" @click="openCitation(result)">片段详情</el-button>
             </span>
           </header>
@@ -86,19 +86,18 @@
         <p v-if="resultLocation(citation)">{{ resultLocation(citation) }}</p>
         <pre v-if="resultOutputTable(citation)" class="citation-text search-output" tabindex="0" aria-label="教材回显表格">{{ resultOutputTable(citation) }}</pre>
         <pre v-else class="citation-text">{{ citation.text || citation.content || '未附正文' }}</pre>
-        <el-button v-if="citation.document_version || readableCitation" type="primary" @click="openSearchDocument">
-          {{ citation.document_version ? '阅读同版正文' : readableCitation?.bundled ? '查看随包整理稿' : '查看当前全文' }}
+        <el-button v-if="citationAction.kind === 'read'" type="primary" @click="openSearchDocument">
+          {{ citationAction.label }}
         </el-button>
-        <template v-else>
-          <p class="knowledge-tip">{{ docsLoading ? '正在查找可读全文。' : '当前可阅读检索片段，也可从资料目录查找原章节。' }}</p>
-          <el-button @click="findCitationInCatalog">去资料目录</el-button>
-        </template>
+        <p v-else class="knowledge-tip" role="status">{{ citationAction.label }}</p>
+        <el-button v-if="citationAction.kind === 'retry'" @click="loadDocuments">重新读取目录</el-button>
+        <el-button v-if="citationAction.kind === 'catalog'" @click="findCitationInCatalog">去资料目录</el-button>
       </template>
       <template #footer><el-button @click="citationVisible = false">返回检索结果</el-button></template>
     </el-drawer>
     <KnowledgeDocumentReader v-model="readerVisible" :document-id="readerId" :filename="readerFilename" :version="readerVersion"
       :excerpt="readerExcerpt" :section-id="readerSection" :original-page="readerPage"
-      :open-original="Boolean(readerOriginalEdition)" :edition-version="readerOriginalEdition" />
+      :open-original="readerOpenOriginal" :edition-version="readerEdition" />
   </div>
 </template>
 
@@ -122,7 +121,7 @@ const citationVisible = ref(false), citation = ref<KnowledgeSearchResult | null>
 const readerVisible = ref(false), readerId = ref(''), readerFilename = ref(''), readerVersion = ref('')
 const readerExcerpt = ref(''), readerSection = ref('')
 const readerPage = ref<number>()
-const readerOriginalEdition = ref('')
+const readerEdition = ref(''), readerOpenOriginal = ref(false)
 let alive = true, docsEpoch = 0, searchEpoch = 0
 const books = computed(() => {
   const groups = new Map<string, { key: string; label: string; count: number }>()
@@ -150,7 +149,7 @@ const searchBooks = computed(() => searchStatus.value.edition ? books.value.filt
 const originalLookupStatus = computed(() => knowledgeHealth.value?.original_quote_status ?? catalog.value?.original_quote_status)
 const originalLookupUnavailable = computed(() => {
   switch (originalLookupStatus.value?.state) {
-    case 'unmounted': return '原书原句暂不可用。请管理员挂载本版原书 PDF。'
+    case 'unmounted': return '本机未挂载原书 PDF，暂不能查找原书原句。可阅读目录中已有的整理资料。'
     case 'index_needed': return '原书原句需要管理员为本版原书建立索引。已开放的原页仍可从阅读器查看。'
     default: return ''
   }
@@ -169,6 +168,7 @@ const filteredDocuments = computed(() => (catalog.value?.documents || []).filter
 function localTime(value?: string) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '时间未知' }
 function readingAction(doc: KnowledgeDocument) {
   if (!doc.readable) return '查看原因'
+  if (doc.bundled && doc.source_status !== 'edition') return '查看随包整理稿'
   if (doc.reading_kind === 'body') return '阅读正文'
   if (doc.reading_kind === 'guide') return '查看导读'
   if (doc.reading_kind === 'excerpt') return '查看摘录'
@@ -177,7 +177,7 @@ function readingAction(doc: KnowledgeDocument) {
 function openDocument(doc: KnowledgeDocument) {
   readerId.value = doc.id; readerFilename.value = ''; readerVersion.value = doc.version || ''
   readerExcerpt.value = ''; readerSection.value = ''; readerPage.value = undefined
-  readerOriginalEdition.value = ''; readerVisible.value = true
+  readerEdition.value = ''; readerOpenOriginal.value = false; readerVisible.value = true
 }
 function openCitation(result: KnowledgeSearchResult) { citation.value = result; citationVisible.value = true }
 const readableCitation = computed(() => {
@@ -188,6 +188,17 @@ const readableCitation = computed(() => {
     ? document.id === source.document_id
     : document.filename === source.filename)
   return matches.length === 1 && matches[0].readable ? matches[0] : undefined
+})
+function hasEditionLocation(source: KnowledgeSearchResult) {
+  return Boolean(source.document_id && source.document_version && source.edition_version)
+}
+const citationAction = computed(() => {
+  if (citation.value && hasEditionLocation(citation.value)) return { kind: 'read', label: '阅读同版正文' }
+  if (docsLoading.value) return { kind: 'loading', label: '正在目录中查找可读资料。' }
+  if (docsError.value) return { kind: 'retry', label: '目录读取失败，当前仍可阅读本片段。' }
+  const document = readableCitation.value
+  if (document) return { kind: 'read', label: document.bundled && document.source_status !== 'edition' ? '查看随包整理稿' : '查看当前全文' }
+  return { kind: 'catalog', label: '目录中没有找到可核对的全文，当前仍可阅读本片段。' }
 })
 function resultExcerpt(result: KnowledgeSearchResult) {
   const raw = result.text || result.content || ''
@@ -202,28 +213,30 @@ function resultOutputTable(result: KnowledgeSearchResult) {
   return result.partial_readonly_table || /^\s*Instance[ \t]+VLANs?[ \t]+Mapped\s*$/im.test(output) ? output : ''
 }
 function resultLocation(result: KnowledgeSearchResult) {
-  return [result.book_title, result.edition, result.page && result.document_version ? `PDF 第 ${result.page} 页` : '']
+  return [result.book_title, result.edition, result.page && hasEditionLocation(result) ? `PDF 第 ${result.page} 页` : '']
     .filter(Boolean).join(' · ')
 }
 function openSearchDocument() {
   const source = citation.value
-  if (!source || (!source.document_version && !readableCitation.value)) return
-  openResult(source, readableCitation.value)
+  if (!source || citationAction.value.kind !== 'read') return
+  openResult(source, hasEditionLocation(source) ? undefined : readableCitation.value)
 }
 function openResult(source: KnowledgeSearchResult, catalogEntry?: KnowledgeDocument) {
+  const editionLocation = hasEditionLocation(source)
   readerId.value = catalogEntry?.id || source.document_id || ''
   readerFilename.value = String(source.filename || source.title || '')
-  readerVersion.value = String(source.document_version || '')
-  readerSection.value = String(source.section_id || '')
+  readerVersion.value = String(catalogEntry?.version || (editionLocation ? source.document_version : '') || '')
+  readerSection.value = editionLocation ? String(source.section_id || '') : ''
   readerExcerpt.value = String(source.text || source.content || '')
-  readerPage.value = source.document_version ? source.page ?? undefined : undefined
-  readerOriginalEdition.value = ''
+  readerPage.value = editionLocation ? source.page ?? undefined : undefined
+  readerEdition.value = editionLocation ? String(source.edition_version) : ''
+  readerOpenOriginal.value = false
   readerVisible.value = true
 }
 function openOriginal(result: OriginalQuoteResult) {
   readerId.value = result.document_id; readerVersion.value = result.document_version; readerFilename.value = ''
   readerExcerpt.value = ''; readerSection.value = ''; readerPage.value = result.page
-  readerOriginalEdition.value = originalEdition.value; readerVisible.value = true
+  readerEdition.value = originalEdition.value; readerOpenOriginal.value = true; readerVisible.value = true
 }
 function findCitationInCatalog() {
   filter.value = citation.value?.title || citation.value?.filename || ''

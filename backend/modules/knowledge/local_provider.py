@@ -377,6 +377,10 @@ class LocalKnowledgeProvider(KnowledgeProvider):
         roots = (("corpus", self.corpus_dir),)
         return roots if self.corpus_only else (("upload", self.storage_dir), *roots)
 
+    @property
+    def uses_bundled_corpus(self) -> bool:
+        return self.corpus_dir == DEFAULT_CORPUS_DIR.resolve()
+
     def _scan_files(self) -> list[Path]:
         if self.frozen_documents is not None:
             return [path for relative in self.frozen_documents
@@ -387,6 +391,8 @@ class LocalKnowledgeProvider(KnowledgeProvider):
             if root and root.is_dir():
                 files.extend(sorted(root.rglob("*.md")))
                 files.extend(sorted(root.rglob("*.txt")))
+        if self.corpus_only:
+            files = [path for path in files if not path.is_symlink() and path.resolve().is_relative_to(self.corpus_dir)]
         return sorted(set(files))
 
     def _compute_signature(self, files: list[Path]) -> tuple:
@@ -684,7 +690,7 @@ class LocalKnowledgeProvider(KnowledgeProvider):
         root = self.storage_dir if str(document['id']).startswith('upload-') else self.corpus_dir
         raw, modified = read_bounded(path, root)
         payload = document_payload(document, raw, modified, 'local_source')
-        payload["bundled"] = identity.startswith("corpus-") and self.corpus_dir == DEFAULT_CORPUS_DIR
+        payload["bundled"] = identity.startswith("corpus-") and self.uses_bundled_corpus
         return payload
 
     def _list_documents(self) -> list[dict[str, Any]]:
@@ -895,3 +901,9 @@ def get_local_provider(corpus_dir: str | None, top_k: int, similarity_threshold:
     """Bounded process cache; file signatures still refresh edited corpus files."""
     return LocalKnowledgeProvider(corpus_dir=corpus_dir, top_k=top_k,
                                   similarity_threshold=similarity_threshold, workspace_slug=workspace_slug)
+
+
+@lru_cache(maxsize=4)
+def get_bundled_corpus_provider(root: Path) -> LocalKnowledgeProvider:
+    """A separate index never scans the configurable corpus or upload directory."""
+    return LocalKnowledgeProvider(corpus_dir=root, corpus_only=True)

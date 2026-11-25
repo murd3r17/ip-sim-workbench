@@ -4,6 +4,36 @@
 
 **V7.0 增量候选** · [Windows 快速启动](#windows-快速启动) · [Linux 最小模式](#linux-最小模式) · [首次验收](#首次验收) · [启动与接管指南](启动与验收.md)
 
+## 本机演示
+
+**全新演示账号 `admin`，密码 `123456`。** 仓库自带预构建前端、模拟设备、实训和可搜索的教材整理稿。首次启动需要能下载 Python 依赖，也可使用离线 wheel 包。运行随仓库附带的网页无需安装 Node.js。
+
+### Windows
+
+安装 Git 和 Python 3.12，在终端运行下列命令。如果系统只提供 `python` 命令，先确认 `python --version` 显示 3.12，再将 `py -3.12` 换成 `python`。
+
+```powershell
+git clone --branch main https://github.com/murd3r17/ip-sim-workbench.git
+cd ip-sim-workbench
+py -3.12 scripts/bootstrap_local.py --demo
+```
+
+### Ubuntu 24.04
+
+先安装 Git、Python 3.12 和 `python3.12-venv`，再启动。
+
+```bash
+sudo apt update
+sudo apt install git python3.12 python3.12-venv
+git clone --branch main https://github.com/murd3r17/ip-sim-workbench.git
+cd ip-sim-workbench
+python3.12 scripts/bootstrap_local.py --demo
+```
+
+打开 [本机工作台](http://127.0.0.1:8000/login)。端口占用时加 `--port 18080`，按终端显示的地址访问。按 Ctrl+C 停止。演示只监听本机，数据保存在 `.runtime/demo`。重新启动会保留已有记录和密码。
+
+可先做「入门巡检」，或在右侧助手输入「请查教材并列出 VRRP 抢占延时的出处」。离线状态可打开命中的随包整理稿。生成对话回答需配置自己的 DeepSeek 密钥，查看 PDF 原页需挂载获授权的教材和登记原书。 [模型和教材配置](启动与验收.md)
+
 ## 界面预览
 
 截图来自本地模拟实训环境，点击图片可查看原尺寸。
@@ -24,11 +54,9 @@
 
 ## Windows 快速启动
 
-准备 Git、Windows x64 版 Python 3.12 和 PowerShell 7。在启动所用的 PowerShell 中，先用 `py -3.12 --version` 或 `python --version` 确认能找到 Python 3.12。首次启动需要可用的 Python 包安装源，或按启动指南使用离线依赖。仓库附带预构建网页，最小模式使用 SQLite、六台模拟设备和本地知识库。
+如果需要自己的独立账号和长期使用的本机数据库，可从仓库根目录用 PowerShell 7 后台启动。
 
 ```powershell
-git clone https://github.com/murd3r17/ip-sim-workbench.git
-Set-Location .\ip-sim-workbench
 pwsh -NoProfile -File .\scripts\bootstrap-local.ps1 -Mode minimal
 ```
 
@@ -36,15 +64,15 @@ pwsh -NoProfile -File .\scripts\bootstrap-local.ps1 -Mode minimal
 
 ## Linux 最小模式
 
-使用 Python 3.12 和该版本的 venv 模块。Ubuntu 24.04 可通过系统包管理器准备 `python3.12-venv`。仓库附带前端，运行以下命令后，打开终端打印的本机地址。
+按「本机演示」准备 Python 和 venv。如果需要生成自己的初始管理员账号，从仓库根目录启动常规模拟环境。
 
 ```bash
-git clone https://github.com/murd3r17/ip-sim-workbench.git
-cd ip-sim-workbench
 python3.12 scripts/bootstrap_local.py
 ```
 
 在根目录 `.env` 查看初始管理员账号。按 Ctrl+C 停止，或通过 `--port 18080` 改用空闲端口。完整模式的安装与真设备接入请参考对应指南。[完整模式](docs/guides/full模式首次配置与启动.md)
+
+需要自己重建网页时，安装 Node.js 20 或更新版本，从 `sim-frontend` 运行 `npm ci` 和 `npm run build`。
 
 ## 首次验收
 

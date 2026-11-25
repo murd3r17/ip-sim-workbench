@@ -32,7 +32,10 @@ class OriginalPdfLibrary:
         self.directory = directory.resolve()
 
     def _path(self, book: dict) -> Path:
-        name = Path(book["filename"])
+        filename = book.get("filename")
+        if not isinstance(filename, str) or not filename:
+            raise DocumentReadError("original_invalid", "该书册缺少原版 PDF 文件名登记。请核对冻结教材的 manifest.json。", 409)
+        name = Path(filename)
         if name.name != str(name) or name.suffix.lower() != ".pdf":
             raise DocumentReadError("original_invalid", "原件登记无效，请联系管理员。")
         path = (self.directory / name).resolve()

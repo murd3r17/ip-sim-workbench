@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 
 
 @dataclass(slots=True)
@@ -90,10 +91,16 @@ def check_startup_config(settings) -> PreflightResult:
 
     # ── LLM ────────────────────────────────────────────────
     if not settings.llm_api_key:
-        result.issues.append(ConfigIssue(
-            "warn", "LLM_API_KEY", "未配置对话模型密钥，AI 助手/教练/配置生成会明确提示不可用",
-            "在根 .env 填 LLM_API_KEY（如 DeepSeek），或接受降级",
-        ))
+        if os.getenv("IP_SIM_DEMO") == "1":
+            result.issues.append(ConfigIssue(
+                "info", "LLM_API_KEY", "演示可在本机查阅随包教材。生成回答需配置 DeepSeek。",
+                "在工作台的系统配置中保存模型连接；已有设置由本机演示数据库读取。",
+            ))
+        else:
+            result.issues.append(ConfigIssue(
+                "warn", "LLM_API_KEY", "未配置对话模型密钥，AI 助手/教练/配置生成会明确提示不可用",
+                "在根 .env 填 LLM_API_KEY（如 DeepSeek），或接受降级",
+            ))
 
     # ── 知识库 ──────────────────────────────────────────────
     provider = (getattr(settings, "knowledge_provider", "") or "").strip().lower()
