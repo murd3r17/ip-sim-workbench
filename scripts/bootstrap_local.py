@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 from pathlib import Path
 import re
@@ -17,11 +18,41 @@ import venv
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "sim-frontend"
+DEMO_DIR = ROOT / ".runtime" / "demo"
+DEMO_CREDENTIAL = ("admin", "123456")
 
 
-def prepare_environment(db_path: Path | None = None) -> dict[str, str]:
+def demo_secrets() -> dict[str, str]:
+    DEMO_DIR.mkdir(parents=True, exist_ok=True)
+    path = DEMO_DIR / "instance.json"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        data = {"JWT_SECRET_KEY": secrets.token_urlsafe(48),
+                "FERNET_KEY": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")}
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+    return {key: data[key] for key in ("JWT_SECRET_KEY", "FERNET_KEY")}
+
+
+def prepare_environment(db_path: Path | None = None, *, demo: bool = False) -> dict[str, str]:
     env = {**os.environ, "DB_BACKEND": "sqlite", "DB_URL": "", "DEVICE_MODE": "sim",
            "KNOWLEDGE_PROVIDER": "local", "WORKBENCH_MODE": "minimal", "PYTHONUTF8": "1"}
+    if demo:
+        db_path = DEMO_DIR / "workbench.sqlite3"
+        env.update(demo_secrets())
+        env.update(ADMIN_USERNAME=DEMO_CREDENTIAL[0], ADMIN_PASSWORD=DEMO_CREDENTIAL[1],
+                   API_PREFIX="/api/v1", CORS_ORIGINS="", API_DOCS_ENABLED="false", DEBUG="false",
+                   DEPLOY_SIMULATE_ONLY="true", MONITOR_SCHEDULER_ENABLED="false",
+                   MINIO_ACCESS_KEY="", MINIO_SECRET_KEY="", MINIO_REQUIRED="false",
+                   KNOWLEDGE_CORPUS_DIR=str(ROOT / "knowledge" / "corpus"),
+                   KNOWLEDGE_LOCAL_STORAGE=str(DEMO_DIR / "knowledge"), LOG_DIR=str(DEMO_DIR / "logs"),
+                   KNOWLEDGE_EDITION_DIR="", KNOWLEDGE_PREVIOUS_EDITION_DIR="", KNOWLEDGE_ORIGINAL_DIR="",
+                   LLM_PROVIDER="openai_compatible", LLM_BASE_URL="https://api.deepseek.com/v1",
+                   LLM_MODEL="deepseek-flash", LLM_API_KEY="", LLM_VISION_MODEL="",
+                   LLM_FALLBACK_MODEL="", LLM_FALLBACK_API_KEY="", LLM_FALLBACK_BASE_URL="")
     if db_path is not None:
         resolved = db_path.expanduser().resolve()
         env["DB_SQLITE_PATH"] = str(resolved)
@@ -71,6 +102,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-start", action="store_true", help="初始化后退出")
     parser.add_argument("--start-only", action="store_true", help="启动已经初始化的实例")
+    parser.add_argument("--demo", action="store_true", help="启动仅对本机开放的独立演示环境")
     parser.add_argument("--skip-dependency-install", action="store_true", help="检查并复用已有虚拟环境")
     parser.add_argument("--rebuild-frontend", action="store_true")
     parser.add_argument("--db-path", type=Path)
@@ -78,8 +110,12 @@ def main() -> int:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535 or (args.no_start and args.start_only):
         parser.error("请填写有效端口。--no-start 与 --start-only 不能同时使用。")
+    if args.demo and args.db_path is not None:
+        parser.error("--demo 使用独立演示库，不能同时指定 --db-path。")
+    if args.demo and args.start_only and not (DEMO_DIR / "workbench.sqlite3").is_file():
+        parser.error("请先运行 --demo 完成演示环境初始化。")
 
-    env = prepare_environment(args.db_path)
+    env = prepare_environment(args.db_path, demo=args.demo)
     interpreter = BACKEND / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if not args.no_start:
         _check_port(args.port)
@@ -102,8 +138,9 @@ def main() -> int:
                 raise RuntimeError("缺少预构建前端。请使用含 dist 的交付包，或安装 Node 后构建。")
             subprocess.run([npm, "ci"], cwd=FRONTEND, check=True, env=env)
             subprocess.run([npm, "run", "build"], cwd=FRONTEND, check=True, env=env)
-        ensure_local_config()
-        backup = (args.backup_dir or ROOT / ".runtime/backups").resolve()
+        if not args.demo:
+            ensure_local_config()
+        backup = (args.backup_dir or (DEMO_DIR if args.demo else ROOT / ".runtime") / "backups").resolve()
         subprocess.run([interpreter, "scripts/bootstrap_local.py", "--backup-dir", backup],
                        env=env, cwd=BACKEND, check=True)
         for script in ("seed_sim_devices.py", "seed_training_labs.py"):
@@ -114,13 +151,16 @@ def main() -> int:
     if not interpreter.is_file() or not (FRONTEND / "dist/index.html").is_file():
         raise RuntimeError("请先运行 scripts/bootstrap_local.py 完成初始化。")
     if Path(sys.executable) != interpreter:
-        return subprocess.run([interpreter, __file__, "--start-only", "--port", str(args.port)],
-                              env=env, cwd=ROOT).returncode
+        start = [interpreter, __file__, "--start-only", "--port", str(args.port)]
+        if args.demo:
+            start.append("--demo")
+        return subprocess.run(start, env=env, cwd=ROOT).returncode
     os.environ.update(env)
     os.chdir(BACKEND)
     sys.path.insert(0, str(BACKEND))
     import uvicorn
-    print(f"启动后打开 http://127.0.0.1:{args.port}。账号见本机 .env，Ctrl+C 停止。", flush=True)
+    login = "演示账号 admin / 123456" if args.demo else "账号见本机 .env"
+    print(f"启动后打开 http://127.0.0.1:{args.port}。{login}，Ctrl+C 停止。", flush=True)
     uvicorn.run("main:app", host="127.0.0.1", port=args.port, proxy_headers=False)
     return 0
 

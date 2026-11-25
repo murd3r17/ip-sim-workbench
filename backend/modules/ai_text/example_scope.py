@@ -5,6 +5,7 @@ import re
 
 from core.markdown_blocks import blocks
 from modules.knowledge.device_alias_facets import device_aliases
+from modules.knowledge.phase_reference import operation_comparison, operation_phases, step_phases
 from modules.knowledge.query_focus import passage_concepts, protocol_names
 
 
@@ -88,12 +89,16 @@ _COMPARE_CHANGE = re.compile(r'(?:(?:从[^。！？；\n]{1,45})?(?:更改|调�
 _ASK_FOR_PROOF = re.compile(r'核证|核对|验收|拿什么(?:来)?(?:证实|证明)|以什么为据|依据什么|观察什么|对照')
 _OBSERVATION_ONLY = re.compile(r'实际(?:观察|读回|回显|状态|输出|记录)|实测|回显|读回|抓包')
 _CLI_PROMPT = re.compile(r'^[ \t]*(?:<([^>\s]+)>|\[([^\]\s]+)\])[ \t]*(?:display|show)\s+\S', re.I | re.M)
-_OMIT = r'(?:请)?(?:别|不要|不用|不必|无需|不想)(?:再)?'
+_OMIT = r'(?:请)?(?:别|不要|不用|不必|无需|不想|不需要)(?:再)?'
 _EXCLUDED_EXAMPLE = re.compile(
-    rf'^\s*{_OMIT}(?:拿|用|引用|借用|混用|参考|套用|套|采用|带入|展开|讲|举)\s*'
-    r'(?P<material>[^，。！？；,!?;\n]{0,44}?(?:应用例|例子|案例|实验|示例|题目|配置过程))'
-    r'(?:作为.{1,14}|来.{1,14}|里的.{1,24}|.{0,8}举例)?\s*$'
+    rf'^\s*{_OMIT}(?:把|拿|用|引用|借用|混用|参考|套用|套|采用|带入|展开|讲|举|混进|带上)\s*'
+    r'(?P<material>[^，。！？；,!?;\n]{0,44}?(?:应用例|例子|案例|场景|实验|示例|实例|实训|演练|题目|配置过程))'
+    r'(?:作为.{1,14}|来.{1,14}|里的.{1,24}|.{0,8}举例|混进来|带进来|展开(?:讲)?|混入?(?:讨论|原理)?)?\s*$'
 )
+_OMIT_EXAMPLES = re.compile(rf'^\s*{_OMIT}(?:再)?(?:举例|举具体例子|展开(?:具体)?(?:案例|演练|实验)|讲具体操作)\s*$')
+_MATERIAL_TRAILER = re.compile(r'(?:的?(?:应用例|例子|案例|场景|实验|示例|实例|实训|演练|题目|配置过程))$')
+_UNNAMED_MATERIAL = re.compile(r'^(?:(?:这个|那个|那套|某个|该|这|一个|具体|完整|教材里的?|课堂的?)(?:的)?)*$')
+_NO_DEVICE_ACCESS = re.compile(rf'^\s*(?:{_OMIT}|不)(?:现在|实际|真正|现场)?(?:连接|登录|接入|读取|访问|操作)(?:真实|实时|实际|现场)?设备\s*$')
 _EXCLUDED_REPORTER = re.compile(
     rf'^\s*{_OMIT}(?:把[^，。；\n]{{1,18}}(?:替换|切换|写|说|错看|换|当)(?:成|作|为)|'
     rf'(?:引用|使用|拿|套用|用))\s*(?P<device>{_DEVICE_LABEL})\s*'
@@ -184,6 +189,18 @@ def _phases(text):
     for name in _BOTH_PHASES.findall(text):
         phases.update({(name, '前'), (name, '后')})
     return frozenset(phases)
+
+
+def _source_filters_phases(question):
+    phases = set(_phases(question))
+    phases.update((action, '前' if when == 'before' else '后') for action, when in operation_phases(question))
+    phases.update(step_phases(question))
+    if contrast := operation_comparison(question):
+        action, (start, stop) = contrast
+        for marker in ('前', '后'):
+            normalized = question[:start] + action + marker + question[stop:]
+            phases.update((event, marker) for event, _ in operation_phases(normalized))
+    return phases
 
 
 def _independent_artifacts(question):
@@ -467,12 +484,13 @@ def _comparison_at_prefix(sources, prefixes):
 
 def exclude_conflicting_examples(question, sources):
     """Discard explicitly incompatible subjects and stages before broader prompting."""
-    if _NONLOCAL.search(question) or _SEPARATE.search(question) or not sources:
+    if not sources:
         return sources, ''
     clues = re.split(r'[，。！？；,!?;\n]', question)
     excluded = set()
     excluded_reporters = set()
     excluded_values = set()
+    excluded_titles = set()
     exclude_default = False
     omit_examples = False
     positive = []
@@ -486,20 +504,30 @@ def exclude_conflicting_examples(question, sources):
         elif match := _EXCLUDED_EXAMPLE.fullmatch(clue):
             named = _protocols(match['material'])
             excluded.update(named)
-            omit_examples |= not named and not _devices(match['material'])
-        else:
+            title = _MATERIAL_TRAILER.sub('', match['material']).strip(' 「」『』“”《》')
+            title = re.sub(r'^(?:书上|书里的?|该书里|课件里|教材里|教材中的?|那套|那次|那个)(?:的)?', '', title)
+            if len(title) >= 4 and not (_UNNAMED_MATERIAL.fullmatch(title) or named and re.fullmatch(r'[A-Za-z0-9.-]+', title)):
+                excluded_titles.add(title.casefold())
+            else:
+                omit_examples |= not named and not _devices(match['material'])
+        elif _OMIT_EXAMPLES.fullmatch(clue):
+            omit_examples = True
+        elif not _NO_DEVICE_ACCESS.fullmatch(clue):
             positive.append(clue)
     question = '。'.join(positive)
+    if _NONLOCAL.search(question) or _SEPARATE.search(question):
+        return sources, ''
     protocols = _protocols(question)
     excluded -= protocols
-    if excluded:
+    if excluded or excluded_titles:
         previous = sources
         sources = [source for source in previous if not (
-            (declared := _protocols(source.get('title') or '')) and declared <= excluded
+            ((declared := _protocols(source.get('title') or '')) and declared <= excluded)
+            or any(title in _source_headings(source).casefold() for title in excluded_titles)
         )]
         if not sources:
             return sources, '本次未找到符合所问主题的教材依据。可补充章节或 PDF 物理页。'
-    phases = _phases(question)
+    phases = _source_filters_phases(question)
     modes = set(_MODE.findall(question))
     case_ids = set(_CASE_ID.findall(question))
     change_comparison = bool(_COMPARE_CHANGE.search(question) and _ASK_FOR_PROOF.search(question))
@@ -512,6 +540,7 @@ def exclude_conflicting_examples(question, sources):
     if not principles and not has_source_context:
         return sources, ''
     wanted_actions = {name for name, _ in phases}
+    queried_steps = {name for name, side in phases if side == 'ordinal'}
     contains_subject = protocols and any(protocols <= _protocols((source.get('title') or '') + '\n' + source['content'])
                                         for source in sources)
     retained = []
@@ -521,7 +550,10 @@ def exclude_conflicting_examples(question, sources):
         context = title + '\n' + source['content']
         if len(protocols) == 1 and contains_subject and declared and not protocols & _protocols(context):
             continue
-        exhibited = {(name, side) for name, side in _phases(context) if name in wanted_actions}
+        declared_steps = {name for name, _ in step_phases(title)} if queried_steps else set()
+        if declared_steps and queried_steps.isdisjoint(declared_steps):
+            continue
+        exhibited = {(name, side) for name, side in _source_filters_phases(context) if name in wanted_actions and side != 'ordinal'}
         if exhibited and not exhibited & phases:
             continue
         if len(case_ids) == 1 and (source_cases := set(_CASE_ID.findall(title))) and source_cases.isdisjoint(case_ids):

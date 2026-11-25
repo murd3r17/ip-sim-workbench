@@ -79,6 +79,44 @@ _OTHER_REDUNDANCY = re.compile(r'(?<![a-z0-9])(?:HRP|VGMP)(?![a-z0-9])', re.I)
 _REFUTED_VRRP = re.compile(r'(?:不会|不能|不应|无需|未曾|不再)(?:因此|直接|再)?\s*(?:降低|减少|减小|预留|延后|推迟)')
 _MECHANISM_PARTS = re.compile(r'[。！？?!，,；;]|以及|另讲|再讲|和|与')
 _SOURCE_REQUEST_ONLY = re.compile(r'(?:请)?(?:只讲原理|(?:分别|各自|对应)?(?:给(?:出)?|列出|附)(?:对应)?(?:出处|来源|依据))')
+_PORT_RECORD = re.compile(r'(?:端口|接口|(?<![A-Za-z])port)\s*((?:[A-Za-z-]+)?\d+(?:[./:-]\d+)*)(?![A-Za-z\d./:-])', re.I)
+_PORT_VALUE = re.compile(r'(?<![A-Za-z])(?:Forwarding|Discarding|Learning|Blocking|Up|Down|Root|Alternate|Designated)'
+                         r'(?![A-Za-z])|转发|丢弃|阻塞', re.I)
+
+
+def textbook_port_lookup(question):
+    """Recognize a single port observation without an experiment or device identity."""
+    if (not _CLASSROOM.search(question) or not re.search(r'状态|角色|读回|回显', question)
+            or _FIELD_CONTEXT.search(question) or _CASE_ID.search(question) or _RECORD_DEVICE.search(question)
+            or re.search(r'原理|机制|概念|定义|为什么|如何配置', question)):
+        return None
+    ports = {match[1].casefold(): match[0] for match in _PORT_RECORD.finditer(question)}
+    if len(ports) != 1:
+        return None
+    return next(iter(ports.items()))
+
+
+def port_observation_matches(question, hits):
+    """Locate records for an otherwise unidentified textbook port."""
+    lookup = textbook_port_lookup(question)
+    if not lookup:
+        return []
+    port, _ = lookup
+    matched = {}
+    for hit in hits:
+        if not hit.get('document_id'):
+            continue
+        for line in re.split(r'[。！？；\n]', hit.get('text') or hit.get('content') or ''):
+            for match in _PORT_RECORD.finditer(line):
+                if match[1].casefold() != port:
+                    continue
+                field = re.split(r'端口|接口|(?<![A-Za-z])port', line[match.end():], maxsplit=1, flags=re.I)[0]
+                if _UNVERIFIED_PROSE.search(field) or not re.search(r'显示|处于|记录|报告|状态|角色|为|[:：]', field):
+                    continue
+                if value := _PORT_VALUE.search(field):
+                    identity = (hit['document_id'], hit.get('document_version'), hit.get('edition_version'), value[0].casefold())
+                    matched.setdefault(identity, hit)
+    return list(matched.values())
 _MISSING_PROOF = re.compile(r'(?:还|仍|另)(?:差|缺|少|需|要|得)(?:再)?(?:看|查|补|核对|做|测|有)?(?:哪(?:些|种|类)|什么)')
 _TEACHING_EXERCISE = re.compile(r'练习|例题|习题')
 _SINGLE_RECORD = re.compile(r'(?:只|仅)(?:有|看(?:到|见)?|拿到|找到|给[出了]?|保留).{0,12}(?:一[条份次张个行]|这[条份张个行])')

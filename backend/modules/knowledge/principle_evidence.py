@@ -9,7 +9,6 @@ _REQUESTS = (
     ("principle_definition", re.compile(rf"{_PREFIX}{_TOPIC}\s*(?:的定义是什么|是什么|是什么意思|指的是什么|指什么)")),
     ("principle_definition", re.compile(rf"{_PREFIX}(?:什么是|何谓|请定义)\s*{_TOPIC}")),
 )
-_PRINCIPLES_ONLY = re.compile(r"^\s*(?:我)?(?:只|仅)(?:问|看)(?:教材|原书|课本)(?:的)?原理[。；;]\s*")
 _GENERIC = {"原理", "机制", "状态", "作用", "目标", "配置", "操作", "日志", "结果", "现象", "字段", "这个词"}
 _QUERY_CONTEXT = re.compile(r"(?:这|那|该|上述)(?:次|一轮|份|项|个|项|里)|设备上|实机|真机|生产现场|前后|与|和|分别|以及|或|相比|两者")
 _CONCRETE_CASE = re.compile(r"本例|例题|课件例|例如|为例|示例|本实验|该实验|此实验|图中|图上|截图|拓扑图|回显|读回|日志|命令行|"
@@ -33,7 +32,7 @@ def principle_request(text: str) -> tuple[str, str] | None:
 
 
 def multiple_principle_requests(query: str, clauses: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    if not 2 <= len(clauses) <= 3 or not _PRINCIPLES_ONLY.match(query):
+    if not 2 <= len(clauses) <= 3 or _CONCRETE_CASE.search(query):
         return ()
     requests = tuple(principle_request(clause) for clause in clauses)
     if any(request is None for request in requests):

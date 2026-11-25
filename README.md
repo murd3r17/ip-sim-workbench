@@ -4,13 +4,33 @@
 
 **V7.0 增量候选** · [Windows 快速启动](#windows-快速启动) · [Linux 最小模式](#linux-最小模式) · [首次验收](#首次验收) · [启动与接管指南](启动与验收.md)
 
+## 本机演示
+
+**演示账号 `admin` · 演示密码 `123456`**
+
+准备 Git 和 Python 3.12。第一次启动需要安装 Python 依赖。仓库已附前端构建、模拟设备、实训和本机教材。打开终端，执行下面的命令。
+
+```text
+git clone --branch preview/textbook-evidence-20261125 https://github.com/murd3r17/ip-sim-workbench.git
+cd ip-sim-workbench
+```
+
+| 系统 | 启动命令 |
+| --- | --- |
+| Windows | `py -3.12 scripts/bootstrap_local.py --demo` |
+| Linux | `python3.12 scripts/bootstrap_local.py --demo` |
+
+启动后打开 [本机工作台](http://127.0.0.1:8000/login)，用上面的演示账号登录。按 Ctrl+C 停止。端口占用时在命令末尾加 `--port 18080`，按终端打印的地址打开。演示服务只监听本机，数据保存在 `.runtime/demo`。正式部署使用自己的账号和密码。
+
+先点首页「入门巡检」，或从「知识库」搜索 `OSPF`。需要测试 AI 助手时，用自己的 DeepSeek 密钥完成 [模型配置](启动与验收.md#开启对话助手)。
+
 ## 2026-11-25 教材能力中间预览
 
 这版可试用教材检索、同版物理页回查和「按此页提问」。助手将引用和供回查的候选页分别显示。指定页无法核对时，工作台会提示缺口。进到对应页后，可以将书名和 PDF 物理页带回输入框，再手动提问。连接 DeepSeek 后，可从回答里的引用打开本轮实际使用的片段。
 
-在复杂实验题中，同名实验、前后阶段和多个读回字段仍可能混入相近来源。旧独立题集整题通过 1/15，必要事实直接获证 14/34，完整教材仍待正式验收。续问需限定到某页时，请点「按此页提问」或输入具体页码。GitHub 仓库包含工作台和随包资料，获授权的完整教材由本机单独挂载。[本机教材与 DeepSeek 配置](启动与验收.md)
+本次预览更新区分教材中的预计输出和实际回显，核对同一实验不同阶段及同一步骤的原文片段。「按此页提问」会保留问题中的普通引号，明确要求逐字查找时才核对所选页的原句。
 
-首次获取预览版时执行 `git clone --branch preview/textbook-evidence-20261125 https://github.com/murd3r17/ip-sim-workbench.git`，再按下文启动。
+在复杂实验题中，同名实验、前后阶段和多个读回字段仍可能混入相近来源。旧独立题集整题通过 1/15，必要事实直接获证 14/34，完整教材仍待正式验收。续问需限定到某页时，请点「按此页提问」或输入具体页码。GitHub 仓库包含工作台和随包资料，获授权的完整教材由本机单独挂载。[本机教材与 DeepSeek 配置](启动与验收.md)
 
 ## 界面预览
 
@@ -32,11 +52,11 @@
 
 ## Windows 快速启动
 
-准备 Git、Windows x64 版 Python 3.12 和 PowerShell 7。在启动所用的 PowerShell 中，先用 `py -3.12 --version` 或 `python --version` 确认能找到 Python 3.12。首次启动需要可用的 Python 包安装源，或按启动指南使用离线依赖。仓库附带预构建网页，最小模式使用 SQLite、六台模拟设备和本地知识库。
+使用上方「本机演示」的启动命令。运行 `py -3.12 --version` 检查 Python。如果安装的是只有 `python` 命令的版本，用 `python --version` 确认版本，再将 `py -3.12` 换成 `python`。
+
+需要持久使用自己的本机账号或使用 PowerShell 后台启动时，从仓库根目录运行以下命令。
 
 ```powershell
-git clone https://github.com/murd3r17/ip-sim-workbench.git
-Set-Location .\ip-sim-workbench
 pwsh -NoProfile -File .\scripts\bootstrap-local.ps1 -Mode minimal
 ```
 
@@ -44,11 +64,9 @@ pwsh -NoProfile -File .\scripts\bootstrap-local.ps1 -Mode minimal
 
 ## Linux 最小模式
 
-使用 Python 3.12 和该版本的 venv 模块。Ubuntu 24.04 可通过系统包管理器准备 `python3.12-venv`。仓库附带前端，运行以下命令后，打开终端打印的本机地址。
+使用 Python 3.12 和该版本的 venv 模块。Ubuntu 24.04 可通过系统包管理器准备 `python3.12-venv`。从仓库根目录运行上方的演示命令，或用以下命令初始化自己的本机账号。
 
 ```bash
-git clone https://github.com/murd3r17/ip-sim-workbench.git
-cd ip-sim-workbench
 python3.12 scripts/bootstrap_local.py
 ```
 

@@ -51,6 +51,10 @@ def _phases(text):
     return frozenset((_PHASE_ALIASES.get(match["event"], match["event"]), match["time"]) for match in _PHASE.finditer(text))
 
 
+def completed_readout_phases(text):
+    return frozenset(phase for phase, pattern in _COMPLETED_PHASE.items() if pattern.search(text))
+
+
 def coverage_request(query):
     if not _OBSERVATION.search(query) or _OUTSIDE.search(query):
         return None
@@ -132,7 +136,7 @@ def paired_excerpt(page, current, request, *, max_chars=1100):
                 compact_excerpt = compact_text(text)
                 if any(limit not in compact_excerpt for limit in visible_limits):
                     continue
-                evidence_phases = _phases(text) | {phase for phase, pattern in _COMPLETED_PHASE.items() if pattern.search(exhibit)}
+                evidence_phases = _phases(text) | completed_readout_phases(exhibit)
                 if not (len(text) <= max_chars and request.identifiers <= _identifiers(text) and request.phase <= evidence_phases):
                     continue
                 if any((event, "前" if when == "后" else "后") in evidence_phases for event, when in request.phase):

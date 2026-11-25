@@ -75,6 +75,9 @@ class KnowledgeEdition:
                 if value:
                     self.legacy[value] = record
         self.by_doc_id = choices
+        from .original_scope import OriginalScopeIndex
+
+        self.original_scope_index = OriginalScopeIndex(self)
 
     @cached_property
     def keyword_index(self):
@@ -363,7 +366,7 @@ class KnowledgeEdition:
             return self.originals.render(self.books[doc["book"]], number)
         raise DocumentReadError("preview_unavailable", "工作台未提供这一页的原图，请使用资料中的原书页号。", 404)
 
-    def resolve_hits(self, hits, provider, workspace, *, query=""):
+    def resolve_hits(self, hits, provider, workspace, *, query="", original_candidates=None):
         local = provider is self.keyword_index
         if local:
             vector_ids = {}
@@ -434,6 +437,8 @@ class KnowledgeEdition:
                         filename = Path(record["path"]).name
                         version = record["sha256"]
                         if notes_for_excerpt(filename, excerpt, version) == notes_for_excerpt(filename, selection, version):
+                            if original_candidates is not None and _source_excerpt(excerpt, pages[page][1]):
+                                original_candidates.append(self._bound_hit(hit, record, excerpt, section, page))
                             excerpt = selection
                             hit["partial_readonly_table"] = True
                 results.append(self._bound_hit(hit, record, excerpt, section, page))

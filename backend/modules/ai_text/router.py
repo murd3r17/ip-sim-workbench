@@ -396,11 +396,13 @@ def _apply_policy_note(ui: dict, policy: dict) -> dict:
 class _FacetHits(list):
     """Request-local evidence can accompany hits without changing public search results."""
 
-    def __init__(self, hits, evidence, ranked=None, pool=()):
+    def __init__(self, hits, evidence, ranked=None, pool=(), *, location_choices=()):
         super().__init__(hits)
         self.evidence = evidence
         self.ranked = ranked
         self.pool = pool
+        self.location_choices = location_choices
+        self.unresolved_proof_facets: frozenset[int] | None = None
 
 
 @timed_stage("retrieval")
@@ -416,7 +418,7 @@ async def _retrieve(message: str, top_k: int, cancel_event=None) -> list[dict]:
         if not focuses and 4 <= top_k <= 8 and not edition.has_search_scope(message):
             async def load_ranked():
                 result = await service.search_ranked_evidence(message, None, top_k)
-                if result.pool or result.facet_evidence:
+                if result.pool or result.facet_evidence or result.ranked:
                     return _FacetHits(result.hits, result.facet_evidence, result.ranked, result.pool)
                 return result.hits
 
@@ -590,10 +592,10 @@ async def _saved_evidence_guidance(db, data, actor, page, scope, attachments) ->
             elif workflow == 'copilot_citation_return' and previous_citation_status_question(text):
                 guidance += '\n\n' + await previous_citation_answer(db, data, actor, read_citation)
             elif workflow == 'original_reader_return' and kind == 'original_page':
-                guidance += '\n\n' + await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+                guidance += '\n\n' + await _original_page_guidance(db, data, actor)
             return guidance
-    if selected and selected.kind == 'original_page' and kind == 'original_page':
-        return await selected_record_answer(db, data, actor, kind, _get_knowledge_service)
+    if kind == 'original_page' and (selected and selected.kind == 'original_page' or not scope.textbook_only):
+        return await _original_page_guidance(db, data, actor)
     if scope.knowledge_lookup is True:
         return ''
     if guidance := terminal_read_only_access_answer(text, route):
@@ -617,12 +619,41 @@ async def _saved_evidence_guidance(db, data, actor, page, scope, attachments) ->
     return saved_route_answer(page, data.message)
 
 
+async def _original_page_guidance(db, data, actor):
+    from .evidence_context import selected_record_answer
+    from .knowledge_continuation import continue_sources, wants_same_source
+    from .request_store import prior_source_context
+    from .schemas import OriginalPageRecord
+
+    if not data.context.page_record and wants_same_source(data):
+        prior = await prior_source_context(db, data, actor)
+        continuation = await continue_sources(prior, data, _get_knowledge_service, data.message)
+        if continuation.status == 'page':
+            hit = continuation.hits[0]
+            record = OriginalPageRecord(kind='original_page', document_id=hit['document_id'],
+                                        version=hit['document_version'], page=hit['page'])
+            context = data.context.model_copy(update={'page_record': record})
+            data = data.model_copy(update={'context': context})
+    return await selected_record_answer(db, data, actor, 'original_page', _get_knowledge_service)
+
+
 async def _copilot_knowledge_hits(data, history, actor, skill, attachments, *, db=None, factory=None):
-    from .knowledge_continuation import continue_sources, refers_to_previous_source, wants_same_source
+    from .knowledge_continuation import (continue_open_page, continue_sources, refers_to_previous_source,
+                                         wants_open_page, wants_same_source)
     from .request_store import prior_source_context
 
     continuity = ''
-    if skill.id == 'knowledge_answer' and not attachments and wants_same_source(data):
+    if skill.id == 'knowledge_answer' and not attachments and wants_open_page(data):
+        try:
+            result = await continue_open_page(data, _get_knowledge_service)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning('copilot_open_page_unavailable', error=type(exc).__name__)
+            return [], 'degraded'
+        if result.status != 'independent':
+            return result.hits, result.status
+        history = []
+        continuity = result.status
+    elif skill.id == 'knowledge_answer' and not attachments and wants_same_source(data):
         try:
             if factory is not None:
                 async with factory() as source_db:
@@ -644,11 +675,60 @@ async def _copilot_knowledge_hits(data, history, actor, skill, attachments, *, d
         continuity = 'independent'
     retrieval_query = knowledge_retrieval_query(data.message, history)
     hits = await _retrieve(retrieval_query, data.top_k)
+    if (not hits and not data.want_draft and not attachments and not data.attachments
+            and not data.attachment_message_id and skill.id == 'knowledge_answer'):
+        hits = await _read_exact_page_question(data, hits)
     if (not continuity and retrieval_query == data.message and not attachments and not data.attachments
-            and not data.attachment_message_id and not data.want_draft and skill.id == 'knowledge_answer'
-            and not isinstance(hits, _FacetHits)):
-        hits = await _recover_scoped_observations(data, hits)
+            and not data.attachment_message_id and not data.want_draft and skill.id == 'knowledge_answer'):
+        if isinstance(hits, _FacetHits):
+            hits = await _find_port_location_choices(data, hits)
+        else:
+            hits = await _recover_scoped_observations(data, hits)
     return hits, continuity
+
+
+async def _read_exact_page_question(data, hits):
+    """An explicit physical page can be read even when a deictic question has no useful search terms."""
+    from .question_intent import navigation_question
+    from .source_scope import explicit_physical_scope
+
+    question = navigation_question(data.message)
+    if (not explicit_physical_scope(data.message)
+            or not re.search(r'(?:这|该)(?:一)?页|本页|页上|页内', question)
+            or not re.search(r'记录|说明|支持|核证|证据|解释|出处|结论|限制', question)):
+        return hits
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if not edition:
+        return hits
+    return await asyncio.to_thread(_locate_offline_edition_page, edition, data.message) or hits
+
+
+async def _find_port_location_choices(data, hits):
+    from .evidence_refinement import textbook_port_lookup
+    from .question_intent import plain_question
+
+    question = plain_question(data.message)
+    lookup = textbook_port_lookup(question)
+    if not lookup:
+        return hits
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if not edition or edition.has_search_scope(question) or len(_ambiguous_port_locations(question, hits, edition=edition)) > 1:
+        return hits
+    try:
+        _, label = lookup
+        keyword = edition.keyword_index
+        available, candidates = await keyword.search_pages(label, 16)
+        choices = await asyncio.to_thread(edition.resolve_hits, candidates, keyword, None, query=label) if available else []
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.warning('copilot_port_location_unavailable', error=type(exc).__name__)
+        return hits
+    if not choices:
+        return hits
+    # Broaden the pool used to identify possible locations only. It is never
+    # passed to other ranked selectors or used as the answer's evidence list.
+    return _FacetHits(hits, hits.evidence, hits.ranked, hits.pool, location_choices=choices)
 
 
 async def _recover_scoped_observations(data, hits):
@@ -700,6 +780,14 @@ async def _recover_scoped_observations(data, hits):
 
 
 def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointers=False):
+    sources, notice = _prepare_primary_copilot_sources(data, hits, skill, continuity, keep_page_pointers=keep_page_pointers)
+    if (sources and not notice and not continuity and not keep_page_pointers and skill.id == 'knowledge_answer'
+            and isinstance(hits, _FacetHits) and not (data.want_draft or data.attachments or data.attachment_message_id)):
+        sources = _supplement_same_step_readout(data.message, hits, sources, min(data.top_k, 6))
+    return sources, notice
+
+
+def _prepare_primary_copilot_sources(data, hits, skill, continuity, *, keep_page_pointers):
     from .evidence_refinement import direct_evidence_limit, example_evidence_query, prepare_example_evidence, refine_sources
     from .example_scope import exclude_conflicting_examples
     from .question_intent import plain_question, textbook_reference_question
@@ -719,6 +807,8 @@ def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointer
     sources = prepare_sources(hits[:limit])
     if keep_page_pointers or continuity:
         return sources, ''
+    if len(_ambiguous_port_locations(question, hits)) > 1:
+        return [], '教材中有多处符合所问端口的记录。请确认实验名称和阶段，或从知识库打开对应的 PDF 物理页后继续提问。'
     if isinstance(hits, _FacetHits) and hits.evidence and (pair := hits.evidence.select_hits(data.message, hits)):
         prepared = prepare_sources(pair, max_documents=limit)
         if len(prepared) == 2 and not any(source['truncated'] for source in prepared):
@@ -728,6 +818,18 @@ def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointer
                 return prepared, ''
     if isinstance(hits, _FacetHits) and hits.ranked and hits.ranked.query_sha256 == sha256(data.message.encode('utf-8')).hexdigest():
         ranked = hits.ranked
+        if getattr(ranked, 'ambiguous_verified_bundle', False):
+            return [], '教材中有多处符合所给读回与说明的实验。请确认实验名称、阶段或 PDF 物理页。'
+        if bundle := getattr(ranked, 'verified_bundle', None):
+            selected = ranked.select_verified_bundle(data.message, hits.pool)
+            if selected:
+                by_ref = _facet_number_by_hit(bundle.matches)
+                prepared, covered = _prepare_verified_bundle(selected, by_ref, limit, ranked.facets)
+                if prepared:
+                    missing = {number for number, _, _ in ranked.facets} - covered
+                    hits.unresolved_proof_facets = frozenset(missing)
+                    return prepared, _observation_gap(ranked.facets, missing, set())
+            return [], '本次未能完整回读同一实验的教材证据。请从知识库核对所需页位，再继续提问。'
         if getattr(ranked, 'ambiguous_precise_case', False):
             return [], '教材中有多处同样符合所给方向和读回线索。请补充所问实验的章节、图表编号或 PDF 物理页。'
         if getattr(ranked, 'precise_case', None) and (precise := ranked.select_precise_hits(data.message, hits.pool)):
@@ -737,9 +839,12 @@ def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointer
             if (edition and len(prepared) == len(precise)
                     and all(not source['truncated'] and _readable_edition_page(edition, source) for source in prepared)):
                 return prepared, ''
-        if verified := _prepare_verified_claims(data.message, ranked, hits.pool, sources, limit):
+        unresolved = set()
+        if verified := _prepare_verified_claims(data.message, ranked, hits.pool, sources, limit, unresolved=unresolved):
             verified_sources, gaps = verified
             scoped, notice = exclude_conflicting_examples(question, verified_sources)
+            if scoped and gaps and not notice and len(scoped) == len(verified_sources):
+                hits.unresolved_proof_facets = frozenset(unresolved)
             return scoped, notice or gaps
     route = data.context.route if data.context else None
     example = example_evidence_query(question, allow_explicit=route == '/knowledge' or textbook_reference_question(question, route))
@@ -795,51 +900,215 @@ def _prepare_copilot_sources(data, hits, skill, continuity, *, keep_page_pointer
     return sources, ''
 
 
-def _prepare_verified_claims(question, ranked, pool, baseline, limit):
+_PLANNED_EVIDENCE = re.compile(r'预期|预计|计划|规划|样例模板|尚未采集|尚未(?:执行|观测|读回)')
+
+
+def _supplement_same_step_readout(question, hits, sources, limit):
+    from modules.knowledge.facet_evidence import FacetEvidenceRef
+    from modules.knowledge.source_claims import authored_readout_clauses
+    from .context_bundle import MAX_DOCUMENTS_CHARS
+    from .example_scope import exclude_conflicting_examples
+
+    ranked = hits.ranked
+    pending = getattr(ranked, 'same_step_readouts', ())
+    if not pending or ranked.query_sha256 != sha256(question.encode('utf-8')).hexdigest():
+        return sources
+    pool = {FacetEvidenceRef.from_hit(hit): hit for hit in hits.pool}
+    previous = _with_example_scope(sources, hits)
+    selected = {_example_source_key(source) for source in sources}
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if not edition:
+        return sources
+    already_bound = {ref: set() for _, ref in ranked.matches if ref in pool}
+    for number, ref in ranked.matches:
+        if ref in already_bound:
+            already_bound[ref].add(number)
+
+    for number, reference in pending:
+        if not (hit := pool.get(reference)):
+            continue
+        experiment, phase = hit.get('source_experiment_key'), hit.get('source_phase_key')
+        if not experiment or not phase:
+            continue
+        sibling = [item for ref, supported in already_bound.items() if supported - {number}
+                   and (item := pool[ref]).get('source_experiment_key') == experiment and item.get('source_phase_key') == phase]
+        if not any((seed := prepare_sources([item])) and _preserves_edition_sources(seed, sources) for item in sibling):
+            continue
+        prepared = prepare_sources([{**hit, 'query_focus': f'问题的第 {number} 项（同一步骤的教材记录）'}])
+        if len(prepared) != 1 or prepared[0]['truncated'] or not _readable_edition_page(edition, prepared[0]):
+            continue
+        source = prepared[0]
+        if _example_source_key(source) in selected or _preserves_edition_sources([source], sources):
+            continue
+        if not exclude_conflicting_examples(question, [{**source, 'source_experiment_key': experiment,
+                                                        'source_phase_key': phase, 'source_heading_path': hit['source_heading_path']}])[0]:
+            continue
+        retained = list(sources)
+        if len(retained) >= limit:
+            discard = next((index for index in range(len(previous) - 1, -1, -1)
+                            if (key := previous[index].get('source_experiment_key')) and key != experiment
+                            and _PLANNED_EVIDENCE.search(previous[index]['content'])
+                            and not any(authored_readout_clauses(previous[index]['content']))), None)
+            if discard is None:
+                continue
+            retained.pop(discard)
+        if sum(len(item['prompt_text']) for item in [*retained, source]) <= MAX_DOCUMENTS_CHARS:
+            return [*retained, source]
+    return sources
+
+
+def _facet_number_by_hit(matches):
+    by_ref = {}
+    for number, reference in matches:
+        by_ref.setdefault(reference, set()).add(number)
+    return by_ref
+
+
+def _prepare_verified_bundle(selected, by_ref, limit, facets=()):
+    from modules.knowledge.facet_evidence import FacetEvidenceRef
+    from .context_bundle import MAX_DOCUMENTS_CHARS
+
+    service = _get_knowledge_service()
+    edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if not edition or limit < 1:
+        return [], set()
+    role_labels = {
+        'readback': '记录中的读数',
+        'configuration': '教材配置步骤',
+        'diagram': '教材图示',
+        'output_interpretation': '字段解释',
+        'evidence_limit': '证据边界',
+        'mechanism': '原理说明',
+        'concept': '概念说明',
+        'principle_definition': '概念定义',
+        'principle_purpose': '用途说明',
+    }
+    roles = {number: role_labels[kind] for number, _, kind in facets if kind in role_labels}
+    boundary_labels = {
+        'excluded_inference': '不能据此确认的结论',
+        'required_observation': '仍需核对的观测',
+        'separate_observation': '应另查的记录',
+    }
+    used_roles = {roles[number] for numbers in by_ref.values() for number in numbers if number in roles}
+    distinguish_roles = len(used_roles) > 1
+    candidates = [(hit, by_ref.get(FacetEvidenceRef.from_hit(hit))) for hit in selected]
+    readings = {}
+    sources = []
+    covered = set()
+    remaining = MAX_DOCUMENTS_CHARS
+    for hit, numbers in sorted((item for item in candidates if item[1]), key=lambda item: min(item[1])):
+        ordered = sorted(numbers)
+        if distinguish_roles:
+            labels = []
+            for number in ordered:
+                detail = roles.get(number)
+                if detail == '证据边界':
+                    boundary = [boundary_labels[witness] for facet, witness in hit.get('facet_witnesses', ())
+                                if facet == number and witness in boundary_labels]
+                    if boundary:
+                        detail += '：' + '、'.join(dict.fromkeys(boundary))
+                labels.append(f'第 {number} 项（{detail}）' if detail else f'第 {number} 项')
+            focus = '问题的' + '、'.join(labels)
+        else:
+            focus = '问题的第 ' + '、'.join(map(str, ordered)) + ' 项'
+        prepared = prepare_sources([{**hit, 'query_focus': focus}], max_total_chars=remaining)
+        if prepared and not prepared[0]['truncated'] and _readable_edition_page(edition, prepared[0], readings):
+            source = prepared[0]
+            sources.append(source)
+            covered.update(numbers)
+            remaining -= len(source['prompt_text'])
+            if len(sources) == limit or not remaining:
+                break
+    return sources, covered
+
+
+def _verified_claim_scope(ranked, selected, by_ref, observation_ids):
+    """Restrict an explicitly linked question to proof from one experiment."""
+    compares_phases = getattr(ranked, 'compare_phases', False)
+    if not compares_phases and not getattr(ranked, 'explicit_same_experiment', False):
+        return selected, by_ref, ''
+    if compares_phases:
+        phase_facets = set(getattr(ranked, 'phase_facets', ())) or observation_ids
+        by_ref = {reference: numbers - phase_facets.difference(selected[reference].get('facet_phase_ids', ()))
+                  for reference, numbers in by_ref.items()}
+    groups = {}
+    for reference, numbers in by_ref.items():
+        if not numbers:
+            continue
+        hit = selected[reference]
+        # Across pages, only a verified shared experiment (or shared phase
+        # when a comparison was not requested) links independent excerpts.
+        identity = hit.get('source_experiment_key')
+        if identity:
+            key = ('experiment', reference.edition_version, reference.document_id, reference.document_version,
+                   identity, None if compares_phases else hit.get('source_phase_key'))
+        else:
+            key = ('excerpt', reference)
+        groups.setdefault(key, {})[reference] = numbers
+    observed_groups = [claims for claims in groups.values()
+                       if any(numbers & observation_ids for numbers in claims.values())]
+    alternatives = observed_groups or list(groups.values())
+    if len(alternatives) > 1:
+        return {}, {}, '教材中有多处可能的实验或阶段。尚未核对到能支持同一实验比较的一组记录，请确认章节或 PDF 物理页。'
+    if not alternatives:
+        return {}, {}, '尚未核对到能支持所问阶段的同版记录，请补充实验章节、阶段标题或 PDF 物理页。'
+    admitted = alternatives[0]
+    return {reference: hit for reference, hit in selected.items() if reference in admitted}, admitted, ''
+
+
+def _prepare_verified_claims(question, ranked, pool, baseline, limit, *, unresolved=None):
     from modules.knowledge.facet_evidence import FacetEvidenceRef
 
     observation_ids = set(getattr(ranked, 'observation_facets', ()))
     all_ids = {number for number, _, _ in ranked.facets}
-    only_observations = bool(observation_ids and observation_ids == all_ids)
     ambiguous = set(getattr(ranked, 'ambiguous_observation_facets', ()))
+    needs_same_case = observation_ids and (getattr(ranked, 'compare_phases', False)
+                                          or getattr(ranked, 'explicit_same_experiment', False))
     observed = (ranked.select_verified_observations(question, pool) or []) if observation_ids else []
     explanation_matches = getattr(ranked, 'verified_explanation', ())
     explanations = (ranked.select_verified_explanations(question, pool) or []) if explanation_matches else []
     selected = {FacetEvidenceRef.from_hit(hit): hit for hit in (*observed, *explanations)}
     if not selected:
-        if only_observations and ambiguous:
+        if observation_ids and ambiguous:
             return [], '教材中有不止一处符合所给线索的实际记录。请补充设备、实验阶段、图表编号或 PDF 物理页。'
+        if needs_same_case:
+            return [], _observation_gap(ranked.facets, all_ids, set())
         return None
-    if len(selected) > limit:
+    by_ref = _facet_number_by_hit((number, reference) for number, reference in (
+        *getattr(ranked, 'verified_observation', ()), *explanation_matches) if reference in selected)
+    selected, by_ref, conflict = _verified_claim_scope(ranked, selected, by_ref, observation_ids)
+    if conflict:
+        return [], conflict
+    sources, found = _prepare_verified_bundle(list(selected.values()), by_ref, limit, ranked.facets)
+    if not sources:
+        if needs_same_case:
+            return [], _observation_gap(ranked.facets, all_ids - ambiguous, ambiguous)
         return None
-    service = _get_knowledge_service()
-    edition = service.edition() if isinstance(service, KnowledgeService) else None
-    if not edition:
-        return None
-    by_ref = {}
-    for number, reference in (*getattr(ranked, 'verified_observation', ()), *explanation_matches):
-        if reference in selected:
-            by_ref.setdefault(reference, set()).add(number)
-    focused = [{**hit, 'query_focus': '问题的第 ' + '、'.join(map(str, sorted(by_ref[reference]))) + ' 项'}
-               for reference, hit in selected.items()]
-    sources = prepare_sources(focused, max_documents=limit)
-    if len(sources) != len(selected) or any(source['truncated'] or not _readable_edition_page(edition, source)
-                                             for source in sources):
-        return None
-    found = set().union(*by_ref.values())
     if found == all_ids:
         return sources, ''
-    if not only_observations and baseline and not ambiguous:
+    if (found & observation_ids and all_ids - observation_ids and baseline and not needs_same_case
+            and getattr(ranked, 'same_experiment', False)
+            and not _preserves_edition_sources(baseline, sources)):
+        # A single verified excerpt within the initial leading page can answer
+        # several observations and a separate explanation even with a gap.
+        same_excerpt = (not ambiguous and len(sources) == 1 and len(found & observation_ids) >= 2
+                        and bool(found - observation_ids) and _preserves_edition_sources(sources, baseline[:1]))
+        if not same_excerpt:
+            return None
+    if not observation_ids and baseline and not ambiguous:
         topics = dict(getattr(ranked, 'comparison_topics', ()))
         same_passage = {number for number, reference in getattr(ranked, 'matches', ()) if reference in selected}
         keep_topics = tuple(topic for number, topic in topics.items() if number not in found) if (
             found.intersection(topics) and all_ids - topics.keys() <= found | same_passage
         ) else ()
         merged = _merge_ranked_sources(question, baseline, sources, limit, keep_topics=keep_topics)
-        # A mixed reply can have other usable baseline proof. Preserve it and
-        # let the verified mechanism supplement it when the budget permits.
+        # A concept comparison may have direct proof in the ordinary baseline.
         return (merged, '') if merged else None
-    return sources, _observation_gap(ranked.facets, all_ids - found - ambiguous, ambiguous - found)
+    missing = all_ids - found
+    if unresolved is not None:
+        unresolved.update(missing)
+    return sources, _observation_gap(ranked.facets, missing - ambiguous, ambiguous - found)
 
 
 def _observation_gap(facets, absent, ambiguous):
@@ -975,6 +1244,8 @@ def _prepare_ranked_example(example, hits, edition, limit):
 
 
 def _source_continuity_notice(status):
+    if status == 'missing_quote':
+        return '已核对本轮所选的同版教材范围，但没有找到这段原句。可核对原页，或缩短引文后重试。'
     if status in {'unavailable', 'degraded'}:
         return ('本轮无法核验要继续引用的同版教材出处。'
                 '请在同一对话中重选最近回答的引用，或告诉我教材名和 PDF 物理页。')
@@ -993,7 +1264,8 @@ _OFFLINE_EDITION_FIELD_TASK = re.compile(r'工单|贴出的回显|(?:下面|以�
 def _offline_edition_intent(data, history, scope, skill, attachments) -> str:
     from modules.knowledge.complementary_facets import complementary_request
     from modules.knowledge.query_focus import protocol_names
-    from .evidence_refinement import classroom_route_question
+    from .evidence_refinement import classroom_route_question, textbook_port_lookup
+    from .knowledge_continuation import wants_open_page
     from .question_intent import (explicit_device_read, explicit_study, network_reasoning_question,
                                   new_device_read_scope, plain_question, study_followup,
                                   textbook_reference_question)
@@ -1004,7 +1276,8 @@ def _offline_edition_intent(data, history, scope, skill, attachments) -> str:
     concepts = skill.reason == 'explicit_concepts_only' and bool(protocol_names(text))
     evidence_pair = not explicit_device_read(text) and bool(complementary_request(text))
     classroom = ((textbook_reference_question(text, data.context.route if data.context else None)
-                  or network_reasoning_question(text) or evidence_pair)
+                  or network_reasoning_question(text) or evidence_pair
+                  or textbook_port_lookup(text) or wants_open_page(data))
                  and not new_device_read_scope(text))
     if (data.want_draft or data.attachments or data.attachment_message_id or attachments or scope.provided_only
             or scope.saved_record_only or scope.previous_material or scope.knowledge_lookup is False
@@ -1039,8 +1312,36 @@ def _readable_edition_page(edition, source: dict, readings=None) -> dict | None:
                  and page['section_id'] == source['section_id'] and page.get('evidence_eligible')), None)
 
 
+def _guide_phase_identity(hit):
+    experiment, phase = hit.get('source_experiment_key'), hit.get('source_phase_key')
+    if experiment and phase:
+        return hit['edition_version'], hit['document_id'], hit['document_version'], experiment, phase
+
+
+def _guide_boundary_phase(question, hits, edition, readings):
+    from modules.knowledge.facet_evidence import FacetEvidenceRef
+
+    ranked = hits.ranked
+    if (not ranked or getattr(ranked, 'compare_phases', False) or not getattr(ranked, 'observation_facets', ())
+            or not getattr(ranked, 'verified_explanation', ())):
+        return None
+    boundary_ids = {number for number, _, kind in ranked.facets if kind == 'evidence_limit'}
+    references = {reference for number, reference in ranked.verified_explanation if number in boundary_ids}
+    if not references:
+        return None
+    verified = ranked.select_verified_explanations(question, hits.pool) or ()
+    boundaries = [hit for hit in verified if FacetEvidenceRef.from_hit(hit) in references]
+    if not all(_readable_edition_page(edition, {**hit, 'content': hit.get('text')}, readings) for hit in boundaries):
+        return None
+    identities = {_guide_phase_identity(hit) for hit in boundaries}
+    return next(iter(identities)) if len(identities) == 1 else None
+
+
 def _assistant_source_guide(data, skill, hits, sources, notice, *, continuity='', status='empty', textbook_only=False):
     """Local navigation for unresolved textbook requests, independent of model evidence."""
+    from modules.knowledge.local_provider import _network_labels
+    from modules.knowledge.query_focus import protocol_names
+    from modules.knowledge.ranked_evidence import _devices
     from .source_scope import explicit_physical_scope
 
     if (skill.id != 'knowledge_answer' or continuity or data.want_draft or data.attachments
@@ -1049,6 +1350,7 @@ def _assistant_source_guide(data, skill, hits, sources, notice, *, continuity=''
     kind = ('ambiguous' if re.search('多处|不止一处|多个可能', notice)
             else 'partial' if sources else 'unavailable' if status == 'degraded' else 'no_match')
     candidates = []
+    phase_candidates = []
     # An explicitly specified page stays scoped even when its name or number
     # cannot be resolved. Do not suggest other pages from general search.
     if isinstance(hits, _FacetHits) and not explicit_physical_scope(data.message):
@@ -1059,29 +1361,94 @@ def _assistant_source_guide(data, skill, hits, sources, notice, *, continuity=''
             edition = None
         if edition:
             used = {(s.get('document_id'), s.get('page')) for s in sources}
+            scoped_documents = {(s.get('document_id'), s.get('document_version')) for s in sources}
+            missing = hits.unresolved_proof_facets if kind == 'partial' else None
+            phases = set(getattr(hits.ranked, 'phase_facets', ())) if missing else set()
             readings = {}
-            for hit in hits.pool:
+            port_locations = _ambiguous_port_locations(data.message, hits, edition=edition) if kind == 'ambiguous' else []
+            proven_ports = len(port_locations) > 1
+            boundary_phase = (_guide_boundary_phase(data.message, hits, edition, readings)
+                              if kind == 'ambiguous' and not sources and not proven_ports else None)
+            original_scopes = getattr(hits.ranked, 'original_scope_locations', ()) if not sources and kind != 'unavailable' else ()
+            asked_devices, asked_labels = _devices(data.message), set(_network_labels(data.message))
+            requested_protocols = protocol_names(data.message)
+            stp_family = {'stp', 'rstp', 'mstp'}
+            if requested_protocols & stp_family:
+                requested_protocols |= stp_family
+            shown_scopes = set()
+            for hit in port_locations if proven_ports else (*original_scopes, *hits.pool):
+                scope = hit.get('scope_candidate_key') if original_scopes else None
+                phase = hit.get('scope_candidate_phase') or ''
+                text = hit.get('text') or ''
+                scoped_location = bool(scope and hit.get('scope_candidate_clauses') and text
+                                       and asked_devices <= _devices(text) and asked_labels <= set(_network_labels(text)))
+                if scoped_location and (scope, phase) in shown_scopes:
+                    continue
                 # A keyword hit can lead to a different experiment even when
                 # it has a valid page. Only suggest pages matched to a facet.
-                if not hit.get('facet_ids'):
+                if not (proven_ports or scoped_location or hit.get('facet_ids')):
                     continue
                 document_id, page = hit.get('document_id'), hit.get('page')
+                if missing is not None:
+                    witnessed = set(hit.get('facet_readback_ids', ())) | set(hit.get('facet_explanation_ids', ()))
+                    witnessed -= phases.difference(hit.get('facet_phase_ids', ()))
+                    if not missing & witnessed or (document_id, hit.get('document_version')) not in scoped_documents:
+                        continue
                 document = getattr(edition, 'documents', {}).get(document_id)
                 if ((document_id, page) in used or not document or not hit.get('document_version')
                         or document.get('sha256') != hit['document_version']):
+                    continue
+                headings = '\n'.join(filter(None, (hit.get('scope_candidate_title'), hit.get('scope_candidate_phase'),
+                                                     *hit.get('source_heading_path', ()), document.get('title'))))
+                declared = protocol_names(headings)
+                if requested_protocols and declared and requested_protocols.isdisjoint(declared | protocol_names(text)):
+                    continue
+                if scoped_location and re.fullmatch(r'阅读导览|读本导览(?:与实验前提)?|目录|原页查阅|资料信息',
+                                                   hit.get('scope_candidate_title', '')):
                     continue
                 entry = {**hit, 'content': hit.get('text')}
                 if not _readable_edition_page(edition, entry, readings):
                     continue
                 used.add((document_id, page))
-                candidates.append({
+                title = document.get('title') or hit['book_title']
+                if scoped_location:
+                    shown_scopes.add((scope, phase))
+                    title = ' · '.join(value for value in (hit.get('scope_candidate_title'), phase) if value) or title
+                location = {
                     'document_id': document_id, 'document_version': hit['document_version'],
                     'edition_version': edition.version, 'page': page,
-                    'book_title': hit['book_title'], 'title': document.get('title') or hit['book_title'],
-                })
+                    'book_title': hit['book_title'], 'title': title,
+                }
+                candidates.append(location)
+                if (boundary_phase and _guide_phase_identity(hit) == boundary_phase
+                        and (hit.get('facet_readback_ids') or hit.get('facet_explanation_ids'))):
+                    phase_candidates.append(location)
                 if len(candidates) == 3:
                     break
-    return {'status': kind, 'candidates': candidates}
+    return {'status': kind, 'candidates': phase_candidates if len(phase_candidates) >= 2 else candidates}
+
+
+def _ambiguous_port_locations(question, hits, *, edition=None):
+    from .evidence_refinement import port_observation_matches
+    from modules.knowledge.query_focus import compact_text
+
+    if not isinstance(hits, _FacetHits):
+        return []
+    matched = port_observation_matches(question, (*hits, *hits.pool, *hits.location_choices))
+    if len(matched) < 2:
+        return []
+    if edition is None:
+        service = _get_knowledge_service()
+        edition = service.edition() if isinstance(service, KnowledgeService) else None
+    if not edition or edition.has_search_scope(question):
+        return []
+    expression = compact_text(question)
+    if any(len(title) >= 4 and compact_text(title) in expression
+           for candidate in matched
+           if (title := edition.documents.get(candidate['document_id'], {}).get('title'))):
+        return []
+    readings = {}
+    return [hit for hit in matched if _readable_edition_page(edition, {**hit, 'content': hit.get('text')}, readings)]
 
 
 async def _current_edition_excerpt(edition, source: dict) -> dict | None:
@@ -1169,25 +1536,29 @@ async def _offline_edition_search(data, actor, skill, attachments, intent, *, db
     service = _get_knowledge_service()
     edition = service.edition() if isinstance(service, KnowledgeService) else None
     if edition is None:
-        return [], '', None
+        return [], '', None, ''
     if intent == 'locator':
         hits = await asyncio.to_thread(_locate_offline_edition_page, edition, data.message)
         if hits:
-            return prepare_sources(hits[:data.top_k]), '', None
+            return prepare_sources(hits[:data.top_k]), '', None, ''
     # The edition's default search is local. Bind any explicit continuation
     # in the request store and do not add client-supplied chat history.
     hits, continuity = await _copilot_knowledge_hits(data, [], actor, skill, attachments, db=db, factory=factory)
     sources, notice = _prepare_copilot_sources(data, hits, skill, continuity, keep_page_pointers=intent == 'locator')
+    notice = _source_continuity_notice(continuity) or notice
     guide = await asyncio.to_thread(_assistant_source_guide, data, skill, hits, sources, notice,
                                     continuity=continuity, textbook_only=True)
-    return sources, notice, guide
+    return sources, notice, guide, continuity
 
 
 async def _try_offline_edition_lookup(data, actor, skill, attachments, intent, *, db=None, factory=None, provider_failed=False):
     try:
-        sources, notice, guide = await _offline_edition_search(data, actor, skill, attachments, intent, db=db, factory=factory)
+        sources, notice, guide, continuity = await _offline_edition_search(
+            data, actor, skill, attachments, intent, db=db, factory=factory)
         result = await _offline_edition_result(intent, sources, question=data.message, scope_notice=notice,
-                                               provider_failed=provider_failed)
+                                               provider_failed=provider_failed,
+                                               knowledge_status='degraded' if continuity == 'degraded' else '',
+                                               trace={'source_continuity': continuity} if continuity else None)
         if result is not None and guide:
             result['source_guide'] = guide
         return result

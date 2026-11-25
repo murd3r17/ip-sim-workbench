@@ -6,7 +6,7 @@ import re
 from modules.knowledge.query_focus import lookup_parts, protocol_names
 
 from .context_bundle import cited_indices
-from .question_intent import new_device_read_scope, plain_question
+from .question_intent import guided_page_question, new_device_read_scope, plain_question
 from .trusted_context import exclude_previous_config_comparison
 
 
@@ -19,6 +19,12 @@ _CHANGE_SOURCE = re.compile(
     r'(?:换(?:到|成|了)|改(?:看|读|用|成)|(?:现在|这次|本次|我)(?:选|看|读)的是|刚打开了另一个|不再(?:用|看))'
     r'[^，。！？；\n]{0,25}(?:教材|课本|那页|原页|章节|来源|图)|'
     r'另(?:一(?:份|本|章|页|张图)|外选了)|不沿用|清除(?:旧|上次|刚才的)?(?:引用|出处|资料)')
+_OPENED_READING = re.compile(
+    r'(?:我(?:刚才|刚|已|已经)?(?:在[^。！？；，\n]{0,18})?|从(?:教材|资料)?目录)'
+    r'(?:打开|点开|选中|选了|查阅)(?:了)?(?P<location>[^。！？；，\n]+)')
+_CURRENT_READING_PAGE = re.compile(
+    r'本页|当前(?:教材|正文|整理稿)?页|(?:这|刚打开的那)(?:一)?页|(?:这|当前)(?:一)?份整理稿')
+_READING_FOLLOWUP = re.compile(r'(?:这个|此|本)(?:教材|课本|实验|例题|示例|案例|章节|表)|这(?:一)?步')
 
 
 def cited_locators(response: dict) -> list[dict]:
@@ -57,6 +63,31 @@ def wants_same_source(data) -> bool:
     return refers_to_previous_source(question)
 
 
+def wants_open_page(data) -> bool:
+    context = data.context
+    if (not context or not context.page_record
+            or context.page_record.kind != 'original_page' or context.config_comparison
+            or data.want_draft or data.attachments or data.attachment_message_id):
+        return False
+    question = plain_question(data.message)
+    guided = guided_page_question(question)
+    if guided:
+        question = question[guided.end():].lstrip()
+    if _CHANGE_SOURCE.search(question) or new_device_read_scope(question):
+        return False
+    if guided:
+        titles, _, pages, _ = lookup_parts(question)
+        return int(guided['page']) == context.page_record.page and not (titles or pages)
+    if context.route != '/knowledge':
+        return False
+    titles, _, pages, _ = lookup_parts(question)
+    if titles or pages:
+        return False
+    opened = _OPENED_READING.search(question)
+    return bool(_CURRENT_READING_PAGE.search(question)
+                or opened and _READING_FOLLOWUP.search(question[opened.end():]))
+
+
 @dataclass(frozen=True)
 class SourceContinuity:
     status: str
@@ -74,6 +105,72 @@ def _cited_pages(edition, document_id: str, document_version: str) -> dict:
     # only admitted evidence pages. Historical/archive-only text is not reused.
     body = edition.read(document_id, document_version, include_original_status=False)
     return _page_texts(body)
+
+
+def _quote_excerpt(excerpt, phrases):
+    from modules.knowledge.edition import literal_excerpt
+    from modules.knowledge.query_focus import compact_text
+
+    literals = tuple(filter(None, map(compact_text, phrases)))
+    if not literals:
+        return excerpt
+    normalized = compact_text(excerpt)
+    if not all(phrase in normalized for phrase in literals):
+        return None
+    return literal_excerpt(excerpt, literals) if len(literals) == 1 else excerpt
+
+
+async def continue_open_page(data, service_factory) -> SourceContinuity:
+    """Use the current authorized reading page when the learner refers to it."""
+    from modules.knowledge.reader import DocumentReadError
+    from modules.knowledge.query_focus import compact_text
+
+    unavailable = SourceContinuity('unavailable', [])
+    independent = SourceContinuity('independent', [])
+    reference = data.context.page_record
+    edition = service_factory().edition()
+    if not edition:
+        return unavailable
+    question = plain_question(data.message)
+    guided = guided_page_question(question)
+    if guided:
+        scope = question[:guided.end()]
+        question = question[guided.end():].lstrip()
+        _, chapters, documents, _, _ = edition.search_scope(scope)
+        _, phrases, _, _ = lookup_parts(question)
+    else:
+        _, chapters, documents, _, phrases = edition.search_scope(question)
+    document = edition.documents.get(reference.document_id)
+    if guided and not document:
+        return unavailable
+    if (chapters and reference.document_id not in {entry['id'] for entry in chapters}
+            or documents is not None and reference.document_id not in documents):
+        return independent
+    if not document or not document.get('ingest') or document['sha256'] != reference.version:
+        return unavailable
+    # A current page pointer cannot override a different specific book or
+    # chapter named in the open action.
+    if opened := _OPENED_READING.search(question):
+        location = opened['location']
+        catalog = getattr(edition, 'books', {})
+        book = catalog.get(document['book'], {})
+        names = [name for name in (document.get('title'), book.get('title'), book.get('filename')) if name]
+        if not _CURRENT_READING_PAGE.search(location) and not any(
+            compact_text(name) in compact_text(location) for name in names
+        ):
+            return independent
+    try:
+        pages = await asyncio.to_thread(_cited_pages, edition, reference.document_id, reference.version)
+    except (DocumentReadError, OSError, ValueError, KeyError):
+        return unavailable
+    if reference.page not in pages:
+        return unavailable
+    section, excerpt = pages[reference.page]
+    excerpt = _quote_excerpt(excerpt, phrases)
+    if not excerpt:
+        return SourceContinuity('missing_quote', [])
+    hit = edition._bound_hit({'retriever': 'edition_open_page'}, document, excerpt.strip(), section, reference.page)
+    return SourceContinuity('page', [hit])
 
 
 async def continue_sources(prior, data, service_factory, query: str) -> SourceContinuity:
@@ -107,7 +204,8 @@ async def continue_sources(prior, data, service_factory, query: str) -> SourceCo
     edition = service.edition()
     if edition is None:
         return unavailable
-    if edition.has_search_scope(data.message):
+    _, chapters, document_ids, physical_range, phrases = edition.search_scope(data.message)
+    if chapters or document_ids is not None or physical_range:
         return independent
     doc_id, version, edition_version = _identity(locators[0])
     document = edition.documents.get(doc_id)
@@ -124,6 +222,9 @@ async def continue_sources(prior, data, service_factory, query: str) -> SourceCo
     if len(cited) == 1:
         page = cited[0]
         section, excerpt = pages[page]
+        excerpt = _quote_excerpt(excerpt, phrases)
+        if not excerpt:
+            return SourceContinuity('missing_quote', [])
         hit = edition._bound_hit({'retriever': 'edition_continued_page'}, document, excerpt.strip(), section, page)
         return SourceContinuity('page', [hit])
 
@@ -135,6 +236,16 @@ async def continue_sources(prior, data, service_factory, query: str) -> SourceCo
     hits = await asyncio.to_thread(edition.resolve_hits, candidates, keyword, None, query=query) if available else []
     hits = [hit for hit in hits if hit.get('document_id') == doc_id and hit.get('document_version') == version
             and hit.get('page') in pages and hit.get('edition_version') == edition_version]
+    if phrases:
+        # Re-check the quoted words against the reader-visible page text.
+        # Do not replace a missing phrase with recap passages or other books.
+        verified = []
+        for page in dict.fromkeys([*(hit['page'] for hit in hits), *cited]):
+            section, excerpt = pages[page]
+            if excerpt := _quote_excerpt(excerpt, phrases):
+                verified.append(edition._bound_hit({'retriever': 'edition_continued_chapter'}, document,
+                                                   excerpt.strip(), section, page))
+        return SourceContinuity('chapter', verified[:data.top_k]) if verified else SourceContinuity('missing_quote', [])
     seen = {hit['page'] for hit in hits}
     for page in cited:
         if page not in seen:

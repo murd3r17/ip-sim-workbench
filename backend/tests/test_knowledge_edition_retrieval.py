@@ -24,6 +24,58 @@ _FIGURE = b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP
 _NESTED_EVIDENCE = "逐项归档控制信号对应的独立通道编号。"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["expected-heading", "expected-caption", "explicit-template", "actual", "different-stages",
+                                    "same-page-actual-caption", "comparison-heading", "simulation-heading"])
+async def test_explicitly_expected_cli_stays_out_of_observed_records(service, monkeypatch, tmp_path, status):
+    from modules.ai_text import router
+    from modules.ai_text.schemas import CopilotChatRequest
+
+    output = ("```text\n<R1>display ip routing-table 198.51.100.0 24\n"
+              "Destination/Mask    Proto   Pre  Cost   Flags NextHop    Interface\n"
+              "198.51.100.0/24     OSPF    10   3      D     192.0.2.8 GigabitEthernet0/0/1\n```")
+    planned = "##### 步骤 1 预计输出示意\n\n" + output
+    measured_output = output.replace("192.0.2.8", "192.0.2.9")
+    actual = "##### 步骤 2 读取实际路由表\n\n" + measured_output
+    first, second, want = planned, "另一条普通说明。", []
+    if status == "expected-caption":
+        first = "##### 步骤 1 第一次检查\n\n**以下仅为预计输出，尚未采集。**\n\n" + output
+    elif status == "explicit-template":
+        first = "##### 步骤 1 参考回显模板\n\n" + output
+    elif status == "actual":
+        first, want = actual, [3]
+    elif status == "different-stages":
+        second, want = actual, [4]
+    elif status == "same-page-actual-caption":
+        first, want = f"{planned}\n\n**实际回显如下。**\n\n{measured_output}", [3]
+    elif status == "comparison-heading":
+        first, want = "##### 步骤 1 对照预期输出和实际回显\n\n" + measured_output, [3]
+    elif status == "simulation-heading":
+        first, want = "##### 步骤 1 模拟结果\n\n" + measured_output, [3]
+
+    edition = _edition(tmp_path / "expected-cli", attached_caption=first, reviewed_page=second,
+                       chapter_heading="案例 1：链路核对")
+    monkeypatch.setattr(service, "edition", lambda: edition)
+    monkeypatch.setattr(router, "_get_knowledge_service", lambda: service)
+    question = "教材的同一轮链路核对中，R1 的路由表回显里，198.51.100.0/24 的下一跳是什么？"
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert result.hits == await service.search(question, top_k=6)
+    request = CopilotChatRequest(message=question, top_k=6, context={"route": "/knowledge"})
+    hits = router._FacetHits(result.hits, result.facet_evidence, result.ranked, result.pool)
+    evidence, notice = router._prepare_copilot_sources(request, hits, SimpleNamespace(id="knowledge_answer"), "")
+    assert result.ranked and not result.ranked.ambiguous_observation_facets
+    assert [source["page"] for source in evidence] == want
+    assert all("192.0.2.9" in source["content"] and "192.0.2.8" not in source["content"] for source in evidence)
+    if want:
+        assert not notice
+    else:
+        assert "尚缺直接教材证据" in notice
+    if "192.0.2.8" in first:
+        original_query = '在《状态记录基础手册》PDF 第 3 页查找原句“192.0.2.8”'
+        raw = await service.search_ranked_evidence(original_query, top_k=6)
+        assert raw.ranked is None and any(hit["page"] == 3 and "192.0.2.8" in hit["text"] for hit in raw.hits)
+
+
 def _write_json(path, value):
     raw = json.dumps(value, ensure_ascii=False).encode()
     path.write_bytes(raw)
@@ -31,7 +83,7 @@ def _write_json(path, value):
 
 
 def _edition(root, *, archived=False, reviewed_page=None, nested=False, blocked=None, attached_caption=None,
-             local_ids=False, keep_crlf=False, chapter_heading=None):
+             local_ids=False, keep_crlf=False, chapter_heading=None, alternative_case=None):
     corpus = root / "corpus"
     corpus.mkdir(parents=True)
     documents = []
@@ -53,7 +105,10 @@ def _edition(root, *, archived=False, reviewed_page=None, nested=False, blocked=
     for identity, book, title, first, second in entries:
         if identity == "audited-1" and attached_caption:
             first = attached_caption
-        chapter = f"## {chapter_heading}\r\n\r\n" if identity == "audited-1" and chapter_heading else ""
+        heading = chapter_heading if identity == "audited-1" else None
+        if identity == "audited-2" and alternative_case:
+            heading, first = alternative_case
+        chapter = f"## {heading}\r\n\r\n" if heading else ""
         path = corpus / f"{identity}.md"
         raw = (f'---\r\ndoc_id: "{identity}"\r\ntitle: "{title}"\r\ningest: "true"\r\n---\r\n'
                f"# {title}\r\n\r\n{chapter}### PDF 第 3 页\r\n\r\n{first}\r\n\r\n"
@@ -286,7 +341,15 @@ async def test_readonly_lsdb_selection_keeps_verified_physical_page_and_exact_ro
     # An already cropped, annotated provider payload cannot prove its place
     # on its own. The contiguous source had to pass version and page checks.
     keyword = edition.keyword_index
-    assert edition.resolve_hits([selected], keyword, "ip-ops-kb", query=QUERY) == []
+    unverified = []
+    assert edition.resolve_hits([selected], keyword, "ip-ops-kb", query=QUERY, original_candidates=unverified) == []
+    assert not unverified
+
+    ranked = await service.search_ranked_evidence(QUERY, top_k=6)
+    assert ranked.hits == await service.search(QUERY, top_k=6)
+    [original] = [hit for hit in ranked.pool if hit["document_id"] == selected["document_id"]
+                  and hit["page"] == selected["page"] and OTHER.rstrip() in hit["text"]]
+    assert original["section_id"] == selected["section_id"] and "partial_readonly_table" not in original
 
     monkeypatch.setattr("modules.knowledge.reviewed_source_notes.notes_for_excerpt",
                         lambda _name, text, _version: [{"id": "qualified"}] if OTHER.rstrip() in text else [])
@@ -860,6 +923,521 @@ async def test_uncertain_multi_principles_retain_previous_selection(service, mon
             baseline.setattr(ranked_evidence, "_independent_principles", lambda terms, plan: None)
             previous = await service.search_ranked_evidence(query, top_k=6)
         assert result == previous, query
+
+
+@pytest.mark.asyncio
+async def test_actor_comparison_cites_each_action_under_its_own_topic(service, monkeypatch, tmp_path):
+    first = "**NTFY。** 客户端发送通知，接收系统单独核对是否入档。"
+    second = "**LKUP。** 服务端查询目录，这一检索用于确认索引是否存在。"
+    source = _edition(tmp_path / "ordinary-actor-contrast", attached_caption=first, reviewed_page=second)
+    monkeypatch.setattr(service, "edition", lambda: source)
+    query = "比较 LKUP 和 NTFY：谁发送通知、谁查目录？"
+    outcome = await service.search_ranked_evidence(query, top_k=6)
+    assert outcome.hits == await service.search(query, top_k=6)
+    assert outcome.ranked and outcome.ranked.missing == ()
+    matched = outcome.ranked.select_verified_explanations(query, outcome.pool)
+    assert [(item["page"], item["text"]) for item in matched] == [(3, first), (4, second)]
+
+    misleading = _edition(tmp_path / "unscoped-actor-contrast", attached_caption=first,
+                          reviewed_page=second.replace("服务端", "NTFY 的服务端"))
+    monkeypatch.setattr(service, "edition", lambda: misleading)
+    fallback = await service.search_ranked_evidence(query, top_k=6)
+    assert not fallback.ranked or not fallback.ranked.select_verified_explanations(query, fallback.pool)
+
+
+def test_ranked_bundle_requires_one_original_case_to_cover_all_facets():
+    from modules.knowledge.facet_evidence import FacetEvidenceRef
+    from modules.knowledge.ranked_evidence import _Passages, _plan
+
+    query = ("同一实验中，调整前 R1 的系统状态回显是什么？调整后 R1 的系统状态回显是什么？"
+             "这个字段表示什么？")
+    plan = _plan(query)
+    assert plan.same_experiment and plan.compare_phases and len(plan.facets) == 3
+    passages = _Passages(SimpleNamespace(version="frozen"))
+
+    def admit(page, original, text, *, readback=(), explanation=()):
+        candidate = {"edition_version": "frozen", "document_id": "chapter", "document_version": "version",
+                     "section_id": f"page-{page}", "page": page, "text": text,
+                     "source_phase_key": f"chapter@version:{page}", "source_experiment_key": original,
+                     "facet_readback_ids": readback, "facet_explanation_ids": explanation,
+                     "facet_phase_ids": readback + explanation}
+        reference = FacetEvidenceRef.from_hit(candidate)
+        passages.pool[reference] = candidate
+        passages.scoped_claims[(passages._scope(candidate, reference), reference)] = candidate
+        return reference
+
+    before = admit(12, "chapter@version:20", "调整前的只读记录原文。", readback=(1,))
+    after = admit(13, "chapter@version:20", "调整后的完整只读记录连同原字段解释。", readback=(2,), explanation=(3,))
+    admit(34, "chapter@version:90", "另外一个案例也出现了 R1 和相同字段。", readback=(1,))
+    assert not passages.verified_sources(plan, 6, "facet_readback_ids")[0]
+    bundle, ambiguous = passages.verified_bundle(plan, 2)
+    assert not ambiguous and bundle.matches == ((1, before), (2, after), (3, after))
+    assert passages.verified_bundle(plan, 1) == (None, False)
+
+    admit(35, "chapter@version:90", "第二个案例也各自有调整后实际状态和字段意思。", readback=(2,), explanation=(3,))
+    assert passages.verified_bundle(plan, 6) == (None, True)
+
+
+def test_numbered_original_cases_survive_flattened_headings_without_merging_siblings():
+    from modules.knowledge.ranked_evidence import _heading_paths, _source_metadata
+
+    reading = {"sections": [{"id": str(line), "level": level, "title": title, "line": line}
+                            for line, level, title in (
+                                (1, 1, "书章"), (10, 4, "2.1 案例一：状态读取"),
+                                (11, 4, "2.1.1 任务步骤"), (12, 4, "步骤 1 调整前"), (13, 3, "PDF 第 6 页"),
+                                (14, 4, "步骤 2 调整后"), (15, 3, "PDF 第 7 页"),
+                                (20, 4, "2.2 案例二：阻塞状态"), (21, 4, "2.2.1 任务步骤"),
+                                (22, 4, "步骤 1 调整前"), (23, 3, "PDF 第 8 页"))]}
+    source = {"document_id": "chapter", "document_version": "version"}
+    paths = _heading_paths(reading)
+    first, second, different = (_source_metadata(source, paths[page]) for page in ("13", "15", "23"))
+    assert first["source_experiment_key"] == second["source_experiment_key"] == "chapter@version:10"
+    assert first["source_phase_key"] != second["source_phase_key"]
+    assert different["source_experiment_key"] == "chapter@version:20"
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_uses_each_command_output_without_borrowing_other_device_values(service, monkeypatch, tmp_path):
+    question = "同一实验中，R1 的 DELAY_MS 回显是多少？R2 的 DELAY_MS 回显是多少？"
+    original = "```text\n<R1> display status\nDELAY_MS: 25\n<R2> display status\nDELAY_MS: 130\n```"
+    wrong_owner = "```text\n<R1> display status\n<R2> display status\nDELAY_MS: 25\n<R3> display status\nDELAY_MS: 130\n```"
+    source = _edition(tmp_path / "multi-command", attached_caption=original, reviewed_page=wrong_owner)
+    monkeypatch.setattr(service, "edition", lambda: source)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert result.hits == await service.search(question, top_k=6)
+    assert result.ranked.verified_bundle and not result.ranked.ambiguous_verified_bundle
+    [verified] = result.ranked.select_verified_bundle(question, result.pool)
+    assert verified["page"] == 3 and verified["text"] == original and verified["facet_readback_ids"] == (1, 2)
+    assert not result.ranked.select_verified_bundle(question, [{**verified, "text": wrong_owner}])
+    assert not result.ranked.select_verified_bundle(question.replace("R1", "R3"), result.pool)
+    assert not any(hit.get("page") == 4 and 1 in hit.get("facet_readback_ids", ()) for hit in result.pool)
+
+
+def test_ranked_plan_splits_observed_stage_contrast_without_splitting_ordinary_joint_mechanism():
+    from modules.knowledge.ranked_evidence import _plan
+
+    contrast = _plan("只做教材对比。故障前和故障后 R2 看到的前缀有何变化？")
+    assert contrast.compare_phases
+    assert [(facet.kind, facet.observation_owner, facet.phases) for facet in contrast.facets] == [
+        ("readback", "r2", {("故障", "before")}), ("readback", "r2", {("故障", "after")})]
+    coordinated = _plan("同一实验，调整前 R1 是哪种端口角色，之后 R2 是哪类端口状态？")
+    assert coordinated.compare_phases and [facet.kind for facet in coordinated.facets] == ["readback", "readback"]
+    concept = _plan("故障前后为什么两个协议要配合，机制如何使两端保持同步？")
+    assert not concept.compare_phases and all(facet.kind != "readback" for facet in concept.facets)
+    assert len(_plan("两个协议如何配合来检查状态？").facets) == 1
+    independent = "在调整前 R2 的转发表，192.0.2.0/24 的下一跳是什么？再看 S1 的 MSTP 回显，VLAN 10 去哪个实例？"
+    assert not _plan(independent).same_experiment
+    assert _plan("同一实验，" + independent).same_experiment
+    assert _plan(independent.replace("VLAN 10 去哪个实例", "192.0.2.0/24 去哪个接口")).same_experiment
+
+
+def test_ranked_plan_keeps_citation_constraints_out_of_required_proof_slots():
+    from modules.knowledge.ranked_evidence import _plan
+
+    query = '只依据本地教材原文，不连接真实设备。用同一实验，R4 的 OSPF 回显中，邻居状态是什么？R5 的回复次数是多少，请给出处。'
+    plan = _plan(query)
+    assert plan.same_experiment and len(plan.facets) == 2
+    assert plan.facets[0].devices == {'r4'} and plan.facets[0].subjects == {'ospf'}
+    assert plan.facets[1].devices == {'r5'} and '出处' not in plan.facets[1].text
+    assert not _plan('只根据本地教材原文，不读取现场设备。')
+
+
+def test_natural_information_roles_keep_visual_mark_and_measured_axes_explicit():
+    from modules.knowledge.question_roles import has_requested_visual_marks, natural_question_role, visual_marks
+    from modules.knowledge.ranked_evidence import _grade, _plan
+
+    [observation] = _plan("那轮结束之后，另一侧收到了几份回条？").facets
+    assert observation.kind == "readback" and observation.observation_axes == {"count"}
+    [mechanism] = _plan("两端谁先发请求？").facets
+    assert mechanism.kind == "mechanism"
+    assert natural_question_role("那一侧预计能收到吗，计划用哪个模式？") is None
+    assert natural_question_role("请直接登录设备，现场看看哪边收到了？") is None
+
+    [legend] = _plan("课件上跨域两端的黄色虚线代表哪条邻居关系？").facets
+    assert legend.kind == "diagram"
+    approved = "图中跨域两端的黄色虚线表示邻居关系，蓝色实线指向承运区域。"
+    assert _grade(legend, "paragraph", approved, ()) is not None
+    assert _grade(legend, "paragraph", approved.replace("黄色虚线", "绿色虚线"), ()) is None
+    assert _grade(legend, "paragraph", approved.replace("黄色虚线", "黄色实线"), ()) is None
+    assert not has_requested_visual_marks(visual_marks("蓝色连线"), "图中蓝线醒目。这里说明的是绿色实线。")
+
+
+@pytest.mark.asyncio
+async def test_reported_readback_keeps_each_owners_named_field_values_and_boundaries(service, monkeypatch, tmp_path):
+    from modules.knowledge.ranked_evidence import _plan
+    from modules.knowledge.reported_readbacks import reported_readback_witness
+
+    text = ("R1 与 R2 的 `show application state` 结果均回到 online。区别在 Last Packet State，"
+            "R1 是 `Sent: ok`、`Received: none`，R2 是 `Sent: none`、`Received: ok`。"
+            "消息交付成功仍需要另行审查接收端记录才能证实。")
+    query = ("只依据本地教材。本次读回上，R1、R2 都恢复 online 了吗？"
+             "各自在 Last Packet State 的两项写了什么，能当消息交付成功的证明吗？")
+    source = _edition(tmp_path / "reported-readback", attached_caption=text)
+    monkeypatch.setattr(service, "edition", lambda: source)
+    result = await service.search_ranked_evidence(query, top_k=6)
+    assert result.hits == await service.search(query, top_k=6)
+    [original] = result.ranked.select_verified_bundle(query, result.pool)
+    assert original["text"] == text and original["page"] == 3
+    state, field, limit = _plan(query).facets
+    assert state.devices == field.devices == {"r1", "r2"} and limit.limit_target == "消息交付成功"
+    assert reported_readback_witness(state, text)
+    assert not reported_readback_witness(state, text.replace("R1 与 R2", "R1、R1 与 R2"))
+    assert reported_readback_witness(field, text)
+    assert not reported_readback_witness(field, text.replace("R2 是", "R3 是"))
+    assert not reported_readback_witness(field, text.replace("`Sent: none`、", ""))
+    assert not reported_readback_witness(field, text.replace("Received: ok", "Sent: ok"))
+    assert not reported_readback_witness(field, "预期" + text)
+    assert not reported_readback_witness(_plan(query.replace("两项写", "三项写")).facets[1], text)
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_uses_the_object_of_an_observed_operation(service, monkeypatch, tmp_path):
+    question = "同一实验，拔下环回链路前后，R4 的 OSPF 回显分别是什么邻居状态？"
+    before = "断开环回链路前，R4 的 OSPF 邻居表实际回显状态为 Full。"
+    after = "断开环回链路后，R4 的 OSPF 邻居表实际回显状态为 Down。"
+    same = _edition(tmp_path / "operation-object", attached_caption=before, reviewed_page=after,
+                    chapter_heading="1.3 案例一：回路观测")
+    monkeypatch.setattr(service, "edition", lambda: same)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert result.ranked and result.ranked.compare_phases
+    assert [hit['text'] for hit in result.ranked.select_verified_bundle(question, result.pool)] == [before, after]
+
+    different = _edition(tmp_path / "different-object", attached_caption=before, reviewed_page=after.replace("环回", "心跳"),
+                         chapter_heading="1.3 案例一：回路观测")
+    monkeypatch.setattr(service, "edition", lambda: different)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert not result.ranked.select_verified_bundle(question, result.pool)
+
+
+@pytest.mark.asyncio
+async def test_observation_number_does_not_turn_a_different_artifact_into_a_second_readback(service, monkeypatch, tmp_path):
+    question = '同一实验，R4 的 OSPF 第一次回显是什么邻居状态？R4 的 OSPF 第二次读回是什么邻居状态？'
+    first = 'R4 的 OSPF 第一次回显显示邻居状态为 Init。'
+    second = 'R4 的 OSPF 第二次回显显示邻居状态为 Full。'
+    for other_artifact in (False, True):
+        fixture = _edition(tmp_path / f'numbered-observations-{other_artifact}', attached_caption=first,
+                           reviewed_page=second.replace('第二次回显', '第二次抓包') if other_artifact else second,
+                           chapter_heading='1.3 核对备份链路实验')
+        monkeypatch.setattr(service, 'edition', lambda: fixture)
+        result = await service.search_ranked_evidence(question, top_k=6)
+        sources = result.ranked.select_verified_bundle(question, result.pool)
+        assert [source['text'] for source in (sources or [])] == ([] if other_artifact else [first, second])
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_keeps_an_authored_explanation_bound_to_the_named_case(service, monkeypatch, tmp_path):
+    title = "并行双环链路收敛实验"
+    question = (f"同一实验，在{title}里，R4 的 HOLD_MS 回显是多少？"
+                f"{title}里，谁负责发送保活状态通告？")
+    observation = "```text\n<R4> display status\nHOLD_MS: 310\n```"
+    explanation = "监测节点负责发送保活状态通告。"
+    same = _edition(tmp_path / "named-prose", attached_caption=observation, reviewed_page=explanation,
+                    chapter_heading=f"1.3 {title}")
+    monkeypatch.setattr(service, "edition", lambda: same)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert [hit['text'] for hit in result.ranked.select_verified_bundle(question, result.pool)] == [observation, explanation]
+
+    mixed = _edition(tmp_path / "foreign-prose", attached_caption=observation,
+                     reviewed_page=f"#### 1.4 单链路监控实验\n\n{explanation}", chapter_heading=f"1.3 {title}")
+    monkeypatch.setattr(service, "edition", lambda: mixed)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert not result.ranked.select_verified_bundle(question, result.pool)
+
+
+def test_original_scope_orders_distinct_clauses_and_rereads_exact_pages(tmp_path):
+    first = "R4 断开备份跳线前的观察记录显示邻居状态 Full。"
+    second = "R4 断开备份跳线后的观察记录显示邻居状态 Init，保留独立探测记录。"
+    conflicting = "计划记录断开备份跳线前的邻居状态和断开后的独立探测记录。"
+    edition = _edition(tmp_path / "original-scope", attached_caption=first,
+                       reviewed_page=f"{second}\n\n#### 1.4 另一个链路实验\n\n{conflicting}",
+                       chapter_heading="1.3 备份跳线收敛实验")
+    clauses = ((1, "R4 断开备份跳线前的观察记录是什么邻居状态"),
+               (2, "R4 断开备份跳线后的独立探测记录是什么"))
+    index = edition.original_scope_index
+    ranked, required = index.rank(clauses)
+    assert required == 2 and ranked[0].coverage == 2 and ranked[0].original_experiment
+    located = index.locate(ranked[:1])
+    assert {(hit['page'], hit['text']) for hit in located} == {(3, first), (4, second)}
+    assert all(hit['edition_version'] == edition.version and not hit.get('facet_ids') for hit in located)
+
+    source = tmp_path / "original-scope" / "corpus" / "audited-1.md"
+    source.write_bytes(source.read_bytes().replace(b'Full', b'Down'))
+    assert index.locate(ranked[:1]) == []
+
+
+def test_original_scope_evidence_windows_stay_inside_the_same_original_step(tmp_path):
+    first = "#### 步骤 1 核对备份链路读数\n\nR4 的备份跳线路径观察记录里显示邻居状态。"
+    second = "这次记录中，备份跳线的下一跳为 192.0.2.45，等待真实业务探测。"
+    clauses = ((1, "备份跳线路径的邻居状态观察记录是什么"),)
+    for other in (False, True):
+        page = f"#### 步骤 2 复位并保存\n\n{second}" if other else second
+        edition = _edition(tmp_path / f"phase-window-{other}", attached_caption=first, reviewed_page=page,
+                           chapter_heading="1.3 备份跳线切换实验")
+        index = edition.original_scope_index
+        ranked, _ = index.rank(clauses)
+        assert [hit['page'] for hit in index.locate(ranked[:1])] == [3]
+        expanded = index.locate(ranked[:1], clauses=clauses)
+        assert [hit['page'] for hit in expanded] == ([3] if other else [3, 4])
+
+
+def test_packed_excerpt_reuses_the_original_step_only_when_all_covered_units_agree():
+    from modules.knowledge.ranked_evidence import _excerpt_location, _units
+
+    prior = 'R4 的观察记录显示邻接状态保持 Full。'
+    first = 'R4 的邻接口在切换之后确认恢复。'
+    second = '同一确认窗口的探测记录保存于本页。'
+    body = f'### PDF 第 9 页\n\n{prior}\n\n#### 步骤 2 恢复核对\n\n{first}\n\n{second}'
+    parent = ((2, '1.3 备份路径实验', 3), (4, '步骤 1 初始检查', 6))
+    units = tuple(_units(body, parent, 8))
+    location = _excerpt_location(body, f'{first}\n\n{second}', units)
+    assert location[-1][1] == '步骤 2 恢复核对'
+    assert not _excerpt_location(body, body, units)
+
+
+def test_bold_steps_create_a_local_scope_without_rewriting_evidence():
+    from modules.knowledge.ranked_evidence import _source_metadata, _units
+
+    before = '**步骤 1　查初始状态。** 本次观察到 R4 的邻居状态 Full。'
+    after = '**步骤 2　复核状态。** 本次观察到 R4 的邻居状态 Down。'
+    physical = f'### PDF 第 9 页\n\n{before}\n\n{after}\n'
+    base_scope = ((2, '1.3 备份路径实验', 4),)
+    units = tuple(_units(physical, base_scope, 8))
+    assert [unit[1] for unit in units] == [before, after]
+    hit = {'document_id': 'binding', 'document_version': 'exact'}
+    one, two = (_source_metadata(hit, unit[2]) for unit in units)
+    assert one['source_experiment_key'] == two['source_experiment_key']
+    assert one['source_phase_key'] != two['source_phase_key']
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_reunites_a_record_with_its_adjacent_author_note(service, monkeypatch, tmp_path):
+    question = ('同一实验，R4 的 OSPF 邻居状态在这份回显里是什么？'
+                '这份回显能证明全程没有业务丢包吗？')
+    observation = 'R4 的 OSPF 邻居表回显显示该邻居状态为 Full。'
+    note = '这份回显不能证明全程没有业务丢包。还需单独记录业务探测。'
+    same = _edition(tmp_path / 'record-explanation', attached_caption=f'{observation}\n\n{note}',
+                    chapter_heading='1.3 前向连接核验实验')
+    monkeypatch.setattr(service, 'edition', lambda: same)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    [selected] = result.ranked.select_verified_bundle(question, result.pool)
+    assert selected['text'] == f'{observation}\n\n{note}'
+
+    mixed = _edition(tmp_path / 'foreign-record-explanation',
+                     attached_caption=f'{observation}\n\n另一份回显不能证明全程没有业务丢包。',
+                     chapter_heading='1.3 前向连接核验实验')
+    monkeypatch.setattr(service, 'edition', lambda: mixed)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert not result.ranked.select_verified_bundle(question, result.pool)
+
+
+@pytest.mark.asyncio
+async def test_ranked_readback_accepts_typed_fields_from_authored_prose(service, monkeypatch, tmp_path):
+    question = '同一实验，R4 的 OSPF 回显中，下一跳和出接口各是什么？'
+    actual = 'R4 的 OSPF 回显显示下一跳为 198.51.100.4，出接口为 GE0/0/3。'
+    unrelated = 'R3 的 OSPF 回显显示 R4 为对端，下一跳为 192.0.2.5，出接口为 GE0/0/9。'
+    edition = _edition(tmp_path / 'prose-field', attached_caption=actual, reviewed_page=unrelated,
+                       chapter_heading='1.3 观察链路下一跳实验')
+    monkeypatch.setattr(service, 'edition', lambda: edition)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    [source] = result.ranked.select_verified_observations(question, result.pool)
+    assert source['text'] == actual and source['page'] == 3
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_requires_requested_owner_and_each_reported_stage(service, monkeypatch, tmp_path):
+    from modules.knowledge.ranked_evidence import _summary_witness, _plan
+
+    question = "同一实验，调整前后 R2 的路由表条目和所见前缀各有什么变化？"
+    first = "**调整前。** R2 和 R4 各自的路由表，均有 4 条。R2 指向 192.0.2.0/25 和 192.0.2.128/25。"
+    second = "**实施调整。** R2 表项数由 4 变为 3。R2 看到前缀 192.0.2.0/24。"
+    source = _edition(tmp_path / "observed-stage-pair", attached_caption=first, reviewed_page=second,
+                      chapter_heading="1.3 案例一：观察前后记录")
+    monkeypatch.setattr(service, "edition", lambda: source)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert result.hits == await service.search(question, top_k=6)
+    assert result.ranked and result.ranked.compare_phases and result.ranked.explicit_same_experiment
+    assert result.ranked.phase_facets == (1, 2)
+    proof = result.ranked.select_verified_bundle(question, result.pool)
+    assert [(item["page"], item["text"]) for item in proof] == [(3, first), (4, second)]
+    assert len({item["source_experiment_key"] for item in proof}) == 1
+    before, after = _plan(question).facets
+    assert not _summary_witness(before, first.replace("R2 和 R4", "R2 到场后，R3 和 R4"))
+    assert not _summary_witness(after, second.replace("R2", "R3"))
+    assert not _summary_witness(after, second.replace("实施", "计划实施"))
+    assert not _summary_witness(after, first)
+
+
+@pytest.mark.asyncio
+async def test_ranked_bundle_keeps_observation_and_two_explicit_limit_duties_separate(service, monkeypatch, tmp_path):
+    from modules.knowledge.ranked_evidence import _plan
+
+    question = "同一实验的 R1 的 DELAY_MS 回显是多少？能证明消息交付成功吗？还要看什么证据？"
+    original = "```text\n<R1> display status\nDELAY_MS: 30\n```"
+    lower_bound = "这个延时记录不能证明消息交付成功。"
+    needed = "要确认消息交付成功，需要另行审查接收端记录才能证实消息交付成功。"
+    fixture = _edition(tmp_path / "observed-evidence-limit", attached_caption=original,
+                       reviewed_page=f"{lower_bound}\n\n{needed}",
+                       chapter_heading="1.3 案例一：消息交付观察")
+    monkeypatch.setattr(service, "edition", lambda: fixture)
+
+    observed, direct, followup = _plan(question).facets
+    assert observed.kind == "readback" and direct.limit_target == followup.limit_target == "消息交付成功"
+    assert followup.asks_for_other_evidence and not _plan("还要看什么证据？").facets[0].limit_target
+    actual = await service.search_ranked_evidence(question, top_k=6)
+    hits = actual.ranked.select_verified_bundle(question, actual.pool)
+    assert [hit["text"] for hit in hits] == [original, lower_bound, needed]
+    assert hits[0]["facet_readback_ids"] == (1,)
+    assert hits[1]["facet_witnesses"] == ((2, "excluded_inference"),)
+    assert (3, "required_observation") in hits[2]["facet_witnesses"]
+
+    wrong_case = _edition(tmp_path / "other-evidence-limit", attached_caption=original,
+                          reviewed_page=f"{lower_bound}\n\n#### 1.4 案例二：另一份记录\n\n{needed}",
+                          chapter_heading="1.3 案例一：消息交付观察")
+    monkeypatch.setattr(service, "edition", lambda: wrong_case)
+    different = await service.search_ranked_evidence(question, top_k=6)
+    assert not different.ranked.select_verified_bundle(question, different.pool)
+
+
+@pytest.mark.asyncio
+async def test_linked_readback_preserves_original_field_rows_and_rejects_competing_values(service, monkeypatch, tmp_path):
+    readout = ("```text\n<R2> display bgp routing-table 192.0.2.0 24\n"
+               "BGP routing table entry information of 192.0.2.0/24:\nAggregated route.\n"
+               "Direct Out-interface: NULL0\nAS-path Nil\n```")
+    explanation = ("从输出信息可以看到 AS_Path 为 Nil，表示原字段为空。BGP 依赖 AS_Path 防环，所以可能形成路由环"
+                   "\n\n路。此处说明的是上面回显中的值。")
+    question = ("同一实验，R2 做完 BGP 聚合后，192.0.2.0/24 的详细回显里出接口叫什么？"
+                "AS_PATH 变空为什么有风险？把同一观察的说明带上。")
+    source = _edition(tmp_path / "linked-original", attached_caption=f"{readout}\n\n{explanation}",
+                      reviewed_page=readout.replace("Nil", "64512"), chapter_heading="1.3 案例一：观察聚合")
+    monkeypatch.setattr(service, "edition", lambda: source)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert result.ranked and result.ranked.missing == ()
+    [qualified] = result.ranked.select_verified_bundle(question, result.pool)
+    assert qualified["page"] == 3 and qualified["text"] == f"{readout}\n\n{explanation}"
+
+    conflicted = _edition(tmp_path / "different-observed-value", attached_caption=f"{readout}\n\n{explanation}",
+                          reviewed_page=readout.replace("NULL0", "Tunnel0"), chapter_heading="1.3 案例一：观察聚合")
+    monkeypatch.setattr(service, "edition", lambda: conflicted)
+    result = await service.search_ranked_evidence(question, top_k=6)
+    assert not result.ranked.select_verified_bundle(question, result.pool)
+    assert result.ranked.ambiguous_verified_bundle
+
+
+def test_printed_exhibit_keeps_one_complete_original_table_and_adjacent_legend():
+    from modules.knowledge.printed_exhibits import complete_printed_exhibit, printed_exhibit_request
+
+    request = printed_exhibit_request(("布线图的表里，中转区连接哪些设备", "图中的红箭头表示哪项关系"))
+    assert request
+    table = "| 区域 | 原书配套示例 |\n| --- | --- |\n| 中转区 | 连接汇聚节点与边缘组 |\n| 接入区 | 连接终端 |"
+    caption = "图中红箭头表示备用方向。"
+    page = f"### PDF 第 42 页\n\n{table}\n\n{caption}"
+    assert complete_printed_exhibit(page, request) == f"{table}\n\n{caption}"
+    assert complete_printed_exhibit(page.replace("红箭头", "蓝箭头"), request) is None
+    assert complete_printed_exhibit(page.replace("图中", "另一幅图中"), request) is None
+    assert complete_printed_exhibit(page.replace(caption, f"#### 新例图\n\n{caption}"), request) is None
+    assert complete_printed_exhibit(page.replace("接入区", "中转区"), request) is None
+
+
+@pytest.mark.asyncio
+async def test_named_exhibit_preserves_distinct_table_writer_and_recorded_subject(service, monkeypatch, tmp_path):
+    from modules.knowledge.printed_exhibits import complete_exhibit_attribution, exhibit_attribution_request
+    from modules.knowledge.ranked_evidence import _evidence_question_clauses
+
+    question = "书上的那张入库图用哪种记号画出传递关系？交接单是谁填的，表里出现的另一人也是填单人吗？"
+    caption = "图中蓝色点划线表示传递关系。"
+    table = "| 填单人 | 交接对象 |\n| --- | --- |\n| 韩青 | 颜竹 |"
+    authored = f"图 7 入库图\n\n{caption}\n\n表 14 交接单\n\n{table}"
+    unrelated = authored.replace("入库图", "出库图").replace("韩青", "西岚")
+    request = exhibit_attribution_request(_evidence_question_clauses(question))
+    assert request and complete_exhibit_attribution(authored, request) == authored
+    for negative in (unrelated, authored.replace(caption, "图中蓝色点划线不表示传递关系。"),
+                     authored.replace("交接单", "预计交接单"), authored.replace("填单人", "核对对象"),
+                     authored + "\n| 临弦 | 秦才 |", authored + f"\n\n{authored}"):
+        assert complete_exhibit_attribution(negative, request) is None
+
+    edition = _edition(tmp_path / 'figure-form-roles', chapter_heading='1.3 入库流程实验',
+                       attached_caption=authored, reviewed_page=unrelated)
+    monkeypatch.setattr(service, 'edition', lambda: edition)
+    outcome = await service.search_ranked_evidence(question, top_k=6)
+    assert outcome.hits == await service.search(question, top_k=6)
+    [source] = outcome.ranked.select_verified_observations(question, outcome.pool)
+    assert source['text'] == authored and source['page'] == 3
+    assert outcome.ranked.select_verified_explanations(question, outcome.pool) == [source]
+
+
+@pytest.mark.asyncio
+async def test_supplement_only_adds_an_authored_readout_with_an_independently_selected_same_step(service, monkeypatch, tmp_path):
+    from modules.ai_text import router
+    from modules.knowledge.ranked_evidence import _plan
+
+    question = "R4 的 OSPF 实测回显显示下一跳是什么？R5 的缓存隔离细目记到了哪里？"
+    p3 = ("#### 步骤 2 核对隔离缓存\n\n"
+          "R4 的 OSPF 回显显示下一跳为 192.0.2.7。")
+    p4 = "R5 的 OSPF 缓存隔离细目，读取结果写入了归档袋，并保留了读取时间。"
+    draft = "R5 的 OSPF 缓存隔离细目：预计将来写入未准备好的复查卡。"
+    edition = _edition(tmp_path / 'same-phase-readout', chapter_heading='1.3 出入队列核验实验',
+                       attached_caption=p3, reviewed_page=p4,
+                       alternative_case=('案例 2 复查队列保全', draft))
+    monkeypatch.setattr(service, 'edition', lambda: edition)
+    monkeypatch.setattr(router, '_get_knowledge_service', lambda: service)
+    outcome = await service.search_ranked_evidence(question, top_k=6)
+    assert outcome.ranked and outcome.ranked.same_step_readouts, (_plan(question), outcome.pool)
+    [existing] = outcome.ranked.select_verified_observations(question, outcome.pool)
+    hits = router._FacetHits(outcome.hits, outcome.facet_evidence, outcome.ranked, outcome.pool)
+    baseline = prepare_sources([existing])
+    combined = router._supplement_same_step_readout(question, hits, baseline, 6)
+    assert [item['page'] for item in combined] == [3, 4]
+    assert combined[0] == baseline[0] and combined[1]['content'] == p4
+    assert router._supplement_same_step_readout(question, hits, baseline, 1) is baseline
+    foreign_draft = next(hit for hit in outcome.pool if hit['document_id'] == 'audited-2' and draft in hit['text'])
+    full = prepare_sources([existing, foreign_draft])
+    replaced = router._supplement_same_step_readout(question, hits, full, 2)
+    assert [(item['source_id'], item['content']) for item in replaced] == [
+        (item['source_id'], item['content']) for item in combined]
+
+    other_step = _edition(tmp_path / 'second-phase-readout', chapter_heading='1.3 出入队列核验实验',
+                          attached_caption=p3, reviewed_page=f'#### 步骤 3 改定隔离缓存\n\n{p4}')
+    monkeypatch.setattr(service, 'edition', lambda: other_step)
+    outcome = await service.search_ranked_evidence(question, top_k=6)
+    hits = router._FacetHits(outcome.hits, outcome.facet_evidence, outcome.ranked, outcome.pool)
+    [existing] = outcome.ranked.select_verified_observations(question, outcome.pool)
+    baseline = prepare_sources([existing])
+    assert router._supplement_same_step_readout(question, hits, baseline, 6) is baseline
+
+    future = _edition(tmp_path / 'anticipated-readout', chapter_heading='1.3 出入队列核验实验',
+                      attached_caption=p3, reviewed_page='预期这次会看到如下结果。' + p4)
+    monkeypatch.setattr(service, 'edition', lambda: future)
+    outcome = await service.search_ranked_evidence(question, top_k=6)
+    assert not outcome.ranked or not outcome.ranked.same_step_readouts
+
+
+@pytest.mark.asyncio
+async def test_one_observed_table_proves_each_named_port_and_its_linked_limit(service, monkeypatch, tmp_path):
+    from modules.knowledge.ranked_evidence import _observed_column_row, _plan, _record_note_matches
+
+    table = ("Port                      Role    STP State\n"
+             "GigabitEthernet0/0/2      ROOT    FORWARDING\n"
+             "GigabitEthernet0/0/3      ALTE    DISCARDING\n"
+             "GigabitEthernet0/0/5      DESI    FORWARDING")
+    fence = f"```text\n[S2]display stp brief\n{table}\n```"
+    note = ("原页的调后表仍将 S2 GE0/0/2 列为根端口，GE0/0/3 列为备用端口。"
+            "预期角色变化需要用双方的新 BPDU 和端口回显验证。")
+    original = f"接口优先级在这个阶段配置为较低值。\n\n再次查看 S2 上的 STP 状态\n\n{fence}\n\n{note}"
+    query = ("教材调整优先级之后这次 S2 的 STP 回显，GE0/0/2 和 GE0/0/3 分别是什么角色？"
+             "这份输出足以验收预期角色变化吗？")
+    source = _edition(tmp_path / "multiple-observed-rows", attached_caption=original, chapter_heading="1.3 案例一：端口角色检验")
+    monkeypatch.setattr(service, "edition", lambda: source)
+    result = await service.search_ranked_evidence(query, top_k=6)
+    [complete] = result.ranked.select_verified_bundle(query, result.pool)
+    assert complete["text"] == original and complete["page"] == 3
+
+    facet = _plan(query).facets[0]
+    rows = table.splitlines()
+    assert _observed_column_row(facet, rows, frozenset()) is True
+    assert _observed_column_row(facet, [rows[0], rows[1]], frozenset()) is False
+    assert _observed_column_row(facet, [*rows, rows[2]], frozenset()) is False
+    assert _observed_column_row(facet, [rows[0], rows[1] + "/ GE0/0/3"], frozenset()) is False
+    assert not _record_note_matches(fence, note.replace("S2", "S3"))
 
 
 @pytest.mark.asyncio

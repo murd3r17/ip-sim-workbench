@@ -268,7 +268,7 @@
               <p>{{ sourceGuideMessage(msg.sourceGuide) }}</p>
               <p v-if="msg.sourceGuide.candidates.length">可核对以下教材页。这里的页位仅用于定位。</p>
               <button v-for="location in msg.sourceGuide.candidates" :key="`${location.document_id}:${location.document_version}:${location.edition_version}:${location.page}`"
-                type="button" class="source-item source-link" @click="openGuideLocation(location)">
+                type="button" class="source-item source-link" @click="openGuideLocation(location, msg.id)">
                 <strong>{{ location.title || location.book_title }}</strong>
                 <span v-if="location.title && location.title !== location.book_title" class="source-book">{{ location.book_title }}</span>
                 <span class="source-page">查看同版 PDF 物理第 {{ location.page }} 页</span>
@@ -474,7 +474,8 @@ const store = useAiCopilotStore()
 const labCtx = useLabContextStore()
 const route = useRoute()
 const router = useRouter()
-type Composer = { text: string; files: CopilotAttachment[]; wantsDraft: boolean; uploadId?: string; ignoreAttachment?: boolean; pageQuestionPrefix?: string }
+type Composer = { text: string; files: CopilotAttachment[]; wantsDraft: boolean; uploadId?: string; ignoreAttachment?: boolean;
+  pageQuestionPrefix?: string; guidePage?: TextbookPageLocation }
 const drafts = reactive(new Map<string, Composer>())
 function composer(id = store.activeId || '') {
   if (!drafts.has(id)) drafts.set(id, { text: '', files: [], wantsDraft: false })
@@ -922,9 +923,13 @@ async () => {
   await recoverReply(message)
 }, { immediate: true })
 
+function precedingQuestion(replyId: string) {
+  const index = store.messages.findIndex((item) => item.id === replyId && item.role === 'assistant')
+  if (index > 0) return store.messages.slice(0, index).reverse().find((item) => item.role === 'user')
+}
+
 function restoreQuestion(message: CopilotMessage) {
-  const index = store.messages.findIndex((item) => item.id === message.id)
-  const original = store.messages.slice(0, index).reverse().find((item) => item.role === 'user')
+  const original = precedingQuestion(message.id)
   if (!original) return
   if (input.value.trim() || pendingAttachments.value.length) {
     ElMessage.warning('请先处理输入框里的问题，再恢复原问题。')
@@ -1016,13 +1021,18 @@ function reviewedReferenceUrl(url: string): string | undefined {
 }
 const fullDocumentVisible = ref(false)
 const guideLocation = ref<TextbookPageLocation>()
+const guideQuestion = ref<{ conversationId: string; replyId: string }>()
 watch(fullDocumentVisible, (visible) => {
-  if (!visible) guideLocation.value = undefined
+  if (!visible) {
+    guideLocation.value = undefined
+    guideQuestion.value = undefined
+  }
 })
 
-function openGuideLocation(location: TextbookPageLocation) {
+function openGuideLocation(location: TextbookPageLocation, replyId: string) {
   if (citation.value) closeCitation()
   guideLocation.value = location
+  guideQuestion.value = store.activeId ? { conversationId: store.activeId, replyId } : undefined
   fullDocumentVisible.value = true
 }
 
@@ -1032,8 +1042,12 @@ async function fillTextbookQuestion(location: TextbookPageLocation) {
   const draft = composer()
   const question = draft.pageQuestionPrefix && draft.text.startsWith(draft.pageQuestionPrefix)
     ? draft.text.slice(draft.pageQuestionPrefix.length) : draft.text
+  const link = guideQuestion.value
+  const fromGuide = link?.conversationId === store.activeId && link !== undefined
+  const original = fromGuide ? precedingQuestion(link.replyId) : undefined
   draft.pageQuestionPrefix = textbookPageQuestion(location, '')
-  draft.text = draft.pageQuestionPrefix + question.trim()
+  draft.text = draft.pageQuestionPrefix + (question.trim() || original?.content.trim() || '')
+  draft.guidePage = fromGuide ? location : undefined
   draft.ignoreAttachment = true
   if (store.knowledgeSource) store.selectKnowledgeSource({ mode: 'cleared' })
   closeCitation()
@@ -1131,6 +1145,7 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
   const s = msg.sources?.find((source, position) => referenceIndex(source, position) === index)
   if (!s) return
   guideLocation.value = undefined
+  guideQuestion.value = undefined
   const conversation = store.activeId
   const seq = ++citationSeq
   citation.value = { index, requestsReview, title: s.title, filename: s.filename, version: s.version,
@@ -1188,6 +1203,7 @@ function closeCitation() {
   citationSeq++
   fullDocumentVisible.value = false
   guideLocation.value = undefined
+  guideQuestion.value = undefined
   citation.value = null
 }
 function zoomImage(src: string) {
@@ -1198,6 +1214,9 @@ function zoomImage(src: string) {
 async function send(preset?: string, forceDraft = false) {
   const text = (preset ?? input.value).trim() || (!preset && pendingAttachments.value.length ? '请解读这份附件。' : '')
   if ((!text && !pendingAttachments.value.length) || store.loading) return
+  const draft = composer()
+  const guidePage = !preset && draft.pageQuestionPrefix && text.startsWith(draft.pageQuestionPrefix.trimEnd())
+    ? draft.guidePage : undefined
   // Capture the entire request before any awaited page read. Selection changes
   // during that read belong to the next question, never half of this one.
   const context = {
@@ -1206,7 +1225,8 @@ async function send(preset?: string, forceDraft = false) {
     selection: store.selectionText,
     notes: store.notes,
     config_comparison: route.path === '/config-versions' ? store.configComparison ?? undefined : undefined,
-    page_record: store.pageRecord?.reference,
+    page_record: guidePage ? { kind: 'original_page' as const, document_id: guidePage.document_id,
+      version: guidePage.document_version, page: guidePage.page } : store.pageRecord?.reference,
     knowledge_source: store.knowledgeSource?.reference,
   }
   const snapshotContext = JSON.parse(JSON.stringify(pageCtx()))
@@ -1215,7 +1235,8 @@ async function send(preset?: string, forceDraft = false) {
   const comparisonLabel = comparison?.kind === 'saved'
     ? `A #${comparison.version_id_a} → B #${comparison.version_id_b}`
     : comparison?.kind === 'local' ? '本地文件比对' : ''
-  const sentContext = [context.page_name, store.pageRecord?.label || store.selection?.label, snapshotContext.labTitle, comparisonLabel].filter(Boolean).join(' · ')
+  const pageLabel = guidePage ? `教材 PDF 第 ${guidePage.page} 页` : store.pageRecord?.label || store.selection?.label
+  const sentContext = [context.page_name, pageLabel, snapshotContext.labTitle, comparisonLabel].filter(Boolean).join(' · ')
   const requestedDraft = forceDraft || (!preset && wantDraft.value)
   const deviceModel = resolveWorkbenchDeviceModel(store.selection?.model || snapshotContext.device?.model)
   const labId = snapshotContext.labId
@@ -1227,6 +1248,8 @@ async function send(preset?: string, forceDraft = false) {
     pendingAttachments.value = []
     composer().uploadId = undefined
     composer().ignoreAttachment = false
+    draft.pageQuestionPrefix = undefined
+    draft.guidePage = undefined
     wantDraft.value = false
   }
 

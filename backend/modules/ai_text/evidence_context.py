@@ -463,12 +463,19 @@ def selected_record_kind(route: str, message: str, selected_kind: str | None = N
         selected_kind == 'alarm_record' or _RECORD_TARGET.search(message)
     ):
         return 'alarm_record'
-    if route == '/knowledge' and re.search(r'原图|原页|原版\s*PDF|原教材同一', message) and re.search(r'显示的页|这条(?:教材)?引用|这[一张份条]?(?:页|原图|资料|整理稿)|权限|审校摘录|页位|不能给', message):
-        return 'original_page'
-    if route == '/knowledge' and selected_kind == 'original_page' and (
-        _PRINTED_PAGE.search(message) or _BOOK_PAGE_REFERENCE.search(message) and _BOOK_PAGE_ACCESS.search(message)
-    ):
-        return 'original_page'
+    if route == '/knowledge':
+        from .knowledge_continuation import refers_to_previous_source
+        from .question_intent import navigation_question
+
+        action = navigation_question(message)
+        if re.search(r'原图|原页|原版\s*PDF|原教材同一', action) and re.search(
+            r'显示的页|这条(?:教材)?引用|这[一张份条]?(?:页|原图|资料|整理稿)|权限|审校摘录|页位|不能给', action
+        ):
+            return 'original_page'
+        if (selected_kind == 'original_page' or refers_to_previous_source(action)) and (
+            _PRINTED_PAGE.search(action) or _BOOK_PAGE_REFERENCE.search(action) and _BOOK_PAGE_ACCESS.search(action)
+        ):
+            return 'original_page'
     return None
 
 

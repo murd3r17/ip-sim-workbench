@@ -22,6 +22,8 @@ _TEACHING_SOURCE = re.compile(r'教材|课本|课件|讲义|原书|知识库|(?:
 _TEACHING_RECORD = re.compile(r'案例|实验|示例|证据|冲突|命令|步骤|操作顺序|回显|输出|图|说明|核对|查找|字段|写的是|'
                               r'怎么|如何|哪(?:个|一|条|步|段)|各是什么|是什么|是多少', re.I)
 _TEACHING_ANAPHOR = re.compile(r'本节|这(?:一)?章|这(?:个)?例子|本例|图里的|资料里|书里的|本(?:张|条)截图')
+_GUIDED_PAGE = re.compile(r'^请只根据本地教材《[^》\n]+》PDF 第 (?P<page>[1-9][0-9]{0,5}) 页回答。'
+                          r'本页没有依据的内容请指出。')
 _SKIP_TEACHING = re.compile(r'(?:不查|不按|不要看|不参考|不用|改看现场).{0,5}(?:教材|课本|知识库|课件)')
 _TEACHING_NAVIGATION = re.compile(
     r'(?:入口|菜单|按钮|页签).{0,8}(?:怎么用|什么意思|什么含义|在哪|如何使用)|'
@@ -89,6 +91,7 @@ _NETWORK_REASONING = re.compile(
 )
 _NETWORK_ARTIFACT = re.compile(r'\b(?:display|show)\s+\S|\btrunk\b|路由表|邻居表|转发表|接口回显', re.I)
 _TABLE_REFERENCE = re.compile(r'(?:这|那|本|另(?:外)?|同一)(?:一)?(?:张|个)表|表(?:格)?(?:里|中|上)')
+_READOUT_REFERENCE = re.compile(r'(?:读回|回显|实际输出)(?:上|中|里|里的)|(?:这份|那份|上述)(?:读回|回显|输出)')
 _WRITTEN_ACCOUNT = re.compile(r'正文|原文|叙述|图注|注释|说明段|说明文字|解说词|文字说明|文字描述|'
                               r'(?:这|那|前|后)一?段(?:话|.{0,12}(?:说|写|提到|记载|给出))')
 _PROOF_BOUNDARY = re.compile(
@@ -298,15 +301,26 @@ def plain_question(text: str) -> str:
     return re.sub(r'\x60\x60\x60[\s\S]*?(?:\x60\x60\x60|\Z)', '', text or '').strip()
 
 
+def navigation_question(text: str) -> str:
+    return re.sub(r'《[^》\n]+》', ' ', plain_question(text))
+
+
+def guided_page_question(text: str) -> re.Match[str] | None:
+    return _GUIDED_PAGE.match(text)
+
+
 def textbook_reference_question(text: str, route: str | None = None) -> bool:
     if _SKIP_TEACHING.search(text) or _TEACHING_NAVIGATION.search(text):
         return False
+    if guided_page_question(text):
+        return True
     source = _TEACHING_SOURCE.search(text) or route == '/knowledge' and _TEACHING_ANAPHOR.search(text)
     if source and _TEACHING_RECORD.search(text):
         return True
-    # The knowledge view supplies the reading context for a question about what
-    # a technical table supports. A generic reference to a record is not a read order.
-    return bool(route == '/knowledge' and _TABLE_REFERENCE.search(text) and _PROOF_BOUNDARY.search(text)
+    # Within the knowledge view, an explicit question about what a referenced
+    # exhibit can establish can be answered from the teaching materials.
+    return bool(route == '/knowledge' and (_TABLE_REFERENCE.search(text) or _READOUT_REFERENCE.search(text))
+                and _PROOF_BOUNDARY.search(text)
                 and _network_subject(text) and not _REAL_OBSERVATION.search(text))
 
 
@@ -471,6 +485,7 @@ def training_saved_reload_question(text: str) -> bool:
 
 
 def workflow_question(text: str, route: str | None) -> str | None:
+    text = navigation_question(text)
     # A page name by itself is not a request to read or change a task.
     if (route == '/deploy' or '配置下发' in text) and _DRAFT_STAGING.search(text) and _DRAFT_STAGING_QUESTION.search(text):
         return 'draft_staging'
@@ -535,6 +550,7 @@ def read_only_workbench_answer(message: str, route: str | None) -> str:
 
 
 def page_operation(text: str, route: str | None) -> bool:
+    text = navigation_question(text)
     if _NEGATED_UI.search(text):
         return False
     workflow = workflow_question(text, route)

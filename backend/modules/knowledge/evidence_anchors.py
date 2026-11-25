@@ -50,6 +50,11 @@ def _fields(pattern, text):
     return frozenset(match.lastgroup for match in pattern.finditer(text))
 
 
+def output_field_names(text):
+    """Identify literal table-label equivalents without inspecting field values."""
+    return _fields(_MATRIX_FIELDS, text)
+
+
 def evidence_anchor_request(query: str) -> EvidenceAnchor | None:
     """Read only explicit field and object constraints without inferring values."""
     text = normalize("NFKC", query).casefold()
@@ -61,7 +66,7 @@ def evidence_anchor_request(query: str) -> EvidenceAnchor | None:
         if len(fields) >= 2 and not protocols.difference({"ospf"}) and all(area["value"] for area in _AREA.finditer(text)):
             return EvidenceAnchor(fields, "ospf")
         return None
-    fields = _fields(_MATRIX_FIELDS, text)
+    fields = output_field_names(text)
     devices = set(_DEVICE.findall(text))
     if len(fields) >= 3 and len(devices) == len(protocols) == 1:
         return EvidenceAnchor(fields, next(iter(protocols)), next(iter(devices)))

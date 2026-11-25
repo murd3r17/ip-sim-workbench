@@ -7,6 +7,7 @@ from modules.knowledge.query_focus import _SOURCE_QUOTE, lookup_parts, separate_
 from modules.knowledge.reviewed_source_notes import notes_for_excerpt
 
 from .context_bundle import prepare_sources
+from .question_intent import guided_page_question
 
 
 _PHYSICAL_PAGE = re.compile(r'(?:PDF\s*(?:物理)?|物理)\s*第?\s*\d{1,5}', re.I)
@@ -62,16 +63,18 @@ def explicit_physical_scope(question: str) -> bool:
 
 
 def _page_scope(question, edition, hits, continuity) -> PageScope | None:
-    if explicit_physical_scope(question):
+    guided = guided_page_question(question) if continuity == 'page' else None
+    locator = question[:guided.end()] if guided else question
+    if explicit_physical_scope(locator):
         requested = ()
-        if selected := separate_pdf_pages(question):
+        if selected := separate_pdf_pages(locator):
             requested, before, after = selected
             query = f'{before}PDF 第 {requested[0]} 页{after}'
             ranges = tuple((page, page) for page in requested)
         else:
-            query = question
-            _, _, pages, _ = lookup_parts(question)
-            if not pages or not 0 < pages[0] <= pages[1] or len(_PAGE_REFERENCE.findall(_SOURCE_QUOTE.sub(' ', question))) > 1:
+            query = locator
+            _, _, pages, _ = lookup_parts(locator)
+            if not pages or not 0 < pages[0] <= pages[1] or len(_PAGE_REFERENCE.findall(_SOURCE_QUOTE.sub(' ', locator))) > 1:
                 # Two standalone page numbers without an unambiguous list do not
                 # authorize assuming that the first page is the entire scope.
                 return None
@@ -81,6 +84,9 @@ def _page_scope(question, edition, hits, continuity) -> PageScope | None:
         _, _, doc_ids, _, phrases = edition.search_scope(query)
         if not doc_ids or len({edition.documents[doc_id]['book'] for doc_id in doc_ids}) != 1:
             return None
+        if guided:
+            question = question[guided.end():].lstrip()
+            _, phrases, _, _ = lookup_parts(question)
         return PageScope(frozenset(doc_ids), ranges, requested, bool(phrases or _PAGE_NAVIGATION_REQUEST.search(question)))
     if continuity not in {'page', 'chapter'} or not hits:
         return None

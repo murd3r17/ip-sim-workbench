@@ -519,8 +519,12 @@ class KnowledgeService:
         depth = max(base_depth, 64) if anchor_request else base_depth
         available, candidates = await keyword.search_pages(terms, depth, document_ids=document_ids,
                                                           pages=pages, phrases=phrases)
+        vlan_ids = vlan_mapping_query(terms) if not phrases else frozenset()
+        ranked_candidates = [] if ranked_context is not None and not (
+            phrases or pages or vlan_ids or explicit_vector or document_ids is not None) else None
         sources = await asyncio.to_thread(edition.resolve_hits, candidates[:base_depth], keyword, workspace,
-                                          query="" if phrases else terms)
+                                          query="" if phrases else terms,
+                                          **({"original_candidates": ranked_candidates} if ranked_candidates is not None else {}))
         literals = tuple(compact_text(phrase) for phrase in phrases)
         if literals:
             sources = [{**hit, "text": literal_excerpt(hit["text"], literals)} for hit in sources
@@ -537,9 +541,8 @@ class KnowledgeService:
                     results.append(hit)
 
         add(exact)
-        vlan_ids = vlan_mapping_query(terms) if not phrases else frozenset()
-        if ranked_context is not None and not (phrases or pages or vlan_ids or explicit_vector or document_ids is not None):
-            ranked_context.append((edition, workspace, terms, sources))
+        if ranked_candidates is not None:
+            ranked_context.append((edition, workspace, terms, [*sources, *ranked_candidates]))
         if vlan_ids:
             add(hit for hit in sources if vlan_mapping_excerpt(hit["text"], vlan_ids))
         if len(results) < limit and not (short or phrases or pages or document_ids is not None):

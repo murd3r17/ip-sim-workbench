@@ -24,9 +24,9 @@ SENTINEL = 'CLIENT_AND_OLD_ANSWER_NOT_EVIDENCE'
 class MiniEdition:
     version = 'test-edition'
     documents = {'synthetic-chapter': {'id': 'synthetic-chapter', 'sha256': 'chapter-v1', 'ingest': True,
-                                       'book': 1, 'page_start': 21, 'page_end': 24},
+                                       'book': 1, 'title': '蓝色端口复核实验', 'page_start': 21, 'page_end': 24},
                  'other-chapter': {'id': 'other-chapter', 'sha256': 'other-v1', 'ingest': True,
-                                   'book': 2, 'page_start': 20, 'page_end': 25}}
+                                   'book': 2, 'title': '橙色端口复核实验', 'page_start': 20, 'page_end': 25}}
 
     def __init__(self):
         self.reads = []
@@ -37,7 +37,8 @@ class MiniEdition:
 
     def search_scope(self, question):
         title, phrases, pages, remainder = lookup_parts(question)
-        doc_ids = {'synthetic-chapter'} if 'Synthetic manual' in title else None
+        named = {'Synthetic manual', '受限原图权限公开教材'}
+        doc_ids = {'synthetic-chapter'} if named.intersection(title) else None
         return remainder, [], doc_ids, pages, phrases
 
     def hit(self, doc, page, text=None):
@@ -80,6 +81,164 @@ def complete_with_fixture(provider, monkeypatch, edition, *, references=('[1]',)
     monkeypatch.setattr(service, 'edition', lambda: edition)
     monkeypatch.setattr(router, '_get_knowledge_service', lambda: service)
     return prompts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+@pytest.mark.parametrize('case', ['visible_page', 'stale_version', 'different_title', 'unrelated_question', 'explicit_page'])
+async def test_open_reading_page_bounds_only_intended_followup(api_case, test_session_factory, monkeypatch, path, case):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    page = {'kind': 'original_page', 'document_id': 'synthetic-chapter', 'version': 'chapter-v1', 'page': 24}
+    question = '我在目录打开了蓝色端口复核实验。这个实验的端口记录是什么？'
+    retrieval.return_value = [edition.hit('other-chapter', 21, 'GLOBAL_WRONG_CASE')]
+    if case == 'stale_version':
+        page['version'] = 'old-version'
+    elif case == 'different_title':
+        question = '我在目录打开了橙色端口复核实验。这个实验的端口记录是什么？'
+    elif case == 'unrelated_question':
+        question = '教材里的生成树帧选择机制是什么？'
+    elif case == 'explicit_page':
+        question = '只依据《Synthetic manual》PDF 第 21 页解释帧选择。'
+        retrieval.return_value = [edition.hit('synthetic-chapter', 21)]
+    _, answer = await ask(client, headers, path, session, question, page_record=page, route='/knowledge')
+    if case == 'visible_page':
+        assert answer['trace']['source_continuity'] == 'page'
+        assert [(s['document_id'], s['page']) for s in answer['sources']] == [('synthetic-chapter', 24)]
+        assert len(prompts) == 1 and '当前独立页 24' in prompts[0] and 'GLOBAL_WRONG_CASE' not in prompts[0]
+        retrieval.assert_not_awaited()
+    elif case == 'stale_version':
+        assert answer['trace']['source_continuity'] == 'unavailable' and not answer['sources'] and not prompts
+        retrieval.assert_not_awaited()
+    else:
+        retrieval.assert_awaited_once()
+        assert '当前独立页 24' not in prompts[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+@pytest.mark.parametrize('case', ['selected', 'stale', 'manual_first', 'manual_other_page'])
+async def test_guided_question_rechecks_the_reader_version_without_changing_independent_lookup(
+    api_case, test_session_factory, monkeypatch, path, case
+):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    requested_page = 21 if case == 'manual_other_page' else 24
+    question = (f'请只根据本地教材《Synthetic manual》PDF 第 {requested_page} 页回答。'
+                '本页没有依据的内容请指出。\n\n这份教材观察显示什么？')
+    page = None if case == 'manual_first' else {
+        'kind': 'original_page', 'document_id': 'synthetic-chapter',
+        'version': 'old-edition' if case == 'stale' else 'chapter-v1', 'page': 24,
+    }
+    retrieval.return_value = [edition.hit('synthetic-chapter', requested_page)]
+    _, answer = await ask(client, headers, path, session, question, page_record=page, route='/knowledge')
+    if case == 'stale':
+        assert answer['trace']['source_continuity'] == 'unavailable'
+        assert not answer['sources'] and not prompts
+        retrieval.assert_not_awaited()
+    else:
+        assert [(source['page'], source['document_version']) for source in answer['sources']] == [(requested_page, 'chapter-v1')], answer['answer']
+        assert len(prompts) == 1
+        if case == 'selected':
+            retrieval.assert_not_awaited()
+            assert answer['trace']['source_continuity'] == 'page' and '当前独立页 24' in prompts[0]
+        else:
+            retrieval.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+@pytest.mark.parametrize('original,found', [
+    ('这项读回能支持「设备已经保持完整的业务转发」这一验收判断吗？', True),
+    ('这项读回能核对 `Unverified service flow state` 吗？', True),
+    ('请从教材说明「设备已经保持完整的业务转发」能否因此成立。', True),
+    ('请在本页查找原句“当前独立页 24 的端口练习”，并标明出处。', True),
+    ('请在本页查找原句“当前独立页 21 的帧选择说明”，并标明出处。', False),
+])
+async def test_guide_prefix_does_not_turn_quoted_claims_or_fields_into_verbatim_searches(
+    api_case, test_session_factory, monkeypatch, path, original, found
+):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    question = '请只根据本地教材《Synthetic manual》PDF 第 24 页回答。本页没有依据的内容请指出。\n\n' + original
+    page = {'kind': 'original_page', 'document_id': 'synthetic-chapter', 'version': 'chapter-v1', 'page': 24}
+    _, answer = await ask(client, headers, path, session, question, page_record=page, route='/knowledge')
+    retrieval.assert_not_awaited()
+    if found:
+        assert [(source['page'], source['document_version']) for source in answer['sources']] == [(24, 'chapter-v1')]
+        assert len(prompts) == 1 and original in prompts[0] and '当前独立页 24 的端口练习' in prompts[0]
+        assert '当前独立页 21 的帧选择说明' not in prompts[0]
+    else:
+        assert not prompts and not answer['sources']
+        assert answer['trace']['source_continuity'] == 'missing_quote'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+async def test_quoted_book_title_never_acts_as_an_original_image_request(api_case, test_session_factory, monkeypatch, path):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    retrieval.return_value = []
+    question = '只依据《受限原图权限公开教材》PDF 第 21 页，指出这一页支持的范围并给出处。'
+    _, answer = await ask(client, headers, path, session, question, route='/knowledge')
+    assert [(s['document_id'], s['page']) for s in answer['sources']] == [('synthetic-chapter', 21)]
+    assert len(prompts) == 1
+    assert edition.reads == [('synthetic-chapter', 'chapter-v1')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+@pytest.mark.parametrize('found', [False, True])
+@pytest.mark.parametrize('configured', [False, True])
+async def test_exact_quote_within_current_page_does_not_search_other_pages(
+    api_case, test_session_factory, monkeypatch, path, found, configured
+):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    page = {'kind': 'original_page', 'document_id': 'synthetic-chapter', 'version': 'chapter-v1', 'page': 24}
+    phrase = '当前独立页 24 的端口练习' if found else '当前独立页 21 的帧选择说明'
+    retrieval.return_value = [edition.hit('other-chapter', 21, phrase)]
+    if not configured:
+        monkeypatch.setattr(router, '_has_copilot_model_configuration', lambda provider: False)
+    question = f'请在本页核对教材原句“{phrase}”，并标明出处。'
+    _, answer = await ask(client, headers, path, session, question, page_record=page, route='/knowledge')
+    retrieval.assert_not_awaited()
+    if found:
+        assert [(source['document_id'], source['page']) for source in answer['sources']] == [('synthetic-chapter', 24)]
+        assert len(prompts) == int(configured)
+        assert phrase in (prompts[0] if configured else answer['sources'][0]['content'])
+    else:
+        assert not answer['sources'] and not prompts
+        assert answer['trace']['source_continuity'] == 'missing_quote' and '没有找到这段原句' in answer['answer']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/chat', '/chat/stream'])
+async def test_exact_quote_cannot_escape_previous_owned_citation(api_case, test_session_factory, monkeypatch, path):
+    client, headers, provider, retrieval = api_case
+    edition = MiniEdition()
+    prompts = complete_with_fixture(provider, monkeypatch, edition)
+    session = await conversation(test_session_factory, headers)
+    retrieval.return_value = [edition.hit('synthetic-chapter', 21)]
+    request_id, first = await ask(client, headers, '/chat', session, '教材里的生成树帧选择机制是什么？', route='/knowledge')
+    assert first['sources'][0]['page'] == 21
+    retrieval.return_value = [edition.hit('synthetic-chapter', 24, '当前独立页 24 的端口练习')]
+    retrieval.reset_mock()
+    question = '继续刚才的教材引用，在同一页查找原句“当前独立页 24 的端口练习”。'
+    _, answer = await ask(client, headers, path, session, question, previous=request_id, route='/knowledge')
+    assert answer['trace']['source_continuity'] == 'missing_quote'
+    assert not answer['sources'] and '没有找到这段原句' in answer['answer'] and len(prompts) == 1
+    retrieval.assert_not_awaited()
 
 
 async def ask(client, headers, transport, conv, question, *, previous=None, source=None, page_record=None, route='/dashboard'):
