@@ -112,6 +112,7 @@ export interface KnowledgeSearchResult {
   edition?: string
   document_id?: string
   document_version?: string | null
+  edition_version?: string | null
   section_id?: string | null
   page?: number | null
   partial_readonly_table?: boolean

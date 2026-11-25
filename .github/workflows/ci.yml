@@ -113,6 +113,35 @@ jobs:
           npm run lint
           npm run build
           npx playwright install --with-deps chromium
+      - name: Repair a partial venv and open bundled material in demo mode
+        run: |
+          python -m venv --without-pip backend/.venv
+          python scripts/bootstrap_local.py --demo --no-start
+          test ! -e .env
+          backend/.venv/bin/python scripts/bootstrap_local.py --demo --start-only --port 18081 > demo-ci.log 2>&1 &
+          demo_pid=$!
+          trap 'kill "$demo_pid" 2>/dev/null || true' EXIT
+          curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:18081/api/v1/health > /dev/null
+          backend/.venv/bin/python backend/scripts/check_services.py --mode minimal --port 18081
+          backend/.venv/bin/python - <<'PY'
+          import httpx
+
+          with httpx.Client(base_url="http://127.0.0.1:18081", trust_env=False, timeout=15) as client:
+              session = client.post("/api/v1/auth/login", json={"username": "admin", "password": "123456"})
+              session.raise_for_status()
+              client.headers["Authorization"] = "Bearer " + session.json()["access_token"]
+              reply = client.post("/api/v1/ai/copilot/chat", json={
+                  "message": "请查教材，解释 VRRP 抢占延时，并列出处。", "context": {"route": "/knowledge"},
+              })
+              reply.raise_for_status()
+              result = reply.json()
+              assert result["generation_status"] == "retrieval_only"
+              source = result["sources"][0]
+              assert source["bundled"] and not source.get("page") and not source.get("edition_version")
+              client.get("/api/v1/ai/knowledge/read", params={
+                  "document_id": source["document_id"], "version": source["document_version"],
+              }).raise_for_status()
+          PY
       - name: First start and strict browser journeys
         env:
           E2E_PROFILE: minimal
@@ -133,6 +162,7 @@ jobs:
         with:
           name: linux-minimal-browser
           path: |
+            demo-ci.log
             workbench-ci.log
             sim-frontend/playwright-report/
             sim-frontend/test-results/

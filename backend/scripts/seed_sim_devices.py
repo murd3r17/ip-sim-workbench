@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -20,8 +21,9 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(BACKEND_ROOT / ".env")
-load_dotenv(WORKBENCH_ROOT / ".env", override=False)
+if os.getenv("IP_SIM_DEMO") != "1":
+    load_dotenv(BACKEND_ROOT / ".env")
+    load_dotenv(WORKBENCH_ROOT / ".env", override=False)
 
 from sqlalchemy import select  # noqa: E402
 
@@ -163,7 +165,10 @@ async def main() -> int:
     await close_db()
     print("")
     print("[seed] 本地练习数据已准备。启动后使用实际输出的地址。")
-    print("  部署者可在本机根目录 .env 查看管理员账号信息。")
+    if os.getenv("IP_SIM_DEMO") == "1":
+        print("  初次演示登录见 README 和启动提示。")
+    else:
+        print("  部署者可在本机根目录 .env 查看管理员账号信息。")
     print("  登录后从「工作台」点「入门巡检」，查看拓扑并选择一台设备。")
     print("  在「设备」做「只读观察」，记录接口与观察时间，再保存实训笔记并回到历史检查。")
     return 0

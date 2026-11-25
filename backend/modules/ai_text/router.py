@@ -692,7 +692,9 @@ async def _current_edition_excerpt(edition, source: dict) -> dict | None:
                  and page['section_id'] == source['section_id'] and page.get('evidence_eligible')), None)
 
 
-async def _offline_edition_result(intent, sources, *, question, provider_failed=False, trace=None):
+async def _offline_edition_result(intent, sources, *, question, provider_failed=False, trace=None, top_k=6):
+    from modules.knowledge.query_focus import lookup_parts
+
     from .question_intent import plain_question
     from .source_scope import missing_physical_page_notice
 
@@ -703,13 +705,35 @@ async def _offline_edition_result(intent, sources, *, question, provider_failed=
         edition = service.edition() if isinstance(service, KnowledgeService) else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    sources = [{key: value for key, value in source.items() if key != 'prompt_text'}
-               for source in sources if await _current_edition_excerpt(edition, source) is not None]
+    if edition is None:
+        if not isinstance(service, KnowledgeService):
+            return None
+        cleaned = plain_question(question)
+        # An inferred follow-up or an original PDF location must not search the legacy corpus.
+        if not re.search(r'教材|课本|知识库|原书', cleaned):
+            return None
+        _, phrases, pages, _ = lookup_parts(cleaned)
+        if pages or phrases or re.search(r'原书原句', cleaned) or (
+                intent == 'locator' and re.search(r'PDF|原页|物理页|页码', cleaned, re.I)):
+            answer = '当前未挂载原书 PDF，无法定位原教材页或检索原书原句。'
+            return {'answer': answer, 'sources': [], 'generation_status': 'not_generated', 'knowledge_status': 'empty',
+                    'provider': 'local', 'status': 'degraded', 'trace': {'model_calls': 0, 'tool_calls': 0, 'tool_dispatch_attempts': 0}}
+        sources = prepare_sources(await service.search_bundled_excerpt(cleaned, top_k=min(top_k, 6)))
+        if not sources:
+            return None
+    else:
+        sources = [source for source in sources if await _current_edition_excerpt(edition, source) is not None]
+    sources = [{key: value for key, value in source.items() if key != 'prompt_text'} for source in sources]
     missing = missing_physical_page_notice(plain_question(question), sources, edition)
     if not sources and not missing:
         return None
     answer = '模型服务暂不可用，未完成对教材的归纳。' if provider_failed else ''
-    if sources:
+    if sources and edition is None:
+        locations = '\n'.join(f"- [{index}] {source['title']}（{source['filename']}）"
+                              for index, source in enumerate(sources, 1))
+        answer = (f"{answer or '已找到仓库附带的本地教材片段。'}\n\n**本地教材摘录**\n\n{locations}\n\n"
+                  "点编号查看这次检索的片段或打开当前资料全文。当前未挂载原书 PDF，无法核对同版原页。")
+    elif sources:
         locations = '\n'.join(f"- [{index}] {source['book_title']} · PDF 物理第 {source['page']} 页"
                               for index, source in enumerate(sources, 1))
         heading = answer or '已定位下列同版教材。'
@@ -718,7 +742,7 @@ async def _offline_edition_result(intent, sources, *, question, provider_failed=
     if missing:
         answer = f'{answer}\n\n{missing}'.strip()
     return {'answer': answer, 'sources': sources, 'generation_status': 'retrieval_only' if sources else 'not_generated',
-            'knowledge_status': 'ok' if sources else 'empty', 'provider': _kb_provider_label(),
+            'knowledge_status': 'ok' if sources else 'empty', 'provider': 'local' if edition is None else _kb_provider_label(),
             'status': 'failed' if provider_failed else 'ok' if sources else 'degraded',
             'trace': {'model_calls': 0, 'tool_dispatch_attempts': 0, 'tool_calls': 0, **(trace or {}),
                       **({'provider_error': 'provider_unavailable'} if provider_failed else {})}}
@@ -779,7 +803,7 @@ async def _offline_edition_search(data, actor, skill, attachments, intent, *, db
 async def _try_offline_edition_lookup(data, actor, skill, attachments, intent, *, db=None, factory=None, provider_failed=False):
     try:
         sources = await _offline_edition_search(data, actor, skill, attachments, intent, db=db, factory=factory)
-        return await _offline_edition_result(intent, sources, question=data.message, provider_failed=provider_failed)
+        return await _offline_edition_result(intent, sources, question=data.message, provider_failed=provider_failed, top_k=data.top_k)
     except Exception as exc:  # noqa: BLE001
         logger.warning('copilot_local_textbook_unavailable', error=type(exc).__name__)
         return None
@@ -1005,7 +1029,7 @@ async def _generate_copilot_chat(
                 provider_failed = _event.get('code') == 'provider_unavailable'
         if provider_failed and stream_status == 'failed':
             locations = await _offline_edition_result(offline_intent, sources, question=data.message,
-                                                       provider_failed=True, trace=trace)
+                                                       provider_failed=True, trace=trace, top_k=data.top_k)
             if locations:
                 return CopilotChatResponse(**locations, request_id=data.request_id or '', tier=tier)
         result = {
@@ -1352,7 +1376,7 @@ async def _generate_copilot_stream(
         try:
             yield sse({
                 "type": "meta", "request_id": request_id, "sources": [],
-                "provider": _kb_provider_label(knowledge),
+                "provider": offline_result['provider'] if offline_result else _kb_provider_label(knowledge),
                 "knowledge_status": offline_result['knowledge_status'] if offline_result else knowledge.get("status", "unknown"),
                 "skill": skill.as_meta(),
                 "status": (
@@ -1460,7 +1484,7 @@ async def _generate_copilot_stream(
                     if provider_failure_event:
                         if event.get('status') == 'failed' and not cancel_event.is_set():
                             locations = await _offline_edition_result(offline_intent, slim_sources, question=data.message,
-                                                                     provider_failed=True, trace=event.get('trace'))
+                                                                     provider_failed=True, trace=event.get('trace'), top_k=data.top_k)
                             if locations:
                                 if locations['knowledge_status'] != knowledge['status']:
                                     yield sse({'type': 'meta', 'knowledge_status': locations['knowledge_status'],
@@ -2031,13 +2055,17 @@ async def read_citation(
         if (saved.get('response') or {}).get('generation_status') == 'retrieval_only':
             service = _get_knowledge_service()
             edition = service.edition() if isinstance(service, KnowledgeService) else None
-            if await _current_edition_excerpt(edition, original) is None:
-                raise HTTPException(410, detail={'code': 'citation_revoked', 'message': '该次检索的同版教材页位已不可回读。'})
+            bundled = original.get('bundled') is True
+            verified = (isinstance(service, KnowledgeService) and await service.verify_bundled_excerpt(original)
+                        if bundled else await _current_edition_excerpt(edition, original) is not None)
+            if not verified:
+                message = '该次检索的本地教材或对应版本已不可回读。' if bundled else '该次检索的同版教材页位已不可回读。'
+                raise HTTPException(410, detail={'code': 'citation_revoked', 'message': message})
             return {key: original.get(key) for key in ('filename', 'title', 'document_id', 'source_id', 'content',
                     'version', 'captured_at', 'truncated', 'reviewed_notes', 'document_version', 'section_id',
-                    'page', 'book_title', 'edition_version')} | {
+                    'page', 'book_title', 'edition_version', 'bundled')} | {
                 'scope': 'retrieval_excerpt', 'available_now': True,
-                'message': '本次保存的教材片段，仅供定位和回读。',
+                'message': '本次保存的本地教材片段，未关联原书 PDF。' if bundled else '本次保存的教材片段，仅供定位和回读。',
             }
         if original.get("document_id") and original.get("document_version"):
             locator = await _get_knowledge_service().legacy_locator(

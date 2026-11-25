@@ -392,7 +392,8 @@
             <span v-if="citation.captured_at"> · {{ new Date(citation.captured_at).toLocaleString('zh-CN') }}</span>
           </p>
           <p v-if="citation.status === 'ok' && citation.message" class="citation-meta">{{ citation.message }}</p>
-          <p v-if="citation.status === 'ok' && citation.truncated" class="citation-meta">{{ citation.scope === 'retrieval_excerpt' ? '以下为本次检索保留的节选，可继续阅读同版正文。' : '以下为回答实际采用的段落节选，可继续阅读资料正文。' }}</p>
+          <p v-if="citation.status === 'ok' && citation.truncated" class="citation-meta">{{ citation.scope === 'retrieval_excerpt' ? '以下为本次检索保留的节选。' : citation.scope === 'answer_excerpt' ? '以下为回答实际采用的段落节选。' : '以下为当前资料的节选。' }}</p>
+          <p v-if="citation.status === 'ok' && citation.scope === 'retrieval_excerpt' && citation.bundled && !citation.edition_version" class="citation-meta">来源为随包整理稿，未核对原书 PDF 页位。</p>
           <div v-if="citation.status === 'ok'" ref="citationBody" class="citation-body">
             <section>
               <strong>{{ citation.scope === 'retrieval_excerpt' ? '本机教材整理稿' : citation.scope === 'answer_excerpt' ? (citation.edition_version ? '回答引用的教材整理稿' : '回答引用的片段') : '当前资料' }}</strong>
@@ -413,14 +414,14 @@
           <p v-else class="citation-error">{{ citation.message }}</p>
           <footer class="citation-foot">
             <button v-if="citation.legacy?.status === 'archive-only'" class="draft-btn" type="button" @click="closeCitation(); go('/knowledge')">打开资料目录</button>
-            <button v-else-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">{{ citation.legacy ? '查阅核对过的原页位置' : citation.document_version ? '阅读同版正文' : '阅读当前全文' }}</button>
+            <button v-else-if="citation.status === 'ok'" class="draft-btn" type="button" @click="fullDocumentVisible = true">{{ citationReadingAction(citation) }}</button>
             <button class="draft-btn" type="button" @click="closeCitation">返回对话</button>
           </footer>
         </section>
       </div>
       <KnowledgeDocumentReader v-model="fullDocumentVisible" :document-id="citation?.legacy?.document?.id || citation?.document_id" :filename="citation?.filename"
         :version="citation?.legacy?.document?.version || citation?.document_version"
-        :edition-version="citation?.legacy?.edition_version"
+        :edition-version="citation?.legacy?.edition_version || citation?.edition_version"
         :section-id="citation?.legacy ? (citation.legacy.section_id ?? undefined) : citation?.section_id"
         :original-page="citation?.legacy ? (citation.legacy.target_page ?? citation.legacy.physical?.[0]) : (citation?.edition_version ? citation.page : undefined)"
         :require-page="citation?.legacy?.status === 'exact-page-locator'"
@@ -1023,8 +1024,14 @@ function answerSources(message: CopilotMessage) {
   const numbers = referencedSourceIndices(message.content)
   return message.sources.flatMap((source, position) => {
     const index = referenceIndex(source, position)
-    return numbers.has(index) ? [{ source, index }] : []
+    return message.generationStatus === 'retrieval_only' || numbers.has(index) ? [{ source, index }] : []
   })
+}
+function citationReadingAction(source: OpenCitation) {
+  if (source.legacy?.status === 'exact-page-locator') return '查阅核对过的原页位置'
+  if (source.edition_version && source.document_version) return '阅读同版正文'
+  if (source.bundled) return '查看随包整理稿'
+  return '阅读当前全文'
 }
 function availableReferences(message: CopilotMessage) {
   return new Set((message.sources || []).map(referenceIndex))
@@ -1102,7 +1109,8 @@ async function openCitation(msg: Pick<CopilotMessage, 'sources' | 'requestId'>, 
         section_id: doc.section_id,
         page: doc.page,
         book_title: doc.legacy_locator?.document?.book_title || doc.book_title || citation.value.book_title,
-        edition_version: doc.edition_version || citation.value.edition_version,
+        edition_version: doc.edition_version,
+        bundled: doc.bundled === true,
         legacy: doc.legacy_locator,
         title: doc.title || citation.value.title, scope: doc.scope, captured_at: doc.captured_at, truncated: doc.truncated,
         reviewed_notes: doc.reviewed_notes, message: doc.message }

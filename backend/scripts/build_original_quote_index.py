@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from modules.knowledge.edition import open_edition
 from modules.knowledge.original_index import INDEX_NAME, SCANS_INDEX_NAME, _normalized, build_original_index
+from modules.knowledge.reader import DocumentReadError
 
 
 def local_scan_reader():
@@ -23,7 +24,7 @@ def local_scan_reader():
         import cv2
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as exc:
-        raise SystemExit("Scan indexing requires the optional local RapidOCR packages.") from exc
+        raise SystemExit("扫描索引需要可选依赖。请在当前后端虚拟环境安装 rapidocr_onnxruntime 和 opencv-python-headless 后重试。") from exc
 
     cv2.setNumThreads(1)
     recognize = RapidOCR(intra_op_num_threads=2, inter_op_num_threads=1, use_cls=False)
@@ -39,28 +40,28 @@ def local_scan_reader():
     return scan
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--edition", type=Path, required=True)
-    parser.add_argument("--originals", type=Path, required=True)
-    parser.add_argument("--scans", action="store_true", help="Build separate tentative scan locators using local OCR.")
-    args = parser.parse_args()
-    root = args.edition.resolve(strict=True)
-    edition = open_edition(str(root), str(args.originals.resolve(strict=True)))
-    target = root / (SCANS_INDEX_NAME if args.scans else INDEX_NAME)
+def build(edition_dir: Path, originals: Path, *, scans: bool) -> dict:
+    paths = (("--edition", edition_dir.expanduser()), ("--originals", originals.expanduser()))
+    for flag, path in paths:
+        if not path.is_dir():
+            raise ValueError(f"找不到 {flag} 指定的目录 {path}。请检查目录路径。")
+    root = paths[0][1].resolve()
+    edition = open_edition(str(root), str(paths[1][1].resolve()))
+    scan_reader = local_scan_reader() if scans else None
+    target = root / (SCANS_INDEX_NAME if scans else INDEX_NAME)
     skipped = []
-    if args.scans:
+    if scans:
         source = root / ".original-scans-checkpoint.sqlite3"
         with closing(sqlite3.connect(root / ".original-scans-builder-lock.sqlite3", timeout=0)) as lock:
             try:
                 lock.execute("BEGIN EXCLUSIVE")
             except sqlite3.OperationalError as exc:
-                raise SystemExit("Cannot acquire the scan-index build lock. Check for a running scan or a locked directory.") from exc
+                raise ValueError("无法锁定扫描索引目录，请确认没有其他扫描任务正在使用它。") from exc
 
             def progress(book, checked, total, indexed):
                 print(f"Book {book:02}: checked {checked}/{total} approved pages, {indexed} scan locators", file=sys.stderr, flush=True)
 
-            report = build_original_index(edition, source, read_scan=local_scan_reader(), skipped=skipped,
+            report = build_original_index(edition, source, read_scan=scan_reader, skipped=skipped,
                                           scan_checkpoint=True, progress=progress)
             os.replace(source, target)
     else:
@@ -71,7 +72,22 @@ def main() -> None:
             os.replace(source, target)
         finally:
             source.unlink(missing_ok=True)
-    print(json.dumps({**report, "scan_errors": skipped}, ensure_ascii=True))
+    return {**report, "scan_errors": skipped}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="为冻结教材挂载的原书 PDF 建立本机原句索引。")
+    parser.add_argument("--edition", type=Path, required=True, help="冻结教材目录")
+    parser.add_argument("--originals", type=Path, required=True, help="已登记原版 PDF 所在目录")
+    parser.add_argument("--scans", action="store_true", help="使用可选的本地 OCR 建立扫描定位索引")
+    args = parser.parse_args()
+    try:
+        report = build(args.edition, args.originals, scans=args.scans)
+    except DocumentReadError as exc:
+        parser.exit(2, f"索引未生成。{exc.message}\n")
+    except (ValueError, OSError, KeyError, sqlite3.Error) as exc:
+        parser.exit(2, f"索引未生成。请核对冻结教材清单、原书登记及目录权限。{exc}\n")
+    print(json.dumps(report, ensure_ascii=True))
 
 
 if __name__ == "__main__":

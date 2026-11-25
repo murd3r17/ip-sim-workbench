@@ -143,10 +143,14 @@ test('知识库目录可打开当前教材资料', async ({ page }) => {
     : `${catalog.count} 篇资料`
   await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
   await expect(page.locator('.knowledge-health')).toContainText(loadedCount)
-  const readingAction = catalog.active_edition ? '阅读正文' : '阅读资料'
+  const readingAction = catalog.active_edition ? '阅读正文' : '查看随包整理稿'
   await page.getByRole('button', { name: readingAction, exact: true }).first().click()
-  const reader = page.getByRole('dialog', { name: catalog.active_edition ? '教材正文' : '阅读资料' })
+  const reader = page.getByRole('dialog', { name: catalog.active_edition ? '教材正文' : '随包整理稿', exact: true })
   await expect(reader.locator('.reader-body')).toBeVisible()
+  if (!catalog.active_edition) {
+    await expect(reader.getByText(/没有已核对的原书 PDF 页位/)).toBeVisible()
+    await expect(reader.getByText('原教材页位', { exact: true })).toHaveCount(0)
+  }
   await reader.getByRole('button', { name: '返回原页面', exact: true }).click()
   await expect(reader).not.toBeVisible()
 })
@@ -162,17 +166,27 @@ test('最小模式健康和教材检索能指导下一步', async ({ page }) => 
   })
   expect(body.components).not.toHaveProperty('mysql')
   expect((await page.request.get('/docs')).status()).toBe(404)
+  const response = await page.request.get('/api/v1/ai/knowledge/catalog')
+  expect(response.ok()).toBeTruthy()
+  const catalog = await response.json()
   await page.getByRole('menuitem', { name: '知识库', exact: true }).click()
   await page.getByRole('tab', { name: '检索资料' }).click()
-  await page.getByRole('textbox', { name: '检索关键词' }).fill('OSPF')
+  const searchInput = page.getByRole('textbox', { name: '检索关键词' })
+  if (!catalog.active_edition) {
+    await expect(page.locator('.knowledge-view').getByText(/本机未挂载原书 PDF/).filter({ visible: true })).toBeVisible()
+    await expect(searchInput).toHaveAttribute('placeholder', /输入章名、关键词或问题/)
+    await expect(page.getByText('原书原句', { exact: true })).toHaveCount(0)
+  }
+  await searchInput.fill('OSPF')
   await page.getByRole('button', { name: '检索', exact: true }).click()
   const firstResult = page.locator('.search-result').first()
   await expect(firstResult.locator('header')).toContainText('OSPF')
   await expect(firstResult.locator('.search-excerpt')).toContainText(/链路状态|SPF.{0,12}链路成本/)
   await firstResult.getByRole('button', { name: '片段详情' }).click()
   const details = page.getByRole('dialog', { name: '检索片段' })
-  await details.getByRole('button', { name: /阅读同版正文|查看随包整理稿/ }).click()
-  await expect(page.getByRole('dialog', { name: /教材正文|阅读资料/ }).getByRole('heading', { name: /OSPF/ }).first()).toBeVisible()
+  await details.getByRole('button', { name: catalog.active_edition ? '阅读同版正文' : '查看随包整理稿', exact: true }).click()
+  const reader = page.getByRole('dialog', { name: catalog.active_edition ? '教材正文' : '随包整理稿', exact: true })
+  await expect(reader.getByRole('heading', { name: /OSPF/ }).first()).toBeVisible()
 })
 
 test('浏览器凭据随服务器会话退出，刷新可以重新核对登录', async ({ page }) => {
@@ -319,15 +333,49 @@ test('受控挂起的助手请求及时出现停止入口并可取消', async ({
   }
 })
 
-test('未配置模型时可返回教材，失败回答没有引用入口', async ({ page }) => {
+test('未配置模型时可回读检索到的教材和资料正文', async ({ page }) => {
   await login(page)
+  const response = await page.request.get('/api/v1/ai/knowledge/catalog')
+  expect(response.ok()).toBeTruthy()
+  const catalog = await response.json()
   await page.locator('.ai-toggle').click()
   const composer = page.locator('.copilot')
   await composer.locator('textarea').fill('请查本地教材，解释 OSPF 邻居的 Full 状态。')
   await composer.getByRole('button', { name: '发送', exact: true }).click()
-  await expect(composer.getByText(/模型服务(?:暂|当前)?不可用|未配置模型|模型尚未配置/, { exact: false }).first()).toBeVisible()
-  await expect(composer.locator('.source-link')).toHaveCount(0)
-  await expect(composer.getByText('已检索资料，正文没有引用检索片段。', { exact: true })).toHaveCount(0)
-  await composer.getByRole('button', { name: '打开知识库', exact: true }).click()
+  const answer = composer.locator('.msg.assistant').last()
+  await expect(answer.getByText(/模型服务暂不可用，未完成对教材的归纳。/)).toBeVisible()
+  const sources = answer.locator('details.sources')
+  await sources.getByText(/^检索到的教材（[1-9]\d*）$/).click()
+  await expect(sources.locator('.source-link').first()).toBeVisible()
+  if (!catalog.active_edition) {
+    await expect(answer.getByText(/当前未挂载原书 PDF/)).toBeVisible()
+    await expect(sources.locator('.source-page')).toHaveCount(0)
+  }
+  await answer.getByRole('button', { name: '查看来源 1', exact: true }).click()
+  const citation = page.getByRole('dialog', { name: '引用原文', exact: true })
+  await expect(citation.getByText(/本次检索保存的片段/)).toBeVisible()
+  await expect(citation.locator('.citation-body pre').first()).toHaveText(/\S+/)
+  await expect(citation.getByText('该来源未附正文片段。', { exact: true })).toHaveCount(0)
+  if (!catalog.active_edition) {
+    await expect(citation.getByText(/随包整理稿，未核对原书 PDF 页位/)).toBeVisible()
+    await expect(citation.locator('.source-page')).toHaveCount(0)
+    await expect(citation.getByRole('button', { name: '阅读同版正文', exact: true })).toHaveCount(0)
+  }
+  await citation.getByRole('button', { name: catalog.active_edition ? '阅读同版正文' : '查看随包整理稿', exact: true }).click()
+  const reader = page.getByRole('dialog', { name: catalog.active_edition ? '教材正文' : '随包整理稿', exact: true })
+  await expect(reader.locator('.reader-body')).toBeVisible()
+})
+
+test('未配置模型的普通问答失败时没有资料引用', async ({ page }) => {
+  await login(page)
+  await page.locator('.ai-toggle').click()
+  const composer = page.locator('.copilot')
+  await composer.locator('textarea').fill('请把这句话改得更简洁：今天下午我们一起整理读书笔记。')
+  await composer.getByRole('button', { name: '发送', exact: true }).click()
+  const answer = composer.locator('.msg.assistant').last()
+  await expect(answer.getByText(/模型服务初始化失败|模型服务暂不可用|未配置模型|模型尚未配置/).first()).toBeVisible()
+  await expect(answer.locator('.source-link, .citation-inline')).toHaveCount(0)
+  await expect(answer.getByText('已检索资料，正文没有引用检索片段。', { exact: true })).toHaveCount(0)
+  await answer.getByRole('button', { name: '打开知识库', exact: true }).click()
   await expect(page.getByRole('textbox', { name: '筛选资料' })).toBeVisible()
 })

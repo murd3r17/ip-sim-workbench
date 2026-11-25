@@ -6,7 +6,7 @@ import ts from 'typescript'
 // Execute the actual <script setup> with mocked UI/network dependencies, on Node >= 20.
 const vue = await readFile(new URL('../src/components/AiCopilotPanel.vue', import.meta.url), 'utf8')
 const script = vue.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
-const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation, priorUpload };', {
+const { outputText } = ts.transpileModule(script + '\nexport { send, applyDraft, stopGenerating, onNewChat, streamingStarted, progressStatus, toolStatus, recoverReply, recoveryNotice, openCitation, closeCitation, citation, priorUpload, answerSources, citationReadingAction };', {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 })
 const deferred = () => {
@@ -71,7 +71,7 @@ function harness(snapshot = async () => '', cancel = async () => ({ cancelled: t
       sessionFetch(url) { const d = deferred(); citations.push({ ...d, url }); return d.promise },
     },
     '../stores/labContext': { useLabContextStore: () => labCtx },
-    '../utils/markdownLite': { renderMarkdown: value => value },
+    '../utils/markdownLite': { renderMarkdown: value => value, referencedSourceIndices: () => new Set() },
     './KnowledgeDocumentReader.vue': {},
     '../utils/copilotContext': { resolvePageMeta: () => ({ title: 'Devices' }) },
     '../utils/pageDataContext': { buildPageDataContext: snapshot },
@@ -118,6 +118,37 @@ test('a citation verified after switching conversations cannot select an old sou
   h.store.newChat()
   h.citations[0].resolve({ ok: true, json: async () => ({ available_now: true, scope: 'answer_excerpt' }) })
   await opened
+  assert.equal(h.store.knowledgeSource, undefined)
+})
+
+test('offline bundled search shows saved sources and reads the exact file without claiming a PDF edition', async () => {
+  const h = harness()
+  const source = { source_id: 'source-2', reference_index: 2, filename: 'chapter.md', bundled: true }
+  const message = {
+    requestId: 'retrieval-req', content: '已找到资料，模型暂不可用。',
+    generationStatus: 'retrieval_only', sources: [source],
+  }
+  assert.deepEqual(h.answerSources(message), [{ source, index: 1 }])
+  assert.deepEqual(h.answerSources({ ...message, generationStatus: 'generated' }), [])
+  assert.deepEqual(h.answerSources({ ...message, streaming: true }), [])
+  assert.match(vue, /:edition-version="citation\?\.legacy\?\.edition_version \|\| citation\?\.edition_version"/)
+  const opened = h.openCitation(message, 1)
+  const query = new URL(h.citations[0].url, 'http://localhost').searchParams
+  assert.equal(query.get('request_id'), 'retrieval-req')
+  assert.equal(query.get('source_id'), 'source-2')
+  h.citations[0].resolve({ ok: true, json: async () => ({
+    scope: 'retrieval_excerpt', bundled: true, available_now: true, content: '保存的随包摘录。',
+    document_id: 'corpus-example', document_version: 'exact-file-version', page: null, edition_version: null,
+  }) })
+  await opened
+  const citation = h.citation.value
+  assert.equal(citation.content, '保存的随包摘录。')
+  assert.equal(citation.document_version, 'exact-file-version')
+  assert.equal(citation.page, null)
+  assert.equal(citation.edition_version, null)
+  assert.equal(h.citationReadingAction(citation), '查看随包整理稿')
+  assert.equal(h.citationReadingAction({ ...citation, bundled: false }), '阅读当前全文')
+  assert.equal(h.citationReadingAction({ ...citation, edition_version: 'edition' }), '阅读同版正文')
   assert.equal(h.store.knowledgeSource, undefined)
 })
 
